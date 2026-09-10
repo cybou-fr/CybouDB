@@ -20,11 +20,19 @@ __pycache__/
 /cyboudb
 /cyboudb.exe
 
+# Legacy pre-rename binary names. Keep these rules so an old build cannot
+# accidentally reintroduce generated executables into Git.
+/asql
+/asql.exe
+
 # --- Data produced by running the engine -----------------------------------
 # Database files are user data, never sources
 *.cyboudb
 *.cyboudb-wal
 *.cyboudb-journal
+
+# Legacy database extension used before the CybouDB rename
+*.asql
 
 # Ad-hoc test artifacts
 /test.*
