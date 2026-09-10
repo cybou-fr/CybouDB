@@ -882,9 +882,14 @@ sql_bind:
     imul    rax, rbx, AST_COLDEF_SIZE
     add     rax, r11
     cmp     dword [rax + COLDEF_TYPE], CAT_TEXT
-    je      .varlen_pending
+    je      .varlen_schema
     cmp     dword [rax + COLDEF_TYPE], CAT_BLOB
-    je      .varlen_pending
+    jne     .fixed_schema
+.varlen_schema:
+    mov     rdx, [rbp - 8]
+    test    qword [rdx + DB_FEATURES], CybouDB_FEATURE_VARLEN
+    jz      .varlen_pending
+.fixed_schema:
     mov     r12, [rax + COLDEF_NAME_PTR]
     mov     r13, [rax + COLDEF_NAME_LEN]
     cmp     r13, 23
@@ -1074,9 +1079,23 @@ sql_bind:
     jz      .oom
     mov     [rbp - 96], rax             ; nulls_ptr
 
-    ; Allocate batch descriptor (24 bytes)
+    ; One length slot per cell. Fixed-width and NULL cells keep zero here;
+    ; TEXT/BLOB cells pair it with their decoded-byte pointer in BATCH_VALUES.
     mov     ARG1, [rbp - 24]
-    mov     ARG2, 24
+    mov     ARG2, r14
+    shl     ARG2, 3
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+    mov     [rbp - 128], rax             ; var_lengths_ptr
+    mov     rdi, rax
+    xor     eax, eax
+    mov     rcx, r14
+    rep stosq
+
+    ; Allocate extended batch descriptor.
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, CybouDB_BATCH_SIZE
     call    sql_arena_alloc
     test    rax, rax
     jz      .oom
@@ -1088,6 +1107,8 @@ sql_bind:
     mov     [rax + BATCH_VALUES], r10
     mov     r10, [rbp - 96]
     mov     [rax + BATCH_NULLS], r10
+    mov     r10, [rbp - 128]
+    mov     [rax + BATCH_VAR_LENGTHS], r10
 
     ; Fill batch cells
     mov     r10, [rbp - 16]
@@ -1135,9 +1156,12 @@ sql_bind:
     jmp     .ins_cell_done
 
 .ins_not_null:
-    ; Until variable-width storage is implemented, no non-numeric literal may
-    ; enter a fixed-width PAX batch through a permissive conversion branch.
     mov     eax, [r9 + EXPR_LIT_TYPE]
+    cmp     r10d, CAT_TEXT
+    je      .store_varlen
+    cmp     r10d, CAT_BLOB
+    je      .store_varlen
+    ; No variable-width literal may enter a fixed-width conversion branch.
     cmp     eax, CAT_BOOL
     ja      .type_mismatch
 
@@ -1203,6 +1227,21 @@ sql_bind:
     movzx   eax, al
     mov     rdi, [rbp - 88]
     mov     rdx, [rbp - 120]
+    mov     [rdi + rdx * 8], rax
+
+    jmp     .ins_cell_done
+
+.store_varlen:
+    cmp     eax, r10d
+    jne     .type_mismatch
+    mov     rdi, [rbp - 96]
+    mov     rdx, [rbp - 120]
+    mov     byte [rdi + rdx], 0
+    mov     rdi, [rbp - 88]
+    mov     rax, [r9 + EXPR_LIT_PTR]
+    mov     [rdi + rdx * 8], rax
+    mov     rdi, [rbp - 128]
+    mov     rax, [r9 + EXPR_LIT_LEN]
     mov     [rdi + rdx * 8], rax
 
 .ins_cell_done:

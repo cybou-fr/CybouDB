@@ -7,6 +7,7 @@ extern db_zone_update, db_zone_reserve
 extern db_bitmap_candidate_payload, db_bitmap_headroom, db_bitmap_deep
 extern db_cow_alloc_page, db_cow_copy_page
 extern db_cow_alloc_run, db_cow_copy_run
+extern db_var_validate_chain, db_var_materialize_batch
 extern pax_compress_leaf, pax_decompress_leaf_old, decompress_column
 global db_pax_validate, db_pax_check_new, db_pax_insert, db_pax_read
 global db_pax_capacity
@@ -512,6 +513,15 @@ pax_tree_insert:
     mov [rbp - 136], rax
     mov rax, [r11 + BATCH_NULLS]
     mov [rbp - 128], rax
+    mov qword [rbp - 120], 0
+    mov ARG1, [rbp - 16]
+    call schema_has_varlen
+    test eax, eax
+    jz .tree_lengths_loaded
+    mov r11, [rbp - 24]
+    mov rax, [r11 + BATCH_VAR_LENGTHS]
+    mov [rbp - 120], rax
+.tree_lengths_loaded:
 
     PAX_CAPACITY_OF [rbp - 16], [rbp - 8]
     mov [rbp - 32], rax
@@ -565,6 +575,16 @@ pax_tree_insert:
     mov ARG4, [rbp - 32]
     call db_zone_reserve
     add [rbp - 160], rax
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 24]
+    mov r11, [rbp - 16]
+    mov ARG4, [r11 + CAT_OWNER]
+    mov rax, [rbp - 160]
+    PASS_ARG5 rax
+    call db_var_materialize_batch
+    test eax, eax
+    jnz .done
     mov ARG1, [rbp - 8]
     call db_bitmap_headroom
     cmp rax, [rbp - 160]
@@ -771,6 +791,10 @@ pax_tree_insert:
     add [rbp - 128], rax
 .nulls_ready:
     shl rax, 3
+    cmp qword [rbp - 120], 0
+    je .tree_lengths_ready
+    add [rbp - 120], rax
+.tree_lengths_ready:
     add [rbp - 136], rax
     mov qword [rbp - 104], 0
     inc qword [rbp - 112]
@@ -876,6 +900,15 @@ pax_multi_insert:
     mov [rbp - 136], rax
     mov rax, [r11 + BATCH_NULLS]
     mov [rbp - 128], rax
+    mov qword [rbp - 120], 0
+    mov ARG1, [rbp - 16]
+    call schema_has_varlen
+    test eax, eax
+    jz .multi_lengths_loaded
+    mov r11, [rbp - 24]
+    mov rax, [r11 + BATCH_VAR_LENGTHS]
+    mov [rbp - 120], rax
+.multi_lengths_loaded:
     PAX_CAPACITY_OF [rbp - 16], [rbp - 8]
     mov [rbp - 32], rax
     mov rcx, rax
@@ -925,6 +958,16 @@ pax_multi_insert:
     mov rcx, [rbp - 160]
     add rcx, rax
     mov [rbp - 160], rcx
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 24]
+    mov r11, [rbp - 16]
+    mov ARG4, [r11 + CAT_OWNER]
+    mov rax, [rbp - 160]
+    PASS_ARG5 rax
+    call db_var_materialize_batch
+    test eax, eax
+    jnz .done
     mov ARG1, [rbp - 8]
     call db_bitmap_headroom
     cmp rax, [rbp - 160]
@@ -1010,6 +1053,10 @@ pax_multi_insert:
     add [rbp - 128], rax
 .nulls_ready:
     shl rax, 3
+    cmp qword [rbp - 120], 0
+    je .lengths_ready
+    add [rbp - 120], rax
+.lengths_ready:
     add [rbp - 136], rax
     mov qword [rbp - 104], 0
     inc qword [rbp - 112]
@@ -1042,8 +1089,34 @@ pax_multi_insert:
     FRAME_END
     ret
 
+; schema_has_varlen(schema) -> 1/0
+schema_has_varlen:
+    xor edx, edx
+.column:
+    cmp edx, [ARG1 + CAT_COUNT]
+    jae .no
+    mov eax, edx
+    shl rax, 5
+    mov eax, [ARG1 + CAT_COLUMNS + rax]
+    cmp eax, CAT_TEXT
+    je .yes
+    cmp eax, CAT_BLOB
+    je .yes
+    inc edx
+    jmp .column
+.yes:
+    mov eax, 1
+    ret
+.no:
+    xor eax, eax
+    ret
+
 ; eax=validated type -> eax=width. No floating-point interpretation is needed.
 type_width:
+    cmp eax, CAT_TEXT
+    je .sixteen
+    cmp eax, CAT_BLOB
+    je .sixteen
     cmp eax, CAT_INT64
     je .eight
     cmp eax, CAT_BOOL
@@ -1055,6 +1128,9 @@ type_width:
     ret
 .one:
     mov eax, 1
+    ret
+.sixteen:
+    mov eax, VAR_CELL_SIZE
     ret
 
 ; Bytes of a leaf that hold column data: everything after the header and the
@@ -1293,7 +1369,7 @@ pax_init:
 ; or zero. All offsets are checked against the computed layout before use.
 ; page_valid(ctx, candidate_sb, schema, id)
 page_valid:
-    FRAME_BEGIN 160, 0
+    FRAME_BEGIN 160, 1
     mov [rbp - 8], ARG1
     mov [rbp - 16], ARG2
     mov [rbp - 24], ARG3
@@ -1432,8 +1508,21 @@ page_valid:
     jne .bad
     add rax, [rbp - 40]
     mov [rbp - 88], rax
+
+    ; Varlen columns always use raw 16-byte persistent descriptors. Even for
+    ; an older (shallow-checked) PAX leaf, walk each live chain so every extent
+    ; is proven to belong to the candidate allocation graph.
+    mov r11, [rbp - 64]
+    shl r11, 5
+    add r11, [rbp - 24]
+    mov eax, [r11 + CAT_COLUMNS]
+    cmp eax, CAT_TEXT
+    je .varlen_dispatch
+    cmp eax, CAT_BLOB
+    je .varlen_dispatch
     cmp qword [rbp - 136], 0
     je .shallow_column
+.deep_masks:
     ; Every mask bit above the last stored row of its group must be zero.
     mov qword [rbp - 128], 0
 .group:
@@ -1460,6 +1549,15 @@ page_valid:
     mov rax, [rbp - 128]
     cmp rax, [rbp - 104]
     jb .group
+
+    mov r11, [rbp - 64]
+    shl r11, 5
+    add r11, [rbp - 24]
+    mov eax, [r11 + CAT_COLUMNS]
+    cmp eax, CAT_TEXT
+    je .varlen_values
+    cmp eax, CAT_BLOB
+    je .varlen_values
 
     mov r10, [rbp - 64]
     shl r10, 4
@@ -1622,6 +1720,64 @@ page_valid:
     jne .bad
     inc rax
     jmp .padding
+
+.varlen_dispatch:
+    cmp qword [rbp - 136], 0
+    je .varlen_values
+    jmp .deep_masks
+
+.varlen_values:
+    mov r10, [rbp - 64]
+    shl r10, 4
+    add r10, [rbp - 40]
+    add r10, PAX_DIRECTORY
+    test dword [r10 + 4], PAX_COL_CODEC_MASK
+    jnz .bad
+    mov qword [rbp - 96], 0
+.varlen_value:
+    mov rax, [rbp - 96]
+    shl rax, 4
+    add rax, [rbp - 88]
+    mov r10, [rbp - 96]
+    cmp r10, [rbp - 56]
+    jae .varlen_zero
+    mov r11, [rbp - 112]
+    bt qword [r11], r10
+    jc .varlen_null
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rax + VAR_CELL_ROOT]
+    mov ARG4, [rax + VAR_CELL_LENGTH]
+    mov r11, [rbp - 24]
+    mov r10, [r11 + CAT_OWNER]
+    PASS_ARG5 r10
+    call db_var_validate_chain
+    test eax, eax
+    jz .bad
+    jmp .varlen_next
+.varlen_null:
+    cmp qword [rbp - 136], 0
+    je .varlen_zero
+    mov r11, [rbp - 64]
+    shl r11, 5
+    add r11, [rbp - 24]
+    test dword [r11 + CAT_COLUMNS + 4], CAT_NULLABLE
+    jz .bad
+.varlen_zero:
+    cmp qword [rbp - 136], 0
+    je .varlen_next                 ; old leaf contents were checked at publish
+    mov rdx, [rax + VAR_CELL_ROOT]
+    or rdx, [rax + VAR_CELL_LENGTH]
+    jnz .bad
+.varlen_next:
+    inc qword [rbp - 96]
+    mov rax, [rbp - 96]
+    cmp rax, [rbp - 48]
+    jb .varlen_value
+    shl rax, 4
+    add rax, [rbp - 88]
+    mov rdx, rax
+    jmp .column_done
 .shallow_column:
     ; An older generation published this page and checked its contents then.
     ; Only the layout arithmetic is needed, to place the next column.
@@ -1797,6 +1953,10 @@ db_pax_insert:
     mov r11, [rbp - 72]
     mov rax, [r11 + rax * 8]
     mov ecx, [r10 + CAT_COLUMNS]
+    cmp ecx, CAT_TEXT
+    je .checked_cell
+    cmp ecx, CAT_BLOB
+    je .checked_cell
     cmp ecx, CAT_INT64
     je .checked_cell
     cmp ecx, CAT_INT32
@@ -1895,7 +2055,7 @@ db_pax_insert:
 ; Internal: append validated cells to a single leaf, without publishing it.
 ; pax_append_page(ctx, schema, old_page_or_zero, batch) -> eax=error, rdx=id.
 pax_append_page:
-    FRAME_BEGIN 128, 0
+    FRAME_BEGIN 144, 0
     mov [rbp - 8], ARG1
     mov [rbp - 40], ARG2
     mov [rbp - 32], ARG3
@@ -1907,6 +2067,26 @@ pax_append_page:
     mov [rbp - 72], rax
     mov rax, [r10 + BATCH_NULLS]
     mov [rbp - 80], rax
+    mov qword [rbp - 136], 0
+    mov qword [rbp - 144], 0
+.append_find_varlen:
+    mov rax, [rbp - 144]
+    mov r11, [rbp - 40]
+    cmp eax, [r11 + CAT_COUNT]
+    jae .append_lengths_ready
+    mov rcx, rax
+    shl rcx, 5
+    mov ecx, [r11 + CAT_COLUMNS + rcx]
+    cmp ecx, CAT_TEXT
+    je .append_load_lengths
+    cmp ecx, CAT_BLOB
+    je .append_load_lengths
+    inc qword [rbp - 144]
+    jmp .append_find_varlen
+.append_load_lengths:
+    mov rax, [r10 + BATCH_VAR_LENGTHS]
+    mov [rbp - 136], rax
+.append_lengths_ready:
     mov qword [rbp - 56], 0
     mov rax, [rbp - 32]
     test rax, rax
@@ -1991,6 +2171,8 @@ pax_append_page:
     mov rdx, [rbp - 120]
     mov r10, [rbp - 72]
     mov rdx, [r10 + rdx * 8]
+    cmp eax, VAR_CELL_SIZE
+    je .write16
     cmp eax, 8
     je .write8
     cmp eax, 1
@@ -1999,6 +2181,13 @@ pax_append_page:
     jmp .appended_cell
 .write8:
     mov [r11], rdx
+    jmp .appended_cell
+.write16:
+    mov [r11 + VAR_CELL_ROOT], rdx
+    mov r10, [rbp - 136]
+    mov rdx, [rbp - 120]
+    mov rax, [r10 + rdx * 8]
+    mov [r11 + VAR_CELL_LENGTH], rax
     jmp .appended_cell
 .write1:
     mov [r11], dl

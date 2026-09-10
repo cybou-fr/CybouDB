@@ -19,6 +19,7 @@
 %include "format.inc"
 %include "catalog.inc"
 %include "pax.inc"
+%include "varlen.inc"
 %include "zonemap.inc"
 
 ; -----------------------------------------------------------------------------

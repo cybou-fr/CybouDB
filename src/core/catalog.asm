@@ -96,10 +96,12 @@ zero_tail:
     xor eax, eax
     ret
 
-; schema_valid(image): header is stamped by put; validate count and body only.
+; schema_valid(image, ctx): header is stamped by put; validate count/body and
+; gate incompatible column types on the database capability set.
 schema_valid:
     FRAME_BEGIN 48, 0
     mov [rbp - 8], ARG1
+    mov [rbp - 48], ARG2
     mov r10, ARG1
     mov eax, [r10 + CAT_COUNT]
     test eax, eax
@@ -122,7 +124,13 @@ schema_valid:
     cmp eax, CAT_INT32
     jb .bad
     cmp eax, CAT_BOOL
+    jbe .type_ok
+    cmp eax, CAT_BLOB
     ja .bad
+    mov r11, [rbp - 48]
+    test qword [r11 + DB_FEATURES], CybouDB_FEATURE_VARLEN
+    jz .bad
+.type_ok:
     test dword [r10 + 4], ~CAT_NULLABLE
     jnz .bad
     lea rax, [r10 + 8]
@@ -291,6 +299,7 @@ db_catalog_validate:
     cmp r11, [r10 + CAT_GENERATION]
     ja .bad
     mov ARG1, rax
+    mov ARG2, [rbp - 8]
     call schema_valid
     test eax, eax
     jz .bad
@@ -461,6 +470,7 @@ db_catalog_put:
     test ARG2, ARG2
     jz .schema
     mov ARG1, [rbp - 24]
+    mov ARG2, [rbp - 8]
     call schema_valid
     test eax, eax
     jz .schema

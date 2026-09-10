@@ -42,6 +42,8 @@
 %define BATCH_ROWS 0
 %define BATCH_VALUES 8
 %define BATCH_NULLS 16
+%define BATCH_VAR_LENGTHS 24             ; optional u64 length per row-major cell
+%define CybouDB_BATCH_SIZE 32
 ; Row read output: arrays with schema column-count slots/bytes.
 %define ROW_VALUES 0
 %define ROW_NULLS 8

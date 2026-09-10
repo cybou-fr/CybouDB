@@ -116,6 +116,7 @@ cyboudb query demo.cyboudb "SELECT id, score FROM users WHERE active = true AND 
 `TEXT` and `BLOB` are recognized type names, but `CREATE TABLE` rejects them
 until persistent variable-width extents are implemented. This prevents an
 unsupported schema from being published into the fixed-width PAX format.
+The versioned on-disk contract is documented in [docs/VARLEN.md](docs/VARLEN.md).
 
 Output:
 

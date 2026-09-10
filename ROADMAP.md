@@ -126,7 +126,16 @@ transactional payload writes until these gates pass.
 * [x] fixed-width column types: INT32, INT64, FLOAT32, BOOL
 * [x] reserve stable TEXT/BLOB catalog IDs and SQL type tokens
 * [x] decode escaped TEXT and validated `X'...'` BLOB literals into arena byte slices
-* [ ] COW-safe variable-width TEXT/BLOB extents and PAX descriptors
+* [x] specify versioned TEXT/BLOB cell descriptors, extent pages, ownership, and validation rules
+* [x] implement bounded per-chain map/owner/generation/layout/CRC validation
+* [x] implement preflighted COW extent-chain allocation, canonical filling, and sealing
+* [x] feature-gate catalog varlen types and use 16-byte descriptors in PAX layout arithmetic
+* [x] validate every live descriptor chain during the PAX graph walk
+* [x] define and populate pointer+length runtime INSERT batches without changing fixed-width slots
+* [x] implement two-pass whole-batch validation, extent preflight, and pointer-to-root materialization
+* [x] invoke materialization with exact flat/tree PAX structural reserve
+* [x] persist `{extent_root,length}` through aligned multi-leaf sub-batch cursors
+* [ ] define varlen zone-map behavior, read views, and enable the capability
 * [x] per-column NULL bitmaps
 * [x] batch insertion into one PAX page through the internal API
 * [x] scalar row materialization with NULL and bit-pattern preservation
