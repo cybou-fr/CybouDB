@@ -1,0 +1,42 @@
+======================================================================================================================
+Cross-engine benchmark - events table, 7 columns, 10,000,000 rows
+  CybouDB   file:    422.6 MB  events_10000000.cyboudb
+  SQLite file:    322.8 MB  events_10000000.sqlite
+  DuckDB file:     44.3 MB  events_10000000.duckdb
+  DuckDB C API: C:\Users\cybou\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\_duckdb.cp312-win_amd64.pyd
+  5 timed iterations, 1 warmup, per-row figures are per row scanned
+======================================================================================================================
+
+FILTER - identical aggregate on every engine: SELECT count(*) FROM events WHERE ...
+Scan, predicate evaluation and aggregation. No result delivery.
+----------------------------------------------------------------------------------------------------------------------
+Scenario                 Selected |     SQLite  DuckDB-1T  DuckDB-8T  CybouDB-scal  CybouDB-AVX2 | AVX2/SQLt AVX2/Dk1T   Parity
+----------------------------------------------------------------------------------------------------------------------
+int32 equality          1,250,000 |     17.62n      0.89n      0.23n      1.52n      0.54n |     32.8x     1.66x    MATCH
+int32 range               900,000 |     17.81n      1.38n      0.31n      1.35n      0.55n |     32.4x     2.51x    MATCH
+int64 range             9,999,666 |     19.13n      0.37n      0.09n      1.79n      0.79n |     24.3x     0.46x    MATCH
+float32 range           5,000,000 |     23.80n      4.63n      0.64n      2.26n      0.79n |     30.1x     5.86x    MATCH
+bool equality           5,000,000 |     20.04n      1.12n      0.24n      1.73n      0.46n |     43.9x     2.45x    MATCH
+two predicates, AND       150,000 |     18.34n      2.08n      0.39n      2.95n      0.95n |     19.4x     2.19x    MATCH
+two predicates, OR      2,000,000 |     24.17n      5.59n      0.90n      3.04n      0.93n |     25.9x     6.00x    MATCH
+nullable predicate      3,428,570 |     23.95n      1.75n      0.34n      1.27n      0.58n |     41.5x     3.03x    MATCH
+nullable IS NOT NULL    8,000,000 |     24.83n      1.71n      0.38n      0.41n      0.41n |     60.8x     4.18x    MATCH
+no predicate (full)    10,000,000 |      0.21n      0.00n      0.01n      0.20n      0.19n |      1.1x     0.01x    MATCH
+----------------------------------------------------------------------------------------------------------------------
+CybouDB AVX2 vs SQLite:      23.35x geomean (10 scenarios)
+CybouDB AVX2 vs DuckDB-1T:    1.43x geomean (above 1.00 means CybouDB is faster)
+Selected-row parity:     ALL MATCH
+
+MATERIALIZE - every engine reads the same projected values: SELECT <cols> FROM events WHERE score > 50
+Scan, predicate evaluation, cell reads and a tagged FNV-1a checksum over every delivered value.
+----------------------------------------------------------------------------------------------------------------------
+Scenario                 Selected |     SQLite  DuckDB-1T  DuckDB-8T  CybouDB-scal  CybouDB-AVX2 | AVX2/SQLt AVX2/Dk1T Checksum
+----------------------------------------------------------------------------------------------------------------------
+projection 1 of 7       4,900,000 |     38.53n      5.55n      5.25n      2.47n      1.45n |     26.6x     3.84x    MATCH
+projection 3 of 7       4,900,000 |     70.93n     13.71n     13.68n      4.61n      3.45n |     20.6x     3.97x    MATCH
+projection 7 of 7       4,900,000 |    136.50n     31.27n     31.77n      8.97n      7.35n |     18.6x     4.26x    MATCH
+----------------------------------------------------------------------------------------------------------------------
+CybouDB AVX2 vs SQLite:      21.67x geomean
+CybouDB AVX2 vs DuckDB-1T:    4.02x geomean
+Checksum parity:         ALL MATCH
+

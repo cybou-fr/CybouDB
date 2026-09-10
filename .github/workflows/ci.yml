@@ -1,0 +1,186 @@
+name: CI
+
+# The engine writes files that outlive the process, so the thing worth
+# protecting is behaviour on damaged input, not just whether it assembles.
+# Every job therefore builds and then runs the full storage test suite.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux x86-64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install NASM
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm
+
+      - name: Build
+        run: sh build.sh
+
+      - name: Test
+        run: sh tests/run_tests.sh
+
+      - name: COW core and fault-injection tests
+        run: |
+          sh build.sh --core-tests
+          python3 tests/cow_tests.py ./cyboudb ./build/cow_harness
+          python3 tests/bitmap_tests.py ./cyboudb ./build/cow_harness
+          python3 tests/catalog_tests.py ./cyboudb ./build/cow_harness
+          python3 tests/pax_tests.py ./cyboudb ./build/cow_harness
+          python3 tests/pax_multi_tests.py ./cyboudb ./build/cow_harness
+          python3 tests/zone_tests.py ./cyboudb ./build/cow_harness
+          python3 tests/zone_validation_tests.py ./cyboudb ./build/cow_harness
+          python3 tests/span_tests.py ./cyboudb ./build/cow_harness
+          python3 tests/sql_numeric_tests.py ./cyboudb ./build/cow_harness
+          sh build.sh --sql-tests
+          python3 tests/zone_sql_tests.py ./cyboudb ./build/cow_harness ./build/sql_harness
+          python3 tests/compression_integration_tests.py ./cyboudb ./build/cow_harness
+          CybouDB_TEST_CREATE=create-compressed python3 tests/zone_sql_tests.py ./cyboudb ./build/cow_harness ./build/sql_harness
+          python3 tests/sql_api_tests.py ./cyboudb ./build/sql_harness
+          python3 tests/sql_pruning_tests.py ./cyboudb ./build/sql_harness
+          python3 tests/sql_sink_tests.py ./cyboudb ./build/sql_harness
+          sh build.sh --kernel-tests
+          python3 tests/kernel_tests.py ./build/kernel_harness
+          python3 tests/kernel_tests.py ./build/kernel_harness scalar
+          sh build.sh --hardware-tests
+          python3 tests/hardware_tests.py ./build/hardware_harness
+
+      # The benchmark harness is built but not run: a timing number from a
+      # shared CI runner is noise. Building it keeps it from rotting.
+      - name: Build the benchmark harness
+        run: |
+          sh build.sh --bench
+          sh build.sh --c-api-bench
+          python3 tests/public_select_tests.py ./cyboudb ./build/bench_harness ./build/c_api_harness
+
+      - name: Build static library and run C API tests
+        run: |
+          sh build.sh --c-tests
+          python3 tests/compress_tests.py ./build/compress_harness
+          python3 tests/benchmark_profile_tests.py
+          ./cyboudb create-pax-multi build/test_ci_c.cyboudb 10000 --force
+          ./build/c_api_test build/test_ci_c.cyboudb
+          ./cyboudb create-compressed build/test_ci_compressed_c.cyboudb 10000 --force
+          ./build/c_api_test build/test_ci_compressed_c.cyboudb compressed
+          ./build/vector_topk_test
+
+      - name: Interactive REPL and pipe tests
+        run: python3 tests/repl_tests.py ./cyboudb
+
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install NASM
+        run: choco install nasm -y --no-progress
+
+      # build.bat finds NASM and the MSVC linker on its own, so no
+      # Developer Command Prompt and no PATH juggling is needed here.
+      - name: Build
+        shell: cmd
+        # Reproduce the GNU link.exe PATH collision from the original failure.
+        run: |
+          set "PATH=C:\Program Files\Git\usr\bin;%PATH%"
+          call build.bat
+
+      - name: Test
+        shell: bash
+        run: sh tests/run_tests.sh
+
+      - name: Build COW and SQL test drivers
+        shell: cmd
+        run: |
+          call build.bat --core-tests
+          if errorlevel 1 exit /b 1
+          call build.bat --sql-tests
+          if errorlevel 1 exit /b 1
+          call build.bat --kernel-tests
+          if errorlevel 1 exit /b 1
+          call build.bat --hardware-tests
+
+      - name: COW core and fault-injection tests
+        shell: bash
+        run: |
+          python tests/cow_tests.py ./cyboudb.exe ./build/cow_harness.exe
+          python tests/bitmap_tests.py ./cyboudb.exe ./build/cow_harness.exe
+          python tests/catalog_tests.py ./cyboudb.exe ./build/cow_harness.exe
+          python tests/pax_tests.py ./cyboudb.exe ./build/cow_harness.exe
+          python tests/pax_multi_tests.py ./cyboudb.exe ./build/cow_harness.exe
+          python tests/zone_tests.py ./cyboudb.exe ./build/cow_harness.exe
+          python tests/zone_validation_tests.py ./cyboudb.exe ./build/cow_harness.exe
+          python tests/span_tests.py ./cyboudb.exe ./build/cow_harness.exe
+          python tests/sql_numeric_tests.py ./cyboudb.exe ./build/cow_harness.exe
+          python tests/sql_api_tests.py ./cyboudb.exe ./build/sql_harness.exe
+          python tests/zone_sql_tests.py ./cyboudb.exe ./build/cow_harness.exe ./build/sql_harness.exe
+          python tests/compression_integration_tests.py ./cyboudb.exe ./build/cow_harness.exe
+          CybouDB_TEST_CREATE=create-compressed python tests/zone_sql_tests.py ./cyboudb.exe ./build/cow_harness.exe ./build/sql_harness.exe
+          python tests/sql_pruning_tests.py ./cyboudb.exe ./build/sql_harness.exe
+          python tests/sql_sink_tests.py ./cyboudb.exe ./build/sql_harness.exe
+          python tests/kernel_tests.py ./build/kernel_harness.exe
+          python tests/kernel_tests.py ./build/kernel_harness.exe scalar
+          python tests/hardware_tests.py ./build/hardware_harness.exe
+
+      - name: Build the benchmark harness
+        shell: cmd
+        run: |
+          call build.bat --bench
+          if errorlevel 1 exit /b 1
+          call build.bat --c-api-bench
+          if errorlevel 1 exit /b 1
+          python tests/public_select_tests.py ./cyboudb.exe ./build/bench_harness.exe ./build/c_api_harness.exe
+
+      - name: Build static library and run C API tests
+        shell: cmd
+        run: |
+          call build.bat --c-tests
+          if errorlevel 1 exit /b 1
+          python tests/compress_tests.py ./build/compress_harness.exe
+          if errorlevel 1 exit /b 1
+          python tests/benchmark_profile_tests.py
+          if errorlevel 1 exit /b 1
+          cyboudb.exe create-pax-multi build\test_ci_c.cyboudb 10000 --force
+          build\c_api_test.exe build\test_ci_c.cyboudb
+          if errorlevel 1 exit /b 1
+          cyboudb.exe create-compressed build\test_ci_compressed_c.cyboudb 10000 --force
+          build\c_api_test.exe build\test_ci_compressed_c.cyboudb compressed
+          if errorlevel 1 exit /b 1
+          build\vector_topk_test.exe
+          if errorlevel 1 exit /b 1
+
+      - name: Interactive REPL and pipe tests
+        shell: bash
+        run: python tests/repl_tests.py ./cyboudb.exe
+
+  ascii:
+    name: Sources are ASCII
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Comments, strings and scripts are English ASCII by convention. A .bat
+      # file is the practical reason: cmd.exe reads it in the console code
+      # page, where non-ASCII bytes corrupt parsing outright.
+      - name: Reject non-ASCII bytes
+        run: |
+          if LC_ALL=C grep -rnP '[^\x00-\x7F]|[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]' \
+               --include='*.asm' --include='*.inc' --include='*.sh' \
+               --include='*.bat' --include='*.py' --include='*.yml' \
+               --include='*.c' --include='*.h' .; then
+            echo "::error::non-ASCII bytes found in the files listed above"
+            exit 1
+          fi
+          echo "all sources are pure ASCII"
+          if LC_ALL=C grep -rnP '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]' --include='*.md' benchmarks/results; then
+            echo "::error::control characters in benchmark reports"
+            exit 1
+          fi

@@ -1,0 +1,34 @@
+[CybouDB] Using cached database events_10000000.cyboudb (10,000,000 rows)
+[SQLite] Using cached database events_10000000.sqlite (10,000,000 rows)
+
+==========================================================================================================
+CybouDB vs. SQLite Out-of-Cache Benchmark Suite (Phase 3.5)
+Host CPU:      Intel(R) Core(TM) Ultra 7 258V
+Platform:      Windows 11 | Python 3.12.14
+Engines:       CybouDB commit 50a93bd | SQLite v3.50.4 (2025-07-30 19:33:53 4d8adfb30e03f9cf27f800a2c1ba3c48fb4ca1b08b0f5ed59a4d5ecbf45e20a3)
+Dataset:       events table (7 columns, 10,000,000 rows)
+CybouDB file:     403.0 MB (PAX columnar, 2-level directory, memory-mapped)
+SQLite file:   307.9 MB (Row B-tree, PRAGMA mmap_size=2048 MB, synchronous=OFF)
+Iterations:    10 runs, 2 warmup runs
+Repeats:       3 independent runs; median ns, rotating engine order
+==========================================================================================================
+
+======================================================================================================================
+MODE: MATERIALIZE (SCAN + PREDICATE + CELL READS + CHECKSUM) (mode 1) - 3-WAY COMPARISON: SQLite vs CybouDB Scalar vs CybouDB AVX2
+Workload: Scan -> Predicate kernels -> Active lane mask -> Materialize cell values -> FNV-1a checksum
+======================================================================================================================
+Scenario                  Selected  SQLite ns  Scalar ns   AVX2 ns  vs SQLt  vs Scal  AVX2 M/s  AVX2 GB/s   Check
+-----------------------------------------------------------------------------------------------------------------
+int32 equality           1,250,000      23.36       1.99      1.09   21.44x    1.83x     917.5     11.010   MATCH
+int32 range                900,000      22.44       1.92      1.12   20.08x    1.72x     894.9     10.739   MATCH
+int64 range              9,999,666      62.68       3.64      2.49   25.14x    1.46x     401.1      6.418   MATCH
+float32 range            5,000,000      44.77       2.88      1.73   25.82x    1.66x     576.7      6.921   MATCH
+bool equality            5,000,000      39.20       2.67      1.44   27.31x    1.86x     696.6      6.270   MATCH
+two predicates, AND        150,000      19.27       3.25      1.21   15.98x    2.70x     829.4     13.270   MATCH
+two predicates, OR       2,000,000      32.16       3.71      1.46   22.02x    2.54x     684.5     10.952   MATCH
+nullable predicate       3,428,570      39.02       2.01      1.31   29.75x    1.53x     762.6      9.152   MATCH
+nullable IS NOT NULL     8,000,000      59.00       1.92      1.91   30.92x    1.01x     524.0      6.289   MATCH
+no predicate (full scan) 10,000,000      58.50       2.01      2.03   28.83x    0.99x     492.9      3.943   MATCH
+count(*) filtered                1      18.11       1.44      0.57   31.50x    2.50x    1739.6     20.875   MATCH
+count(*) full scan               1       0.21       0.19      0.19    1.06x    1.01x    5160.9     41.287   MATCH
+projection 1 of 7        4,900,000      40.88       2.59      1.48   27.66x    1.75x     676.8      8.121   MATCH

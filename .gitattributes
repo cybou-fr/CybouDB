@@ -1,0 +1,12 @@
+# Normalize text files in the repository, but pin the line endings that the
+# two build scripts actually depend on.
+
+* text=auto
+
+# Shell scripts must stay LF: a CRLF build.sh fails under sh, WSL and Git Bash
+# because the trailing \r becomes part of every command.
+*.sh text eol=lf
+
+# Batch files must stay CRLF: cmd.exe mis-parses a .bat with LF endings and
+# splits its lines in the wrong places.
+*.bat text eol=crlf

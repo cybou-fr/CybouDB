@@ -1,0 +1,2243 @@
+{
+  "complete": true,
+  "host": "Windows-11-10.0.26200-SP0",
+  "duckdb_version": "1.5.5",
+  "rows": 10000000,
+  "iterations": 10,
+  "warmup": 2,
+  "repeats": 5,
+  "datasets": {
+    "structured": {
+      "storage": {
+        "raw": {
+          "logical_db_bytes": 422617088,
+          "allocated_pax_pages": 89378,
+          "leaves": 22322,
+          "encoded_value_bytes": 330000000,
+          "raw_logical_value_bytes": 330000000,
+          "codec_columns": {
+            "RAW": 156254,
+            "CONST": 0,
+            "FOR": 0
+          },
+          "codec_column_percent": {
+            "RAW": 100.0,
+            "CONST": 0.0,
+            "FOR": 0.0
+          }
+        },
+        "compressed": {
+          "logical_db_bytes": 422617088,
+          "allocated_pax_pages": 89378,
+          "leaves": 22322,
+          "encoded_value_bytes": 84642864,
+          "raw_logical_value_bytes": 330000000,
+          "codec_columns": {
+            "RAW": 22322,
+            "CONST": 0,
+            "FOR": 133932
+          },
+          "codec_column_percent": {
+            "RAW": 14.285714285714286,
+            "CONST": 0.0,
+            "FOR": 85.71428571428571
+          }
+        }
+      },
+      "scenarios": [
+        {
+          "name": "zone: all NONE",
+          "sql": "SELECT count(*) FROM events WHERE amount < 0",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 0,
+          "ns_per_logical_row": {
+            "raw": 0.032869,
+            "compressed": 0.031689,
+            "duckdb_1t": 0.002456,
+            "duckdb_8t": 0.007516
+          },
+          "samples": {
+            "raw": [
+              0.026542,
+              0.032869,
+              0.033793,
+              0.032742,
+              0.042494
+            ],
+            "compressed": [
+              0.036792,
+              0.028827,
+              0.031689,
+              0.027732,
+              0.031862
+            ],
+            "duckdb_1t": [
+              0.002456,
+              0.002391,
+              0.002838,
+              0.002535,
+              0.002164
+            ],
+            "duckdb_8t": [
+              0.006948,
+              0.008322,
+              0.008144,
+              0.007516,
+              0.00701
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "zone: half NONE/ALL",
+          "sql": "SELECT count(*) FROM events WHERE amount >= 15000000",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 5000000,
+          "ns_per_logical_row": {
+            "raw": 0.031041,
+            "compressed": 0.034427,
+            "duckdb_1t": 0.205926,
+            "duckdb_8t": 0.063902
+          },
+          "samples": {
+            "raw": [
+              0.027991,
+              0.027633,
+              0.036261,
+              0.031041,
+              0.048293
+            ],
+            "compressed": [
+              0.03538,
+              0.028364,
+              0.038245,
+              0.029683,
+              0.034427
+            ],
+            "duckdb_1t": [
+              0.205926,
+              0.2125,
+              0.196655,
+              0.31381,
+              0.204297
+            ],
+            "duckdb_8t": [
+              0.063902,
+              0.058985,
+              0.05677,
+              0.072514,
+              0.074807
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "zone: all UNKNOWN",
+          "sql": "SELECT count(*) FROM events WHERE score > 90",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 900000,
+          "ns_per_logical_row": {
+            "raw": 0.702118,
+            "compressed": 1.497994,
+            "duckdb_1t": 1.536672,
+            "duckdb_8t": 0.304618
+          },
+          "samples": {
+            "raw": [
+              0.767696,
+              0.702118,
+              0.701813,
+              0.711672,
+              0.696346
+            ],
+            "compressed": [
+              1.458401,
+              1.689091,
+              1.497696,
+              1.501143,
+              1.497994
+            ],
+            "duckdb_1t": [
+              1.531243,
+              1.479807,
+              1.536672,
+              1.581344,
+              1.582012
+            ],
+            "duckdb_8t": [
+              0.32001,
+              0.302137,
+              0.304618,
+              0.31237,
+              0.289371
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "int32 equality",
+          "sql": "SELECT count(*) FROM events WHERE category = 3",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 1250000,
+          "ns_per_logical_row": {
+            "raw": 0.742304,
+            "compressed": 1.550427,
+            "duckdb_1t": 1.090427,
+            "duckdb_8t": 0.234917
+          },
+          "samples": {
+            "raw": [
+              0.742304,
+              0.725803,
+              0.735115,
+              0.909128,
+              0.745016
+            ],
+            "compressed": [
+              1.550427,
+              1.519579,
+              1.489906,
+              1.71463,
+              1.651444
+            ],
+            "duckdb_1t": [
+              1.014622,
+              1.175426,
+              1.064559,
+              1.090427,
+              1.129611
+            ],
+            "duckdb_8t": [
+              0.212993,
+              0.246111,
+              0.233317,
+              0.234917,
+              0.25998
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "int64 range",
+          "sql": "SELECT count(*) FROM events WHERE amount > 1000",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 9999666,
+          "ns_per_logical_row": {
+            "raw": 0.028183,
+            "compressed": 0.030646,
+            "duckdb_1t": 0.395497,
+            "duckdb_8t": 0.094975
+          },
+          "samples": {
+            "raw": [
+              0.026604,
+              0.026895,
+              0.03982,
+              0.03712,
+              0.028183
+            ],
+            "compressed": [
+              0.03235,
+              0.027032,
+              0.030646,
+              0.031072,
+              0.027787
+            ],
+            "duckdb_1t": [
+              0.395497,
+              0.377058,
+              0.439028,
+              0.379323,
+              0.400104
+            ],
+            "duckdb_8t": [
+              0.090632,
+              0.092858,
+              0.096815,
+              0.111673,
+              0.094975
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "float32 range",
+          "sql": "SELECT count(*) FROM events WHERE weight > 500.0",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 5000000,
+          "ns_per_logical_row": {
+            "raw": 0.855599,
+            "compressed": 0.940329,
+            "duckdb_1t": 3.419291,
+            "duckdb_8t": 0.629481
+          },
+          "samples": {
+            "raw": [
+              0.889044,
+              0.85461,
+              0.855599,
+              0.847412,
+              0.860588
+            ],
+            "compressed": [
+              0.970933,
+              1.188256,
+              0.929257,
+              0.910447,
+              0.940329
+            ],
+            "duckdb_1t": [
+              3.48003,
+              3.419291,
+              3.353042,
+              3.362609,
+              3.579739
+            ],
+            "duckdb_8t": [
+              0.664657,
+              0.629247,
+              0.629481,
+              0.629306,
+              0.684361
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "bool equality",
+          "sql": "SELECT count(*) FROM events WHERE active = TRUE",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 5000000,
+          "ns_per_logical_row": {
+            "raw": 0.580345,
+            "compressed": 0.442289,
+            "duckdb_1t": 1.247293,
+            "duckdb_8t": 0.255404
+          },
+          "samples": {
+            "raw": [
+              0.740263,
+              0.577151,
+              0.580345,
+              0.564405,
+              0.585839
+            ],
+            "compressed": [
+              0.442289,
+              0.464728,
+              0.434946,
+              0.431733,
+              0.446342
+            ],
+            "duckdb_1t": [
+              1.210881,
+              1.33996,
+              1.220397,
+              1.773269,
+              1.247293
+            ],
+            "duckdb_8t": [
+              0.241058,
+              0.245873,
+              0.255404,
+              0.269856,
+              0.262019
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "two predicates, AND",
+          "sql": "SELECT count(*) FROM events WHERE score > 90 AND category = 3",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 150000,
+          "ns_per_logical_row": {
+            "raw": 1.215164,
+            "compressed": 3.229071,
+            "duckdb_1t": 2.131308,
+            "duckdb_8t": 0.408332
+          },
+          "samples": {
+            "raw": [
+              1.210506,
+              1.147462,
+              1.35784,
+              1.600056,
+              1.215164
+            ],
+            "compressed": [
+              3.214015,
+              3.219211,
+              3.416731,
+              3.397281,
+              3.229071
+            ],
+            "duckdb_1t": [
+              2.261946,
+              2.131308,
+              2.120585,
+              2.339329,
+              2.084861
+            ],
+            "duckdb_8t": [
+              0.406322,
+              0.403823,
+              0.408332,
+              0.413219,
+              0.418715
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "two predicates, OR",
+          "sql": "SELECT count(*) FROM events WHERE score > 90 OR category = 3",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 2000000,
+          "ns_per_logical_row": {
+            "raw": 1.157517,
+            "compressed": 3.295225,
+            "duckdb_1t": 6.657913,
+            "duckdb_8t": 1.179454
+          },
+          "samples": {
+            "raw": [
+              1.137273,
+              1.247621,
+              1.157517,
+              1.223983,
+              1.121066
+            ],
+            "compressed": [
+              3.108317,
+              3.27822,
+              3.514448,
+              3.420537,
+              3.295225
+            ],
+            "duckdb_1t": [
+              6.640007,
+              6.946486,
+              7.579286,
+              6.123608,
+              6.657913
+            ],
+            "duckdb_8t": [
+              1.120578,
+              1.176284,
+              1.179454,
+              1.262432,
+              1.275502
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "nullable predicate",
+          "sql": "SELECT count(*) FROM events WHERE tag > 3",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 3428570,
+          "ns_per_logical_row": {
+            "raw": 0.715934,
+            "compressed": 1.411885,
+            "duckdb_1t": 1.991537,
+            "duckdb_8t": 0.408347
+          },
+          "samples": {
+            "raw": [
+              1.018658,
+              0.697529,
+              0.714923,
+              0.715934,
+              0.871917
+            ],
+            "compressed": [
+              1.365378,
+              2.038428,
+              1.370856,
+              1.411885,
+              1.413837
+            ],
+            "duckdb_1t": [
+              1.895404,
+              2.08107,
+              2.086651,
+              1.938592,
+              1.991537
+            ],
+            "duckdb_8t": [
+              0.378366,
+              0.408347,
+              0.381262,
+              0.493394,
+              0.458983
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "nullable IS NOT NULL",
+          "sql": "SELECT count(*) FROM events WHERE tag IS NOT NULL",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 8000000,
+          "ns_per_logical_row": {
+            "raw": 0.542941,
+            "compressed": 0.509439,
+            "duckdb_1t": 2.108111,
+            "duckdb_8t": 0.455709
+          },
+          "samples": {
+            "raw": [
+              0.564747,
+              0.514961,
+              0.542941,
+              0.504071,
+              0.579766
+            ],
+            "compressed": [
+              0.509439,
+              0.654639,
+              0.504009,
+              0.508175,
+              0.518877
+            ],
+            "duckdb_1t": [
+              2.014991,
+              2.108111,
+              2.070243,
+              2.389819,
+              2.237429
+            ],
+            "duckdb_8t": [
+              0.456921,
+              0.441582,
+              0.420594,
+              0.455709,
+              0.518066
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "no predicate (full)",
+          "sql": "SELECT count(*) FROM events",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 10000000,
+          "ns_per_logical_row": {
+            "raw": 0.030899,
+            "compressed": 0.029361,
+            "duckdb_1t": 0.001705,
+            "duckdb_8t": 0.007585
+          },
+          "samples": {
+            "raw": [
+              0.027643,
+              0.025471,
+              0.031781,
+              0.03333,
+              0.030899
+            ],
+            "compressed": [
+              0.028106,
+              0.026645,
+              0.029361,
+              0.030434,
+              0.032021
+            ],
+            "duckdb_1t": [
+              0.00167,
+              0.00159,
+              0.001705,
+              0.00181,
+              0.001728
+            ],
+            "duckdb_8t": [
+              0.008011,
+              0.006589,
+              0.007585,
+              0.009403,
+              0.004912
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "proj 1 of 7 (score>50)",
+          "sql": "SELECT id FROM events WHERE score > 50",
+          "mode": 1,
+          "parity": "MATCH",
+          "selected_rows": 4900000,
+          "ns_per_logical_row": {
+            "raw": 1.767229,
+            "compressed": 3.685827,
+            "duckdb_1t": 6.941795,
+            "duckdb_8t": 6.39612
+          },
+          "samples": {
+            "raw": [
+              1.767229,
+              1.724631,
+              1.71576,
+              1.807102,
+              1.871877
+            ],
+            "compressed": [
+              3.96666,
+              3.685827,
+              3.538435,
+              3.530288,
+              3.898755
+            ],
+            "duckdb_1t": [
+              7.409906,
+              7.382036,
+              6.610524,
+              6.633161,
+              6.941795
+            ],
+            "duckdb_8t": [
+              6.39612,
+              7.097031,
+              6.304097,
+              6.230296,
+              6.696445
+            ]
+          },
+          "duckdb_8t_parity": "count only"
+        },
+        {
+          "name": "proj 3 of 7 (score>50)",
+          "sql": "SELECT id, score, weight FROM events WHERE score > 50",
+          "mode": 1,
+          "parity": "MATCH",
+          "selected_rows": 4900000,
+          "ns_per_logical_row": {
+            "raw": 3.937875,
+            "compressed": 6.191016,
+            "duckdb_1t": 16.961832,
+            "duckdb_8t": 17.060968
+          },
+          "samples": {
+            "raw": [
+              3.836718,
+              3.880113,
+              4.039567,
+              3.971949,
+              3.937875
+            ],
+            "compressed": [
+              6.571071,
+              5.931024,
+              6.192679,
+              6.167227,
+              6.191016
+            ],
+            "duckdb_1t": [
+              16.654343,
+              16.961832,
+              16.815738,
+              17.635413,
+              17.581281
+            ],
+            "duckdb_8t": [
+              17.060968,
+              16.694615,
+              16.979254,
+              17.560693,
+              18.116442
+            ]
+          },
+          "duckdb_8t_parity": "count only"
+        },
+        {
+          "name": "proj 7 of 7 (score>50)",
+          "sql": "SELECT id, category, score, amount, active, weight, tag FROM events WHERE score > 50",
+          "mode": 1,
+          "parity": "MATCH",
+          "selected_rows": 4900000,
+          "ns_per_logical_row": {
+            "raw": 8.687085,
+            "compressed": 14.80212,
+            "duckdb_1t": 43.155406,
+            "duckdb_8t": 43.330255
+          },
+          "samples": {
+            "raw": [
+              10.619022,
+              9.293906,
+              8.687085,
+              8.515333,
+              8.289288
+            ],
+            "compressed": [
+              16.889294,
+              14.376474,
+              14.80212,
+              14.228023,
+              15.27411
+            ],
+            "duckdb_1t": [
+              44.566395,
+              43.054744,
+              48.896888,
+              43.155406,
+              40.247791
+            ],
+            "duckdb_8t": [
+              45.10524,
+              52.684192,
+              43.330255,
+              41.984484,
+              40.494094
+            ]
+          },
+          "duckdb_8t_parity": "count only"
+        },
+        {
+          "name": "zone mat: 3 of 7 (half)",
+          "sql": "SELECT id, score, weight FROM events WHERE amount >= 15000000",
+          "mode": 1,
+          "parity": "MATCH",
+          "selected_rows": 5000000,
+          "ns_per_logical_row": {
+            "raw": 3.405539,
+            "compressed": 4.643888,
+            "duckdb_1t": 14.532315,
+            "duckdb_8t": 14.580425
+          },
+          "samples": {
+            "raw": [
+              3.415281,
+              3.223299,
+              3.202488,
+              3.405539,
+              5.139187
+            ],
+            "compressed": [
+              4.920341,
+              4.530651,
+              4.366093,
+              4.643888,
+              5.086796
+            ],
+            "duckdb_1t": [
+              15.229318,
+              14.383393,
+              14.21551,
+              17.101286,
+              14.532315
+            ],
+            "duckdb_8t": [
+              14.76008,
+              13.835544,
+              14.388938,
+              14.843779,
+              14.580425
+            ]
+          },
+          "duckdb_8t_parity": "count only"
+        }
+      ]
+    },
+    "high_entropy": {
+      "storage": {
+        "raw": {
+          "logical_db_bytes": 422617088,
+          "allocated_pax_pages": 89378,
+          "leaves": 22322,
+          "encoded_value_bytes": 330000000,
+          "raw_logical_value_bytes": 330000000,
+          "codec_columns": {
+            "RAW": 156254,
+            "CONST": 0,
+            "FOR": 0
+          },
+          "codec_column_percent": {
+            "RAW": 100.0,
+            "CONST": 0.0,
+            "FOR": 0.0
+          }
+        },
+        "compressed": {
+          "logical_db_bytes": 422617088,
+          "allocated_pax_pages": 89378,
+          "leaves": 22322,
+          "encoded_value_bytes": 218928608,
+          "raw_logical_value_bytes": 330000000,
+          "codec_columns": {
+            "RAW": 66966,
+            "CONST": 0,
+            "FOR": 89288
+          },
+          "codec_column_percent": {
+            "RAW": 42.857142857142854,
+            "CONST": 0.0,
+            "FOR": 57.142857142857146
+          }
+        }
+      },
+      "scenarios": [
+        {
+          "name": "zone: all NONE",
+          "sql": "SELECT count(*) FROM events WHERE amount < 0",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 4999223,
+          "ns_per_logical_row": {
+            "raw": 1.014385,
+            "compressed": 1.021455,
+            "duckdb_1t": 1.108126,
+            "duckdb_8t": 0.25078
+          },
+          "samples": {
+            "raw": [
+              1.014385,
+              1.030667,
+              1.008062,
+              1.018947,
+              0.991151
+            ],
+            "compressed": [
+              1.02108,
+              1.02035,
+              1.028585,
+              1.021455,
+              1.376971
+            ],
+            "duckdb_1t": [
+              1.108126,
+              1.12627,
+              1.104252,
+              1.120739,
+              1.106881
+            ],
+            "duckdb_8t": [
+              0.25078,
+              0.269286,
+              0.228297,
+              0.246387,
+              0.381194
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "zone: half NONE/ALL",
+          "sql": "SELECT count(*) FROM events WHERE amount >= 15000000",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 5000777,
+          "ns_per_logical_row": {
+            "raw": 0.990647,
+            "compressed": 1.049623,
+            "duckdb_1t": 1.165508,
+            "duckdb_8t": 0.246757
+          },
+          "samples": {
+            "raw": [
+              0.990647,
+              0.975427,
+              1.075383,
+              0.98872,
+              1.077662
+            ],
+            "compressed": [
+              1.010266,
+              1.049623,
+              1.135265,
+              1.055045,
+              1.022983
+            ],
+            "duckdb_1t": [
+              1.145725,
+              1.170562,
+              1.157207,
+              1.165508,
+              1.182667
+            ],
+            "duckdb_8t": [
+              0.246757,
+              0.243699,
+              0.298238,
+              0.275584,
+              0.239177
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "zone: all UNKNOWN",
+          "sql": "SELECT count(*) FROM events WHERE score > 90",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 899644,
+          "ns_per_logical_row": {
+            "raw": 0.712602,
+            "compressed": 1.579902,
+            "duckdb_1t": 1.121139,
+            "duckdb_8t": 0.24325
+          },
+          "samples": {
+            "raw": [
+              0.726145,
+              0.698015,
+              0.754833,
+              0.710794,
+              0.712602
+            ],
+            "compressed": [
+              1.452614,
+              2.034259,
+              1.450511,
+              1.899954,
+              1.579902
+            ],
+            "duckdb_1t": [
+              1.094856,
+              1.091316,
+              1.176255,
+              1.557512,
+              1.121139
+            ],
+            "duckdb_8t": [
+              0.24325,
+              0.228963,
+              0.250682,
+              0.212808,
+              0.279639
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "int32 equality",
+          "sql": "SELECT count(*) FROM events WHERE category = 3",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 1250119,
+          "ns_per_logical_row": {
+            "raw": 0.730069,
+            "compressed": 1.571219,
+            "duckdb_1t": 1.071422,
+            "duckdb_8t": 0.218816
+          },
+          "samples": {
+            "raw": [
+              0.814975,
+              0.709523,
+              0.730069,
+              0.732044,
+              0.692768
+            ],
+            "compressed": [
+              1.685554,
+              1.754101,
+              1.571219,
+              1.514143,
+              1.508504
+            ],
+            "duckdb_1t": [
+              1.071422,
+              1.125054,
+              1.024293,
+              0.997755,
+              1.135047
+            ],
+            "duckdb_8t": [
+              0.306517,
+              0.212733,
+              0.209576,
+              0.218816,
+              0.263023
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "int64 range",
+          "sql": "SELECT count(*) FROM events WHERE amount > 1000",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 5000777,
+          "ns_per_logical_row": {
+            "raw": 1.01366,
+            "compressed": 1.011319,
+            "duckdb_1t": 1.133588,
+            "duckdb_8t": 0.238913
+          },
+          "samples": {
+            "raw": [
+              1.064079,
+              1.01874,
+              1.00298,
+              0.984017,
+              1.01366
+            ],
+            "compressed": [
+              0.990013,
+              1.112683,
+              1.014356,
+              1.011319,
+              1.007947
+            ],
+            "duckdb_1t": [
+              1.133588,
+              1.19532,
+              1.107319,
+              1.158599,
+              1.095137
+            ],
+            "duckdb_8t": [
+              0.302279,
+              0.25209,
+              0.220034,
+              0.232831,
+              0.238913
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "float32 range",
+          "sql": "SELECT count(*) FROM events WHERE weight > 500.0",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 4997838,
+          "ns_per_logical_row": {
+            "raw": 0.90837,
+            "compressed": 0.97149,
+            "duckdb_1t": 3.538994,
+            "duckdb_8t": 0.657699
+          },
+          "samples": {
+            "raw": [
+              0.905349,
+              0.924083,
+              0.90837,
+              0.903371,
+              0.939507
+            ],
+            "compressed": [
+              0.97149,
+              0.947118,
+              0.960063,
+              0.980995,
+              0.97365
+            ],
+            "duckdb_1t": [
+              3.806514,
+              3.523937,
+              4.018571,
+              3.538994,
+              3.422729
+            ],
+            "duckdb_8t": [
+              0.666849,
+              0.657699,
+              0.661206,
+              0.636857,
+              0.634638
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "bool equality",
+          "sql": "SELECT count(*) FROM events WHERE active = TRUE",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 5000183,
+          "ns_per_logical_row": {
+            "raw": 0.588099,
+            "compressed": 0.439832,
+            "duckdb_1t": 1.268408,
+            "duckdb_8t": 0.271395
+          },
+          "samples": {
+            "raw": [
+              0.594947,
+              0.588063,
+              0.588099,
+              0.589759,
+              0.549269
+            ],
+            "compressed": [
+              0.447671,
+              0.640443,
+              0.439832,
+              0.416473,
+              0.436323
+            ],
+            "duckdb_1t": [
+              1.332776,
+              1.450216,
+              1.268408,
+              1.232297,
+              1.262031
+            ],
+            "duckdb_8t": [
+              0.262238,
+              0.272148,
+              0.283091,
+              0.271395,
+              0.254742
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "two predicates, AND",
+          "sql": "SELECT count(*) FROM events WHERE score > 90 AND category = 3",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 112668,
+          "ns_per_logical_row": {
+            "raw": 1.20858,
+            "compressed": 3.286762,
+            "duckdb_1t": 1.732902,
+            "duckdb_8t": 0.351563
+          },
+          "samples": {
+            "raw": [
+              1.241543,
+              1.20858,
+              1.216227,
+              1.204839,
+              1.199414
+            ],
+            "compressed": [
+              3.293562,
+              3.744126,
+              3.265355,
+              3.286762,
+              3.242826
+            ],
+            "duckdb_1t": [
+              1.768104,
+              1.778301,
+              1.677982,
+              1.732902,
+              1.682588
+            ],
+            "duckdb_8t": [
+              0.395079,
+              0.352207,
+              0.351563,
+              0.339662,
+              0.350852
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "two predicates, OR",
+          "sql": "SELECT count(*) FROM events WHERE score > 90 OR category = 3",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 2037095,
+          "ns_per_logical_row": {
+            "raw": 1.132345,
+            "compressed": 3.164123,
+            "duckdb_1t": 7.070032,
+            "duckdb_8t": 1.254949
+          },
+          "samples": {
+            "raw": [
+              1.12464,
+              1.117422,
+              1.161388,
+              1.132345,
+              1.143389
+            ],
+            "compressed": [
+              3.093051,
+              3.163585,
+              3.346835,
+              3.164123,
+              3.173607
+            ],
+            "duckdb_1t": [
+              7.56273,
+              6.974483,
+              7.070032,
+              7.256089,
+              6.87129
+            ],
+            "duckdb_8t": [
+              1.245717,
+              1.202714,
+              1.382598,
+              1.254949,
+              1.301615
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "nullable predicate",
+          "sql": "SELECT count(*) FROM events WHERE tag > 3",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 3429658,
+          "ns_per_logical_row": {
+            "raw": 0.84049,
+            "compressed": 1.586809,
+            "duckdb_1t": 6.080633,
+            "duckdb_8t": 1.041172
+          },
+          "samples": {
+            "raw": [
+              0.880334,
+              0.850865,
+              0.82105,
+              0.827028,
+              0.84049
+            ],
+            "compressed": [
+              1.600116,
+              1.587106,
+              1.586809,
+              1.518712,
+              1.528525
+            ],
+            "duckdb_1t": [
+              7.472887,
+              6.075919,
+              5.962778,
+              6.080633,
+              6.154582
+            ],
+            "duckdb_8t": [
+              1.111285,
+              1.045274,
+              1.031459,
+              1.041172,
+              1.026829
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "nullable IS NOT NULL",
+          "sql": "SELECT count(*) FROM events WHERE tag IS NOT NULL",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 8000900,
+          "ns_per_logical_row": {
+            "raw": 0.541474,
+            "compressed": 0.535631,
+            "duckdb_1t": 4.174145,
+            "duckdb_8t": 0.770562
+          },
+          "samples": {
+            "raw": [
+              0.512032,
+              0.495598,
+              0.553252,
+              0.660434,
+              0.541474
+            ],
+            "compressed": [
+              0.509774,
+              1.095527,
+              0.551423,
+              0.52507,
+              0.535631
+            ],
+            "duckdb_1t": [
+              4.213493,
+              4.157509,
+              3.991384,
+              4.281296,
+              4.174145
+            ],
+            "duckdb_8t": [
+              0.795135,
+              0.665044,
+              0.786761,
+              0.770562,
+              0.694131
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "no predicate (full)",
+          "sql": "SELECT count(*) FROM events",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 10000000,
+          "ns_per_logical_row": {
+            "raw": 0.026193,
+            "compressed": 0.03229,
+            "duckdb_1t": 0.001701,
+            "duckdb_8t": 0.005084
+          },
+          "samples": {
+            "raw": [
+              0.02568,
+              0.02676,
+              0.026144,
+              0.043034,
+              0.026193
+            ],
+            "compressed": [
+              0.03229,
+              0.026284,
+              0.036567,
+              0.070866,
+              0.031267
+            ],
+            "duckdb_1t": [
+              0.00201,
+              0.001628,
+              0.001701,
+              0.001742,
+              0.001536
+            ],
+            "duckdb_8t": [
+              0.005084,
+              0.003958,
+              0.006429,
+              0.005478,
+              0.004291
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "proj 1 of 7 (score>50)",
+          "sql": "SELECT id FROM events WHERE score > 50",
+          "mode": 1,
+          "parity": "MATCH",
+          "selected_rows": 4901392,
+          "ns_per_logical_row": {
+            "raw": 1.73169,
+            "compressed": 2.599716,
+            "duckdb_1t": 6.850547,
+            "duckdb_8t": 6.281494
+          },
+          "samples": {
+            "raw": [
+              1.792868,
+              1.73169,
+              1.71232,
+              1.737357,
+              1.704063
+            ],
+            "compressed": [
+              2.599716,
+              2.566026,
+              2.612453,
+              2.888124,
+              2.553877
+            ],
+            "duckdb_1t": [
+              10.313854,
+              7.240852,
+              6.525706,
+              6.850547,
+              6.568653
+            ],
+            "duckdb_8t": [
+              6.964637,
+              6.300445,
+              6.258366,
+              6.225294,
+              6.281494
+            ]
+          },
+          "duckdb_8t_parity": "count only"
+        },
+        {
+          "name": "proj 3 of 7 (score>50)",
+          "sql": "SELECT id, score, weight FROM events WHERE score > 50",
+          "mode": 1,
+          "parity": "MATCH",
+          "selected_rows": 4901392,
+          "ns_per_logical_row": {
+            "raw": 3.905701,
+            "compressed": 4.972064,
+            "duckdb_1t": 17.504517,
+            "duckdb_8t": 17.147334
+          },
+          "samples": {
+            "raw": [
+              4.02764,
+              3.864205,
+              3.905701,
+              3.850466,
+              4.020933
+            ],
+            "compressed": [
+              5.564894,
+              4.801442,
+              4.972064,
+              5.068719,
+              4.903348
+            ],
+            "duckdb_1t": [
+              17.263148,
+              17.82983,
+              17.504517,
+              17.682133,
+              17.1396
+            ],
+            "duckdb_8t": [
+              16.917668,
+              17.759326,
+              17.147334,
+              17.658368,
+              16.789534
+            ]
+          },
+          "duckdb_8t_parity": "count only"
+        },
+        {
+          "name": "proj 7 of 7 (score>50)",
+          "sql": "SELECT id, category, score, amount, active, weight, tag FROM events WHERE score > 50",
+          "mode": 1,
+          "parity": "MATCH",
+          "selected_rows": 4901392,
+          "ns_per_logical_row": {
+            "raw": 8.323514,
+            "compressed": 12.943057,
+            "duckdb_1t": 41.742884,
+            "duckdb_8t": 41.912325
+          },
+          "samples": {
+            "raw": [
+              8.523558,
+              8.217049,
+              8.323514,
+              8.375447,
+              8.240317
+            ],
+            "compressed": [
+              12.943057,
+              13.275587,
+              12.896226,
+              12.824647,
+              13.179049
+            ],
+            "duckdb_1t": [
+              41.280334,
+              41.802584,
+              41.742884,
+              42.940699,
+              41.628344
+            ],
+            "duckdb_8t": [
+              45.455163,
+              40.932753,
+              41.631368,
+              41.912325,
+              44.270985
+            ]
+          },
+          "duckdb_8t_parity": "count only"
+        },
+        {
+          "name": "zone mat: 3 of 7 (half)",
+          "sql": "SELECT id, score, weight FROM events WHERE amount >= 15000000",
+          "mode": 1,
+          "parity": "MATCH",
+          "selected_rows": 5000777,
+          "ns_per_logical_row": {
+            "raw": 4.381401,
+            "compressed": 5.534082,
+            "duckdb_1t": 18.197437,
+            "duckdb_8t": 17.638721
+          },
+          "samples": {
+            "raw": [
+              4.328939,
+              4.665934,
+              4.368691,
+              4.381401,
+              5.453924
+            ],
+            "compressed": [
+              6.452488,
+              5.534082,
+              5.438497,
+              5.428174,
+              5.890155
+            ],
+            "duckdb_1t": [
+              18.046073,
+              17.774795,
+              18.197437,
+              21.21663,
+              19.006492
+            ],
+            "duckdb_8t": [
+              21.197345,
+              17.585191,
+              17.638721,
+              17.402254,
+              18.281827
+            ]
+          },
+          "duckdb_8t_parity": "count only"
+        }
+      ]
+    },
+    "shuffled_structured": {
+      "storage": {
+        "raw": {
+          "logical_db_bytes": 422617088,
+          "allocated_pax_pages": 89378,
+          "leaves": 22322,
+          "encoded_value_bytes": 330000000,
+          "raw_logical_value_bytes": 330000000,
+          "codec_columns": {
+            "RAW": 156254,
+            "CONST": 0,
+            "FOR": 0
+          },
+          "codec_column_percent": {
+            "RAW": 100.0,
+            "CONST": 0.0,
+            "FOR": 0.0
+          }
+        },
+        "compressed": {
+          "logical_db_bytes": 422617088,
+          "allocated_pax_pages": 89378,
+          "leaves": 22322,
+          "encoded_value_bytes": 120892912,
+          "raw_logical_value_bytes": 330000000,
+          "codec_columns": {
+            "RAW": 22322,
+            "CONST": 0,
+            "FOR": 133932
+          },
+          "codec_column_percent": {
+            "RAW": 14.285714285714286,
+            "CONST": 0.0,
+            "FOR": 85.71428571428571
+          }
+        }
+      },
+      "scenarios": [
+        {
+          "name": "zone: all NONE",
+          "sql": "SELECT count(*) FROM events WHERE amount < 0",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 0,
+          "ns_per_logical_row": {
+            "raw": 0.030358,
+            "compressed": 0.029785,
+            "duckdb_1t": 0.002373,
+            "duckdb_8t": 0.008668
+          },
+          "samples": {
+            "raw": [
+              0.03252,
+              0.038538,
+              0.027083,
+              0.030358,
+              0.028892
+            ],
+            "compressed": [
+              0.03214,
+              0.029647,
+              0.034811,
+              0.029785,
+              0.028967
+            ],
+            "duckdb_1t": [
+              0.002155,
+              0.002373,
+              0.002638,
+              0.002625,
+              0.002155
+            ],
+            "duckdb_8t": [
+              0.00826,
+              0.004816,
+              0.009734,
+              0.008668,
+              0.011303
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "zone: half NONE/ALL",
+          "sql": "SELECT count(*) FROM events WHERE amount >= 15000000",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 5000000,
+          "ns_per_logical_row": {
+            "raw": 1.003227,
+            "compressed": 1.944495,
+            "duckdb_1t": 1.677744,
+            "duckdb_8t": 0.32938
+          },
+          "samples": {
+            "raw": [
+              1.001352,
+              1.003227,
+              1.109097,
+              0.984919,
+              1.069817
+            ],
+            "compressed": [
+              2.361327,
+              1.93918,
+              1.944495,
+              1.983715,
+              1.920377
+            ],
+            "duckdb_1t": [
+              1.907532,
+              1.664322,
+              1.677744,
+              1.722153,
+              1.676711
+            ],
+            "duckdb_8t": [
+              0.32938,
+              0.324555,
+              0.38466,
+              0.350152,
+              0.326917
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "zone: all UNKNOWN",
+          "sql": "SELECT count(*) FROM events WHERE score > 90",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 900000,
+          "ns_per_logical_row": {
+            "raw": 0.703807,
+            "compressed": 1.491105,
+            "duckdb_1t": 1.555817,
+            "duckdb_8t": 0.29727
+          },
+          "samples": {
+            "raw": [
+              0.698638,
+              0.703335,
+              0.705696,
+              0.74638,
+              0.703807
+            ],
+            "compressed": [
+              1.491105,
+              1.684406,
+              1.459051,
+              1.557578,
+              1.450739
+            ],
+            "duckdb_1t": [
+              1.535173,
+              1.539532,
+              1.570673,
+              1.555817,
+              1.606538
+            ],
+            "duckdb_8t": [
+              0.29727,
+              0.288609,
+              0.289322,
+              0.307291,
+              0.317823
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "int32 equality",
+          "sql": "SELECT count(*) FROM events WHERE category = 3",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 1250000,
+          "ns_per_logical_row": {
+            "raw": 0.723221,
+            "compressed": 1.558471,
+            "duckdb_1t": 1.082049,
+            "duckdb_8t": 0.243083
+          },
+          "samples": {
+            "raw": [
+              0.718026,
+              0.713476,
+              0.77348,
+              0.765548,
+              0.723221
+            ],
+            "compressed": [
+              1.526861,
+              1.558471,
+              1.693563,
+              1.524887,
+              1.6615
+            ],
+            "duckdb_1t": [
+              1.01439,
+              1.133797,
+              1.129998,
+              1.082049,
+              1.066779
+            ],
+            "duckdb_8t": [
+              0.201175,
+              0.222537,
+              0.250085,
+              0.316899,
+              0.243083
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "int64 range",
+          "sql": "SELECT count(*) FROM events WHERE amount > 1000",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 9999666,
+          "ns_per_logical_row": {
+            "raw": 0.039512,
+            "compressed": 0.051695,
+            "duckdb_1t": 1.620517,
+            "duckdb_8t": 0.331896
+          },
+          "samples": {
+            "raw": [
+              0.045544,
+              0.039512,
+              0.038176,
+              0.053678,
+              0.039055
+            ],
+            "compressed": [
+              0.060575,
+              0.051695,
+              0.049764,
+              0.050904,
+              0.069169
+            ],
+            "duckdb_1t": [
+              1.568831,
+              1.603837,
+              1.760834,
+              2.026446,
+              1.620517
+            ],
+            "duckdb_8t": [
+              0.342946,
+              0.327449,
+              0.35293,
+              0.3187,
+              0.331896
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "float32 range",
+          "sql": "SELECT count(*) FROM events WHERE weight > 500.0",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 5000000,
+          "ns_per_logical_row": {
+            "raw": 0.9412,
+            "compressed": 0.964038,
+            "duckdb_1t": 3.436208,
+            "duckdb_8t": 0.703628
+          },
+          "samples": {
+            "raw": [
+              0.922753,
+              0.954953,
+              0.9412,
+              0.96032,
+              0.924468
+            ],
+            "compressed": [
+              1.003551,
+              0.960504,
+              1.01336,
+              0.964038,
+              0.949459
+            ],
+            "duckdb_1t": [
+              4.158011,
+              4.100045,
+              3.386166,
+              3.436208,
+              3.422439
+            ],
+            "duckdb_8t": [
+              0.744845,
+              0.70948,
+              0.703628,
+              0.688937,
+              0.625455
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "bool equality",
+          "sql": "SELECT count(*) FROM events WHERE active = TRUE",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 5000000,
+          "ns_per_logical_row": {
+            "raw": 0.569308,
+            "compressed": 0.446069,
+            "duckdb_1t": 1.262989,
+            "duckdb_8t": 0.26869
+          },
+          "samples": {
+            "raw": [
+              0.568387,
+              0.569308,
+              0.564643,
+              0.595419,
+              0.592317
+            ],
+            "compressed": [
+              0.445284,
+              0.836953,
+              0.469297,
+              0.419589,
+              0.446069
+            ],
+            "duckdb_1t": [
+              1.269418,
+              1.423381,
+              1.262989,
+              1.248504,
+              1.237472
+            ],
+            "duckdb_8t": [
+              0.331979,
+              0.283746,
+              0.265066,
+              0.268368,
+              0.26869
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "two predicates, AND",
+          "sql": "SELECT count(*) FROM events WHERE score > 90 AND category = 3",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 150000,
+          "ns_per_logical_row": {
+            "raw": 1.160679,
+            "compressed": 3.302099,
+            "duckdb_1t": 2.175494,
+            "duckdb_8t": 0.409255
+          },
+          "samples": {
+            "raw": [
+              1.137998,
+              1.122681,
+              1.160679,
+              1.285063,
+              1.163765
+            ],
+            "compressed": [
+              3.180775,
+              3.399547,
+              3.615063,
+              3.302099,
+              3.131893
+            ],
+            "duckdb_1t": [
+              2.140334,
+              2.118529,
+              2.27919,
+              2.175494,
+              2.520137
+            ],
+            "duckdb_8t": [
+              0.520898,
+              0.388649,
+              0.40641,
+              0.409255,
+              0.551251
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "two predicates, OR",
+          "sql": "SELECT count(*) FROM events WHERE score > 90 OR category = 3",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 2000000,
+          "ns_per_logical_row": {
+            "raw": 1.127406,
+            "compressed": 3.150938,
+            "duckdb_1t": 6.301493,
+            "duckdb_8t": 1.122806
+          },
+          "samples": {
+            "raw": [
+              1.13681,
+              1.166932,
+              1.113772,
+              1.127406,
+              1.120545
+            ],
+            "compressed": [
+              3.150938,
+              3.630214,
+              3.129115,
+              3.145261,
+              3.496067
+            ],
+            "duckdb_1t": [
+              7.200015,
+              6.164824,
+              6.741677,
+              6.295738,
+              6.301493
+            ],
+            "duckdb_8t": [
+              1.149127,
+              1.096188,
+              1.169247,
+              1.122806,
+              1.108051
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "nullable predicate",
+          "sql": "SELECT count(*) FROM events WHERE tag > 3",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 3428570,
+          "ns_per_logical_row": {
+            "raw": 0.697951,
+            "compressed": 1.463077,
+            "duckdb_1t": 2.046429,
+            "duckdb_8t": 0.396598
+          },
+          "samples": {
+            "raw": [
+              0.69819,
+              0.697951,
+              0.685473,
+              0.69106,
+              0.706305
+            ],
+            "compressed": [
+              1.463077,
+              1.672193,
+              1.382234,
+              1.406703,
+              1.555803
+            ],
+            "duckdb_1t": [
+              2.050434,
+              2.046429,
+              2.007217,
+              2.001096,
+              2.256299
+            ],
+            "duckdb_8t": [
+              0.490914,
+              0.392045,
+              0.396598,
+              0.36997,
+              0.399408
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "nullable IS NOT NULL",
+          "sql": "SELECT count(*) FROM events WHERE tag IS NOT NULL",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 8000000,
+          "ns_per_logical_row": {
+            "raw": 0.517488,
+            "compressed": 0.516339,
+            "duckdb_1t": 2.004996,
+            "duckdb_8t": 0.413841
+          },
+          "samples": {
+            "raw": [
+              0.537035,
+              0.511735,
+              0.519744,
+              0.517488,
+              0.488952
+            ],
+            "compressed": [
+              0.516339,
+              0.708036,
+              0.757886,
+              0.515461,
+              0.515851
+            ],
+            "duckdb_1t": [
+              2.004996,
+              2.504921,
+              2.011937,
+              2.002059,
+              1.976684
+            ],
+            "duckdb_8t": [
+              0.404955,
+              0.421006,
+              0.403604,
+              0.432182,
+              0.413841
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "no predicate (full)",
+          "sql": "SELECT count(*) FROM events",
+          "mode": 0,
+          "parity": "MATCH",
+          "selected_rows": 10000000,
+          "ns_per_logical_row": {
+            "raw": 0.025401,
+            "compressed": 0.026292,
+            "duckdb_1t": 0.001801,
+            "duckdb_8t": 0.004628
+          },
+          "samples": {
+            "raw": [
+              0.02508,
+              0.026722,
+              0.024035,
+              0.031012,
+              0.025401
+            ],
+            "compressed": [
+              0.025733,
+              0.025581,
+              0.045243,
+              0.029965,
+              0.026292
+            ],
+            "duckdb_1t": [
+              0.002001,
+              0.001801,
+              0.001601,
+              0.001658,
+              0.002162
+            ],
+            "duckdb_8t": [
+              0.004027,
+              0.00504,
+              0.004628,
+              0.009384,
+              0.004449
+            ]
+          },
+          "duckdb_8t_parity": "aggregate"
+        },
+        {
+          "name": "proj 1 of 7 (score>50)",
+          "sql": "SELECT id FROM events WHERE score > 50",
+          "mode": 1,
+          "parity": "MATCH",
+          "selected_rows": 4900000,
+          "ns_per_logical_row": {
+            "raw": 1.715243,
+            "compressed": 3.584388,
+            "duckdb_1t": 7.157504,
+            "duckdb_8t": 6.892241
+          },
+          "samples": {
+            "raw": [
+              1.715243,
+              1.702798,
+              1.950455,
+              1.730785,
+              1.679254
+            ],
+            "compressed": [
+              3.603302,
+              3.584388,
+              3.611428,
+              3.502399,
+              3.505884
+            ],
+            "duckdb_1t": [
+              7.50507,
+              7.64774,
+              7.112029,
+              7.157504,
+              7.024257
+            ],
+            "duckdb_8t": [
+              7.067263,
+              6.892893,
+              6.640537,
+              6.892241,
+              6.807179
+            ]
+          },
+          "duckdb_8t_parity": "count only"
+        },
+        {
+          "name": "proj 3 of 7 (score>50)",
+          "sql": "SELECT id, score, weight FROM events WHERE score > 50",
+          "mode": 1,
+          "parity": "MATCH",
+          "selected_rows": 4900000,
+          "ns_per_logical_row": {
+            "raw": 3.89662,
+            "compressed": 6.041388,
+            "duckdb_1t": 18.62709,
+            "duckdb_8t": 17.54851
+          },
+          "samples": {
+            "raw": [
+              4.124276,
+              3.990789,
+              3.89662,
+              3.821406,
+              3.834049
+            ],
+            "compressed": [
+              8.277987,
+              5.961905,
+              6.041388,
+              5.92521,
+              6.156985
+            ],
+            "duckdb_1t": [
+              18.116452,
+              18.62709,
+              18.441635,
+              18.686052,
+              18.930577
+            ],
+            "duckdb_8t": [
+              18.483112,
+              17.862943,
+              17.54851,
+              17.422054,
+              17.503099
+            ]
+          },
+          "duckdb_8t_parity": "count only"
+        },
+        {
+          "name": "proj 7 of 7 (score>50)",
+          "sql": "SELECT id, category, score, amount, active, weight, tag FROM events WHERE score > 50",
+          "mode": 1,
+          "parity": "MATCH",
+          "selected_rows": 4900000,
+          "ns_per_logical_row": {
+            "raw": 8.150503,
+            "compressed": 14.175824,
+            "duckdb_1t": 43.723699,
+            "duckdb_8t": 41.35902
+          },
+          "samples": {
+            "raw": [
+              8.346037,
+              8.150503,
+              8.189044,
+              7.985319,
+              7.996284
+            ],
+            "compressed": [
+              15.17955,
+              14.020619,
+              15.090524,
+              14.159925,
+              14.175824
+            ],
+            "duckdb_1t": [
+              43.723699,
+              46.709491,
+              41.671559,
+              46.139477,
+              39.946539
+            ],
+            "duckdb_8t": [
+              41.35902,
+              42.665925,
+              42.229644,
+              39.833625,
+              39.669864
+            ]
+          },
+          "duckdb_8t_parity": "count only"
+        },
+        {
+          "name": "zone mat: 3 of 7 (half)",
+          "sql": "SELECT id, score, weight FROM events WHERE amount >= 15000000",
+          "mode": 1,
+          "parity": "MATCH",
+          "selected_rows": 5000000,
+          "ns_per_logical_row": {
+            "raw": 4.57659,
+            "compressed": 8.246536,
+            "duckdb_1t": 20.605177,
+            "duckdb_8t": 20.269582
+          },
+          "samples": {
+            "raw": [
+              4.222279,
+              4.585269,
+              4.560441,
+              4.57659,
+              4.91808
+            ],
+            "compressed": [
+              8.952697,
+              8.08462,
+              11.227547,
+              7.965808,
+              8.246536
+            ],
+            "duckdb_1t": [
+              18.756419,
+              20.169858,
+              20.605177,
+              22.060372,
+              20.879035
+            ],
+            "duckdb_8t": [
+              19.188326,
+              20.554425,
+              20.269582,
+              20.53502,
+              19.781629
+            ]
+          },
+          "duckdb_8t_parity": "count only"
+        }
+      ]
+    }
+  }
+}

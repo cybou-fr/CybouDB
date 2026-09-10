@@ -1,0 +1,610 @@
+{
+  "commit": "50a93bd920a3451339f8c6fca5231dbeea1a8ada",
+  "utc": "2026-09-09T12:45:52.108064+00:00",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "iterations": 200,
+  "warmup": 20,
+  "repeats": 5,
+  "harness_sha256": "d7fa7ea088f3c0f9cca8f2d64178cb0b42429ad46eda4f52795474aa5e6c45a2",
+  "fixtures": {
+    "events.cyboudb": "4bb98fffbcb5b972a3bd9b2f32918f0bc66888c2d81d32ff15204af336063954",
+    "wide.cyboudb": "cd3b90d72a821313c0c0fce715b028f85d9759e672e81598434b397ef17f2807",
+    "shared.cyboudb": "88b56b8c239199ee078b18f3c981c67187393cd884a501adabbed30b3672a316"
+  },
+  "modes": [
+    {
+      "mode": 0,
+      "tables": [
+        {
+          "table": "events",
+          "rows": 112384,
+          "alone": [
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 9146267480560865477,
+              "ns": 3846500,
+              "tsc": 12699992,
+              "required": 1,
+              "row_bytes": 8
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 9146267480560865477,
+              "ns": 4117100,
+              "tsc": 13593663,
+              "required": 1,
+              "row_bytes": 8
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 9146267480560865477,
+              "ns": 3656400,
+              "tsc": 12073650,
+              "required": 1,
+              "row_bytes": 8
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 9146267480560865477,
+              "ns": 3508500,
+              "tsc": 11586318,
+              "required": 1,
+              "row_bytes": 8
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 9146267480560865477,
+              "ns": 3861600,
+              "tsc": 12751872,
+              "required": 1,
+              "row_bytes": 8
+            }
+          ],
+          "shared": [
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 9146267480560865477,
+              "ns": 3603000,
+              "tsc": 11896292,
+              "required": 1,
+              "row_bytes": 8
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 9146267480560865477,
+              "ns": 3538500,
+              "tsc": 11685496,
+              "required": 1,
+              "row_bytes": 8
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 9146267480560865477,
+              "ns": 3973700,
+              "tsc": 13120034,
+              "required": 1,
+              "row_bytes": 8
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 9146267480560865477,
+              "ns": 3629800,
+              "tsc": 11985932,
+              "required": 1,
+              "row_bytes": 8
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 9146267480560865477,
+              "ns": 3518900,
+              "tsc": 11619994,
+              "required": 1,
+              "row_bytes": 8
+            }
+          ],
+          "ns_per_row": {
+            "alone": [
+              0.17113201167425968,
+              0.18317109197038725,
+              0.1626744020501139,
+              0.15609428388382687,
+              0.17180381548974943
+            ],
+            "shared": [
+              0.16029861902050113,
+              0.15742899345102507,
+              0.17679118023917995,
+              0.16149095956719817,
+              0.15655698320045558
+            ]
+          },
+          "shared_over_alone": 0.9366956973872351,
+          "materialized_checksums_match": null
+        },
+        {
+          "table": "wide32",
+          "rows": 112384,
+          "alone": [
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 9146267480560865477,
+              "ns": 5617300,
+              "tsc": 18549183,
+              "required": 1,
+              "row_bytes": 4
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 9146267480560865477,
+              "ns": 5896200,
+              "tsc": 19470970,
+              "required": 1,
+              "row_bytes": 4
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 9146267480560865477,
+              "ns": 5952600,
+              "tsc": 19656062,
+              "required": 1,
+              "row_bytes": 4
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 9146267480560865477,
+              "ns": 5492000,
+              "tsc": 18134494,
+              "required": 1,
+              "row_bytes": 4
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 9146267480560865477,
+              "ns": 5052700,
+              "tsc": 16685910,
+              "required": 1,
+              "row_bytes": 4
+            }
+          ],
+          "shared": [
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 9146267480560865477,
+              "ns": 5640700,
+              "tsc": 18625797,
+              "required": 1,
+              "row_bytes": 4
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 9146267480560865477,
+              "ns": 6233500,
+              "tsc": 20583884,
+              "required": 1,
+              "row_bytes": 4
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 9146267480560865477,
+              "ns": 5337000,
+              "tsc": 17621846,
+              "required": 1,
+              "row_bytes": 4
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 9146267480560865477,
+              "ns": 6030100,
+              "tsc": 19911248,
+              "required": 1,
+              "row_bytes": 4
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 9146267480560865477,
+              "ns": 5773500,
+              "tsc": 19066290,
+              "required": 1,
+              "row_bytes": 4
+            }
+          ],
+          "ns_per_row": {
+            "alone": [
+              0.24991546839407744,
+              0.26232381833712987,
+              0.2648330723234624,
+              0.24434083143507973,
+              0.22479623433940774
+            ],
+            "shared": [
+              0.250956541856492,
+              0.27733040290432803,
+              0.23744483200455582,
+              0.26828107203872437,
+              0.25686485620728927
+            ]
+          },
+          "shared_over_alone": 1.0278069535185943,
+          "materialized_checksums_match": null
+        }
+      ]
+    },
+    {
+      "mode": 1,
+      "tables": [
+        {
+          "table": "events",
+          "rows": 112384,
+          "alone": [
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 1889026756308071205,
+              "ns": 42368900,
+              "tsc": 139914840,
+              "required": 1,
+              "row_bytes": 8
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 1889026756308071205,
+              "ns": 43043900,
+              "tsc": 142144112,
+              "required": 1,
+              "row_bytes": 8
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 1889026756308071205,
+              "ns": 43534400,
+              "tsc": 143762640,
+              "required": 1,
+              "row_bytes": 8
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 1889026756308071205,
+              "ns": 42270400,
+              "tsc": 139585772,
+              "required": 1,
+              "row_bytes": 8
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 1889026756308071205,
+              "ns": 42404500,
+              "tsc": 140027428,
+              "required": 1,
+              "row_bytes": 8
+            }
+          ],
+          "shared": [
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 1889026756308071205,
+              "ns": 42565400,
+              "tsc": 140563890,
+              "required": 1,
+              "row_bytes": 8
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 1889026756308071205,
+              "ns": 42877400,
+              "tsc": 141594510,
+              "required": 1,
+              "row_bytes": 8
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 1889026756308071205,
+              "ns": 41968500,
+              "tsc": 138591766,
+              "required": 1,
+              "row_bytes": 8
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 1889026756308071205,
+              "ns": 43230900,
+              "tsc": 142761692,
+              "required": 1,
+              "row_bytes": 8
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 1889026756308071205,
+              "ns": 43327200,
+              "tsc": 143079818,
+              "required": 1,
+              "row_bytes": 8
+            }
+          ],
+          "ns_per_row": {
+            "alone": [
+              1.8850058727220957,
+              1.9150368379840548,
+              1.936859339407745,
+              1.880623576309795,
+              1.886589728075171
+            ],
+            "shared": [
+              1.8937482203872438,
+              1.9076291998861048,
+              1.8671919490318907,
+              1.92335652761959,
+              1.927640945330296
+            ]
+          },
+          "shared_over_alone": 1.0111521182893324,
+          "materialized_checksums_match": true
+        },
+        {
+          "table": "wide32",
+          "rows": 112384,
+          "alone": [
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 1889026756308071205,
+              "ns": 45119400,
+              "tsc": 148996956,
+              "required": 1,
+              "row_bytes": 4
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 1889026756308071205,
+              "ns": 45384400,
+              "tsc": 149872068,
+              "required": 1,
+              "row_bytes": 4
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 1889026756308071205,
+              "ns": 45484300,
+              "tsc": 150203504,
+              "required": 1,
+              "row_bytes": 4
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 1889026756308071205,
+              "ns": 45207500,
+              "tsc": 149288832,
+              "required": 1,
+              "row_bytes": 4
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 1889026756308071205,
+              "ns": 45702200,
+              "tsc": 150921764,
+              "required": 1,
+              "row_bytes": 4
+            }
+          ],
+          "shared": [
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 1889026756308071205,
+              "ns": 45596200,
+              "tsc": 150572182,
+              "required": 1,
+              "row_bytes": 4
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 1889026756308071205,
+              "ns": 45920400,
+              "tsc": 151643080,
+              "required": 1,
+              "row_bytes": 4
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 1889026756308071205,
+              "ns": 44745600,
+              "tsc": 147762540,
+              "required": 1,
+              "row_bytes": 4
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 1889026756308071205,
+              "ns": 45739100,
+              "tsc": 151044810,
+              "required": 1,
+              "row_bytes": 4
+            },
+            {
+              "status": 0,
+              "domain": 0,
+              "iterations": 200,
+              "batches": 351200,
+              "selected": 22476800,
+              "checksum": 1889026756308071205,
+              "ns": 45558200,
+              "tsc": 150447420,
+              "required": 1,
+              "row_bytes": 4
+            }
+          ],
+          "ns_per_row": {
+            "alone": [
+              2.0073764948747153,
+              2.019166429384966,
+              2.0236110122437356,
+              2.011296091970387,
+              2.0333054527334853
+            ],
+            "shared": [
+              2.028589478929385,
+              2.0430132403189067,
+              1.990746013667426,
+              2.034947145501139,
+              2.026898846810934
+            ]
+          },
+          "shared_over_alone": 1.0046668018085507,
+          "materialized_checksums_match": true
+        }
+      ]
+    }
+  ]
+}

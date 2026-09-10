@@ -1,0 +1,67 @@
+# ===========================================================================
+#  CybouDB - files that must never reach the repository
+# ===========================================================================
+
+# --- Build output ----------------------------------------------------------
+/build/
+*.o
+*.obj
+*.a
+*.lib
+*.exp
+*.ilk
+*.pdb
+*.map
+*.lst
+*.sym
+__pycache__/
+
+# Linked binaries: build.sh and build.bat drop them at the repository root
+/cyboudb
+/cyboudb.exe
+
+# --- Data produced by running the engine -----------------------------------
+# Database files are user data, never sources
+*.cyboudb
+*.cyboudb-wal
+*.cyboudb-journal
+
+# Ad-hoc test artifacts
+/test.*
+/tmp/
+/*.bin
+
+# --- Editors and IDEs ------------------------------------------------------
+.vscode/
+.vs/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+*.orig
+*.rej
+tags
+TAGS
+cscope.*
+compile_commands.json
+
+# --- Operating system junk -------------------------------------------------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# --- Crash dumps and profiling ---------------------------------------------
+# NOTE: anchored or suffixed on purpose - a bare "core" pattern would ignore
+# the whole src/core/ directory.
+/core
+core.[0-9]*
+vgcore.*
+*.stackdump
+perf.data
+perf.data.old
