@@ -23,6 +23,12 @@ if "%~1"=="--core-tests" (
     set SOURCES=tests\cow_harness.asm src\core\database.asm src\core\cow.asm src\core\bitmap.asm src\core\catalog.asm src\core\pax.asm src\core\varlen.asm src\core\zonemap.asm src\core\compress.asm src\core\checksum.asm src\platform\windows\os_win.asm
 )
 
+if "%~1"=="--varlen-tests" (
+    set OUT=build\varlen_harness.exe
+    set OBJDIR=build\varlen-tests
+    set SOURCES=tests\varlen_harness.asm src\core\database.asm src\core\cow.asm src\core\bitmap.asm src\core\catalog.asm src\core\pax.asm src\core\varlen.asm src\core\zonemap.asm src\core\compress.asm src\core\checksum.asm src\platform\windows\os_win.asm
+)
+
 if "%~1"=="--sql-tests" (
     set OUT=build\sql_harness.exe
     set OBJDIR=build\sql-tests

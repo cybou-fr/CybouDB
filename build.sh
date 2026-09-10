@@ -26,6 +26,12 @@ if [ "${1:-}" = "--core-tests" ]; then
     SOURCES="tests/cow_harness.asm src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/compress.asm src/core/checksum.asm src/platform/linux/os_posix.asm"
 fi
 
+if [ "${1:-}" = "--varlen-tests" ]; then
+    OUT=build/varlen_harness
+    OBJDIR=build/varlen-tests
+    SOURCES="tests/varlen_harness.asm src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/compress.asm src/core/checksum.asm src/platform/linux/os_posix.asm"
+fi
+
 if [ "${1:-}" = "--sql-tests" ]; then
     OUT=build/sql_harness
     OBJDIR=build/sql-tests

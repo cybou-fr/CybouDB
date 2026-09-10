@@ -5,7 +5,83 @@ default rel
 extern db_bitmap_candidate_payload, db_bitmap_deep, db_bitmap_headroom
 extern db_cow_alloc_run, crc32c
 global db_var_validate_chain, db_var_write_chain, db_var_materialize_batch
+global db_var_read_chain
 section .text
+
+; db_var_read_chain(ctx, candidate_sb, descriptor, owner, out, capacity) -> error
+; Validates the complete descriptor chain before copying any bytes. The output
+; buffer is therefore unchanged on corruption or insufficient capacity.
+db_var_read_chain:
+    FRAME_BEGIN 80, 1
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov [rbp - 32], ARG4
+    mov rax, IN_ARG5
+    mov [rbp - 40], rax
+    mov rax, IN_ARG6
+    mov [rbp - 48], rax
+    cmp qword [rbp - 24], 0
+    je .read_value
+    mov r10, [rbp - 24]
+    mov rax, [r10 + VAR_CELL_ROOT]
+    mov [rbp - 56], rax
+    mov rax, [r10 + VAR_CELL_LENGTH]
+    mov [rbp - 64], rax
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 56]
+    mov ARG4, [rbp - 64]
+    mov rax, [rbp - 32]
+    PASS_ARG5 rax
+    call db_var_validate_chain
+    test eax, eax
+    jz .read_corrupt
+    mov rax, [rbp - 64]
+    cmp [rbp - 48], rax
+    jb .read_value
+    test rax, rax
+    jz .read_ok
+    cmp qword [rbp - 40], 0
+    je .read_value
+    mov [rbp - 72], rax             ; remaining bytes
+.read_page:
+    mov r10, [rbp - 56]
+    shl r10, CybouDB_PAGE_SHIFT
+    mov r11, [rbp - 8]
+    add r10, [r11 + DB_BASE]
+    mov ecx, [r10 + VAR_USED]
+    lea r11, [r10 + VAR_DATA]
+    mov rdx, [rbp - 40]
+.read_copy_byte:
+    test rcx, rcx
+    jz .read_advance
+    mov al, [r11]
+    mov [rdx], al
+    inc r11
+    inc rdx
+    dec rcx
+    jmp .read_copy_byte
+.read_advance:
+    mov [rbp - 40], rdx
+    mov rax, [r10 + VAR_USED]
+    sub [rbp - 72], rax
+    jz .read_ok
+    mov rax, [r10 + VAR_NEXT]
+    mov [rbp - 56], rax
+    jmp .read_page
+.read_ok:
+    xor eax, eax
+    FRAME_END
+    ret
+.read_corrupt:
+    mov eax, CybouDB_E_PAX
+    FRAME_END
+    ret
+.read_value:
+    mov eax, CybouDB_E_VALUE
+    FRAME_END
+    ret
 
 ; db_var_materialize_batch(ctx, schema, batch, owner, reserve_pages) -> error
 ; Preflights all extent pages plus the structural pages the caller still needs,

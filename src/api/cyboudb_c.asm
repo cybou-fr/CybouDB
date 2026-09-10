@@ -16,6 +16,7 @@ default rel
 ; --- External engine functions -----------------------------------------------
 extern db_open, db_close, db_commit
 extern db_catalog_put, db_pax_insert
+extern db_var_read_chain
 extern sql_select_open, sql_select_next
 extern sql_arena_init, sql_arena_alloc
 extern sql_parse, sql_bind
@@ -34,6 +35,7 @@ global cyboudb_prepare
 global cyboudb_step
 global cyboudb_step_batch
 global cyboudb_batch_column
+global cyboudb_batch_bytes
 global cyboudb_reset
 global cyboudb_finalize
 global cyboudb_column_count
@@ -44,6 +46,7 @@ global cyboudb_column_int64
 global cyboudb_column_int32
 global cyboudb_column_float
 global cyboudb_column_bool
+global cyboudb_column_bytes
 global cyboudb_exec
 
 section .rodata
@@ -638,6 +641,7 @@ cyboudb_step_batch:
     mov [r10], r11
     mov r10, [rbp - 24]
     mov [r10], rdx
+    mov [r12 + STMT_H_ACT_MASK], rdx
     jmp .batch_exit
 
 .batch_misuse:
@@ -734,9 +738,99 @@ cyboudb_batch_column:
     mov     eax, [ARG1 + STMT_H_RESULT_INDICES + r11 * 4]
     imul    rax, CybouDB_COLVIEW_SIZE
     lea     rax, [r10 + BATCH_VIEW_COLUMNS + rax]
+    cmp     dword [rax + COLVIEW_TYPE], CAT_TEXT
+    je      .invalid
+    cmp     dword [rax + COLVIEW_TYPE], CAT_BLOB
+    je      .invalid
     ret
 .invalid:
     xor     eax, eax
+    ret
+
+
+; cyboudb_batch_bytes(stmt, batch, result_col, row, out, capacity) -> length/error
+cyboudb_batch_bytes:
+    FRAME_BEGIN 96, 2
+    mov     [rbp - 8], ARG1
+    mov     [rbp - 16], ARG2
+    mov     [rbp - 24], ARG3
+    mov     [rbp - 32], ARG4
+    mov     rax, IN_ARG5
+    mov     [rbp - 40], rax
+    mov     rax, IN_ARG6
+    mov     [rbp - 48], rax
+    test    ARG1, ARG1
+    jz      .batch_bytes_misuse
+    lea     r10, [ARG1 + STMT_H_BATCH_VIEW]
+    cmp     ARG2, r10
+    jne     .batch_bytes_misuse
+    cmp     dword [ARG1 + STMT_H_STATE], STMT_STATE_SCANNING
+    jne     .batch_bytes_misuse
+    mov     rdx, [rbp - 24]
+    cmp     rdx, [ARG1 + STMT_H_RESULT_COUNT]
+    jae     .batch_bytes_misuse
+    mov     rcx, [rbp - 32]
+    cmp     rcx, [r10 + BATCH_VIEW_ROWS]
+    jae     .batch_bytes_misuse
+    bt      qword [ARG1 + STMT_H_ACT_MASK], rcx
+    jnc     .batch_bytes_misuse
+    mov     eax, [ARG1 + STMT_H_RESULT_INDICES + rdx * 4]
+    mov     [rbp - 56], rax
+    imul    rax, CybouDB_COLVIEW_SIZE
+    lea     r11, [r10 + BATCH_VIEW_COLUMNS + rax]
+    mov     eax, [r11 + COLVIEW_TYPE]
+    cmp     eax, CAT_TEXT
+    je      .batch_bytes_type
+    cmp     eax, CAT_BLOB
+    jne     .batch_bytes_misuse
+.batch_bytes_type:
+    cmp     dword [r11 + COLVIEW_WIDTH], VAR_CELL_SIZE
+    jne     .batch_bytes_misuse
+    mov     rcx, [rbp - 32]
+    bt      qword [r11 + COLVIEW_NULL_MASK], rcx
+    jc      .batch_bytes_empty
+    mov     rax, [r11 + COLVIEW_VALUES_PTR]
+    shl     rcx, 4
+    add     rax, rcx
+    mov     [rbp - 64], rax
+    mov     rdx, [rax + VAR_CELL_LENGTH]
+    mov     [rbp - 72], rdx
+    cmp     [rbp - 48], rdx
+    jb      .batch_bytes_misuse
+    test    rdx, rdx
+    jz      .batch_bytes_empty
+    cmp     qword [rbp - 40], 0
+    je      .batch_bytes_misuse
+    mov     r10, [rbp - 8]
+    mov     r11, [r10 + STMT_H_DB]
+    mov     ARG1, r11
+    mov     ARG2, [r11 + DB_SB_PTR]
+    mov     ARG3, [rbp - 64]
+    mov     r10, [r10 + STMT_H_PLAN]
+    mov     ARG4, [r10 + PLAN_TABLE_ID]
+    mov     rax, [rbp - 40]
+    PASS_ARG5 rax
+    mov     rax, [rbp - 48]
+    PASS_ARG6 rax
+    call    db_var_read_chain
+    test    eax, eax
+    jz      .batch_bytes_length
+    cmp     eax, CybouDB_E_VALUE
+    je      .batch_bytes_misuse
+    mov     rax, CybouDB_C_ERROR
+    FRAME_END
+    ret
+.batch_bytes_length:
+    mov     rax, [rbp - 72]
+    FRAME_END
+    ret
+.batch_bytes_empty:
+    xor     eax, eax
+    FRAME_END
+    ret
+.batch_bytes_misuse:
+    mov     rax, CybouDB_C_MISUSE
+    FRAME_END
     ret
 
 
@@ -1000,6 +1094,88 @@ cyboudb_column_bool:
 
 .bool_zero:
     xor     eax, eax
+    ret
+
+
+; =============================================================================
+; cyboudb_column_bytes(stmt, col_idx, out, capacity, out_length) -> int
+; =============================================================================
+cyboudb_column_bytes:
+    FRAME_BEGIN 80, 2
+    mov     [rbp - 8], ARG1
+    mov     [rbp - 16], ARG3
+    mov     [rbp - 24], ARG4
+    mov     rax, IN_ARG5
+    mov     [rbp - 32], rax
+    test    ARG1, ARG1
+    jz      .bytes_misuse
+    test    rax, rax
+    jz      .bytes_misuse
+    mov     qword [rax], 0
+    mov     r10, [ARG1 + STMT_H_PLAN]
+    test    r10, r10
+    jz      .bytes_misuse
+    cmp     dword [ARG1 + STMT_H_STATE], STMT_STATE_SCANNING
+    jne     .bytes_misuse
+    mov     edx, ARG2d
+    cmp     rdx, [r10 + PLAN_DATA1]
+    jae     .bytes_misuse
+    mov     r11, [r10 + PLAN_DATA2]
+    mov     eax, [r11 + rdx * 4]
+    mov     [rbp - 40], rax             ; physical column
+    imul    rax, CybouDB_COLVIEW_SIZE
+    lea     r11, [ARG1 + STMT_H_BATCH_VIEW + BATCH_VIEW_COLUMNS + rax]
+    mov     eax, [r11 + COLVIEW_TYPE]
+    cmp     eax, CAT_TEXT
+    je      .bytes_type_ok
+    cmp     eax, CAT_BLOB
+    jne     .bytes_misuse
+.bytes_type_ok:
+    cmp     dword [r11 + COLVIEW_WIDTH], VAR_CELL_SIZE
+    jne     .bytes_misuse
+    mov     ecx, [ARG1 + STMT_H_CUR_ROW]
+    bt      qword [r11 + COLVIEW_NULL_MASK], rcx
+    jc      .bytes_ok
+    mov     rax, [r11 + COLVIEW_VALUES_PTR]
+    shl     rcx, 4
+    add     rax, rcx
+    mov     [rbp - 48], rax             ; persistent descriptor
+    mov     rdx, [rax + VAR_CELL_LENGTH]
+    mov     r10, [rbp - 32]
+    mov     [r10], rdx
+    cmp     [rbp - 24], rdx
+    jb      .bytes_misuse
+    test    rdx, rdx
+    jz      .bytes_ok
+    cmp     qword [rbp - 16], 0
+    je      .bytes_misuse
+    mov     r10, [rbp - 8]
+    mov     r11, [r10 + STMT_H_DB]
+    mov     ARG1, r11
+    mov     ARG2, [r11 + DB_SB_PTR]
+    mov     ARG3, [rbp - 48]
+    mov     r10, [rbp - 8]
+    mov     r10, [r10 + STMT_H_PLAN]
+    mov     ARG4, [r10 + PLAN_TABLE_ID]
+    mov     rax, [rbp - 16]
+    PASS_ARG5 rax
+    mov     rax, [rbp - 24]
+    PASS_ARG6 rax
+    call    db_var_read_chain
+    test    eax, eax
+    jz      .bytes_ok
+    cmp     eax, CybouDB_E_VALUE
+    je      .bytes_misuse
+    mov     eax, CybouDB_C_ERROR
+    FRAME_END
+    ret
+.bytes_ok:
+    xor     eax, eax
+    FRAME_END
+    ret
+.bytes_misuse:
+    mov     eax, CybouDB_C_MISUSE
+    FRAME_END
     ret
 
 

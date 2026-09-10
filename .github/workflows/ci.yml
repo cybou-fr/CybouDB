@@ -36,6 +36,8 @@ jobs:
           python3 tests/catalog_tests.py ./cyboudb ./build/cow_harness
           python3 tests/pax_tests.py ./cyboudb ./build/cow_harness
           python3 tests/pax_multi_tests.py ./cyboudb ./build/cow_harness
+          ./build.sh --varlen-tests
+          python3 tests/varlen_tests.py ./cyboudb ./build/varlen_harness
           python3 tests/zone_tests.py ./cyboudb ./build/cow_harness
           python3 tests/zone_validation_tests.py ./cyboudb ./build/cow_harness
           python3 tests/span_tests.py ./cyboudb ./build/cow_harness
@@ -116,6 +118,8 @@ jobs:
           python tests/catalog_tests.py ./cyboudb.exe ./build/cow_harness.exe
           python tests/pax_tests.py ./cyboudb.exe ./build/cow_harness.exe
           python tests/pax_multi_tests.py ./cyboudb.exe ./build/cow_harness.exe
+          .\build.bat --varlen-tests
+          python tests/varlen_tests.py ./cyboudb.exe ./build/varlen_harness.exe
           python tests/zone_tests.py ./cyboudb.exe ./build/cow_harness.exe
           python tests/zone_validation_tests.py ./cyboudb.exe ./build/cow_harness.exe
           python tests/span_tests.py ./cyboudb.exe ./build/cow_harness.exe

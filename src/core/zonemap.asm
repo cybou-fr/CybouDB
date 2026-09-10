@@ -80,6 +80,10 @@ zone_stat_valid:
     je .bool
     cmp r8d, CAT_FLOAT32
     je .float
+    cmp r8d, CAT_TEXT
+    je .varlen
+    cmp r8d, CAT_BLOB
+    je .varlen
     test rcx, ~(ZSTAT_HAS_COMPARABLE | ZSTAT_HAS_NULLS)
     jnz .bad
     test rcx, ZSTAT_HAS_COMPARABLE
@@ -98,6 +102,10 @@ zone_stat_valid:
     cmp rax, rdx
     jg .bad
     jmp .valid
+.varlen:
+    test rcx, ~(ZSTAT_HAS_COMPARABLE | ZSTAT_HAS_NULLS)
+    jnz .bad
+    jmp .empty
 .bool:
     test rcx, ~(ZSTAT_HAS_COMPARABLE | ZSTAT_HAS_NULLS | ZSTAT_HAS_TRUE | ZSTAT_HAS_FALSE)
     jnz .bad
@@ -494,6 +502,13 @@ db_zone_check_leaf:
     jne .width
     mov ecx, 1
 .width:
+    cmp eax, CAT_TEXT
+    je .width16
+    cmp eax, CAT_BLOB
+    jne .width_ready
+.width16:
+    mov ecx, VAR_CELL_SIZE
+.width_ready:
     mov [rbp - 72], rcx
     mov eax, [r11 + 8]
     add rax, [rbp - 40]
@@ -746,6 +761,10 @@ zone_merge:
     or qword [ARG1 + ZSTAT_FLAGS], ZSTAT_HAS_NULLS
     ret
 .value:
+    cmp ARG3, CAT_TEXT
+    je .varlen
+    cmp ARG3, CAT_BLOB
+    je .varlen
     cmp ARG3, CAT_BOOL
     je .bool
     cmp ARG3, CAT_FLOAT32
@@ -766,6 +785,9 @@ zone_merge:
     or qword [ARG1 + ZSTAT_FLAGS], ZSTAT_HAS_COMPARABLE
     mov [ARG1 + ZSTAT_MIN], ARG2
     mov [ARG1 + ZSTAT_MAX], ARG2
+    ret
+.varlen:
+    or qword [ARG1 + ZSTAT_FLAGS], ZSTAT_HAS_COMPARABLE
     ret
 .bool:
     or qword [ARG1 + ZSTAT_FLAGS], ZSTAT_HAS_COMPARABLE

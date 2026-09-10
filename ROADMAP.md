@@ -135,7 +135,11 @@ transactional payload writes until these gates pass.
 * [x] implement two-pass whole-batch validation, extent preflight, and pointer-to-root materialization
 * [x] invoke materialization with exact flat/tree PAX structural reserve
 * [x] persist `{extent_root,length}` through aligned multi-leaf sub-batch cursors
-* [ ] define varlen zone-map behavior, read views, and enable the capability
+* [x] define conservative varlen zone-map semantics (NULL/non-NULL only) and
+      an internal validate-before-copy extent reader
+* [x] expose a caller-owned row copy accessor without leaking extent page ids
+* [x] define a selected-cell copy API for non-contiguous varlen batches
+* [ ] enable the capability after end-to-end SQL/API output coverage
 * [x] per-column NULL bitmaps
 * [x] batch insertion into one PAX page through the internal API
 * [x] scalar row materialization with NULL and bit-pattern preservation

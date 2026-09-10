@@ -29,6 +29,8 @@ extern "C" {
 #define CybouDB_TYPE_INT64      2       /* 64-bit signed integer */
 #define CybouDB_TYPE_FLOAT32    3       /* 32-bit IEEE 754 floating point */
 #define CybouDB_TYPE_BOOL       4       /* 1-byte boolean (0 = FALSE, 1 = TRUE) */
+#define CybouDB_TYPE_TEXT       5       /* UTF-8 byte string; storage does not transcode */
+#define CybouDB_TYPE_BLOB       6       /* Arbitrary byte string */
 
 /* --- Codecs (Per-Column Compression) -------------------------------------- */
 #define CybouDB_CODEC_RAW       0       /* Uncompressed raw values */
@@ -145,9 +147,23 @@ int cyboudb_step_batch(cyboudb_stmt *stmt, const cyboudb_batch_view **out_batch,
  * reordered and duplicate SELECT projections. Returns NULL for invalid indices,
  * NULL arguments, another statement's batch or an exhausted/reset statement.
  * The returned view has the same lifetime as the batch.
+ * TEXT/BLOB columns intentionally return NULL here because their internal
+ * values are non-contiguous extent descriptors. Use cyboudb_batch_bytes().
  */
 const cyboudb_colview *cyboudb_batch_column(cyboudb_stmt *stmt,
                                     const cyboudb_batch_view *batch, int result_col);
+
+/**
+ * Copy one selected TEXT/BLOB cell from the current batch into caller-owned
+ * memory. Returns its non-negative logical byte length on success,
+ * CybouDB_MISUSE for invalid arguments/type/capacity, or CybouDB_ERROR for a
+ * corrupt extent chain. NULL and empty both return zero; inspect the batch
+ * column null_mask before calling to distinguish them.
+ */
+int64_t cyboudb_batch_bytes(cyboudb_stmt *stmt,
+                            const cyboudb_batch_view *batch,
+                            int result_col, uint32_t row,
+                            void *out, uint64_t capacity);
 
 /**
  * Reset a prepared statement back to its initial state so it can be re-run.
@@ -214,6 +230,21 @@ float cyboudb_column_float(cyboudb_stmt *stmt, int col_idx);
  * Return the boolean value of the column (1 for TRUE, 0 for FALSE).
  */
 int cyboudb_column_bool(cyboudb_stmt *stmt, int col_idx);
+
+/**
+ * Copy the current TEXT/BLOB value into caller-owned memory.
+ *
+ * On a valid TEXT/BLOB column, *out_length receives the logical byte length.
+ * Empty and NULL values both have length zero; use cyboudb_column_is_null() to
+ * distinguish them. A NULL output pointer is accepted only for zero-length
+ * values. The destination is unchanged when capacity is insufficient or the
+ * persistent extent chain fails validation.
+ *
+ * @return CybouDB_OK, CybouDB_MISUSE for invalid arguments/type/capacity, or
+ *         CybouDB_ERROR if the persistent value is corrupt.
+ */
+int cyboudb_column_bytes(cyboudb_stmt *stmt, int col_idx, void *out,
+                         uint64_t capacity, uint64_t *out_length);
 
 /* =============================================================================
  *  Convenience One-Shot Execution

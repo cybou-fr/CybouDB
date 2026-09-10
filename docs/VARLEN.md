@@ -111,6 +111,25 @@ allocating structural pages. Their sub-batch cursors advance values, NULLs, and
 lengths together. The leaf writer emits `{root,length}` into 16-byte raw slots;
 fixed-width write paths remain unchanged.
 
-The public API will expose borrowed `{pointer,length}` views whose lifetime is
-the current step/batch. Persisted page ids or mapped pointers are never exposed
-as durable row identity.
+The row API exposes `cyboudb_column_bytes`, which copies a current TEXT/BLOB
+value into caller-owned storage and reports its logical length. This is
+necessarily a copy: one logical value can span non-contiguous mapped extent
+pages, so no single honest borrowed pointer exists. NULL is queried separately
+from length, preserving the distinction between NULL and an empty value.
+Persisted page ids are never exposed as pointers or durable row identity.
+For vectorized stepping, `cyboudb_batch_column` deliberately returns NULL for
+TEXT/BLOB. `cyboudb_batch_bytes` instead copies one selected cell by logical
+projection and row index after checking batch ownership and the selection mask.
+
+Zone maps deliberately do not encode lexical minima or maxima for TEXT/BLOB in
+the first format version. Their flags record only whether a leaf contains NULL
+and/or non-NULL values, while both numeric fields remain zero. Validation and
+full recomputation enforce that representation. Consequently a varlen value
+predicate is UNKNOWN to the zone evaluator and cannot prune a leaf; `IS NULL`
+and `IS NOT NULL` can still use the presence flags.
+
+`db_var_read_chain` is the internal materialization boundary. It accepts a
+persistent descriptor but exposes only caller-owned bytes: it validates the
+entire chain against the selected superblock and table owner, verifies output
+capacity, and only then copies payload bytes. Corruption, an undersized buffer,
+or invalid pointers leave the output buffer untouched.

@@ -75,6 +75,14 @@ static void test_invalid_args(void) {
     rc = cyboudb_column_count(NULL);
     ASSERT_EQ(rc, 0, "cyboudb_column_count NULL stmt");
 
+    uint64_t byte_length = 123;
+    rc = cyboudb_column_bytes(NULL, 0, NULL, 0, &byte_length);
+    ASSERT_EQ(rc, CybouDB_MISUSE, "cyboudb_column_bytes NULL stmt");
+    rc = cyboudb_column_bytes((cyboudb_stmt *)(uintptr_t)1, 0, NULL, 0, NULL);
+    ASSERT_EQ(rc, CybouDB_MISUSE, "cyboudb_column_bytes NULL length");
+    ASSERT_EQ(cyboudb_batch_bytes(NULL, NULL, 0, 0, NULL, 0),
+              CybouDB_MISUSE, "cyboudb_batch_bytes NULL stmt");
+
     rc = cyboudb_open("non_existent_file_xyz123.cyboudb", CybouDB_OPEN_READONLY, &db);
     ASSERT_EQ(rc, CybouDB_ERROR, "cyboudb_open missing file");
 
