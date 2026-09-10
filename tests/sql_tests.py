@@ -65,6 +65,18 @@ def run():
     check('escaped_string_literal_type_mismatch',
           "INSERT INTO users VALUES (5, 30, TRUE, 'it''s')", rc=2,
           message='type mismatch')
+    check('blob_literal_type_mismatch',
+          "INSERT INTO users VALUES (5, 30, TRUE, X'00fFa5')", rc=2,
+          message='type mismatch')
+    check('blob_literal_lowercase_prefix',
+          "INSERT INTO users VALUES (5, 30, TRUE, x'01')", rc=2,
+          message='type mismatch')
+    check('blob_literal_odd_hex',
+          "INSERT INTO users VALUES (5, 30, TRUE, X'abc')", rc=2,
+          message='BLOB literal must contain only an even number of hex digits')
+    check('blob_literal_invalid_hex',
+          "INSERT INTO users VALUES (5, 30, TRUE, X'0g')", rc=2,
+          message='BLOB literal must contain only an even number of hex digits')
     check('insert_valid_rows', 'INSERT INTO users VALUES (1, 25, TRUE, 10.5), (2, NULL, FALSE, 99.5), (3, 40, TRUE, 75.0), (4, -15, TRUE, -5.25)', rc=0, message='INSERT 4')
     check('insert_null_into_not_null', 'INSERT INTO users VALUES (NULL, 30, TRUE, 0.0)', rc=2, message='cannot insert NULL into non-nullable column')
     check('insert_type_mismatch_float', 'INSERT INTO users VALUES (5, 3.14, TRUE, 0.0)', rc=2, message='type mismatch')

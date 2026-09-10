@@ -14,6 +14,7 @@
 %define TOK_INT_LIT         3
 %define TOK_FLOAT_LIT       4
 %define TOK_STRING_LIT      5
+%define TOK_BLOB_LIT        6
 
 ; Keywords
 %define TOK_CREATE          10
@@ -195,7 +196,7 @@
 %define EXPR_RIGHT          24          ; qword: right child expr ptr
 %define EXPR_QUAL_PTR       EXPR_LEFT   ; for EXPR_COLUMN: optional qualifier
 %define EXPR_QUAL_LEN       EXPR_RIGHT
-%define EXPR_LIT_PTR        EXPR_LEFT   ; for variable-width literal: source slice
+%define EXPR_LIT_PTR        EXPR_LEFT   ; for variable-width literal: decoded bytes
 %define EXPR_LIT_LEN        EXPR_RIGHT
 %define EXPR_NAME_PTR       32          ; qword: for EXPR_COLUMN: name ptr
 %define EXPR_NAME_LEN       40          ; qword: for EXPR_COLUMN: name len

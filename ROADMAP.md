@@ -124,8 +124,9 @@ transactional payload writes until these gates pass.
 * [x] legacy free-page management
 * [x] single-page PAX format (whole 64-row groups, schema-dependent capacity)
 * [x] fixed-width column types: INT32, INT64, FLOAT32, BOOL
-* [x] reserve stable TEXT/BLOB catalog IDs, SQL type tokens, and TEXT literal AST slices
-* [ ] COW-safe variable-width TEXT/BLOB extents, literal decoding, and PAX descriptors
+* [x] reserve stable TEXT/BLOB catalog IDs and SQL type tokens
+* [x] decode escaped TEXT and validated `X'...'` BLOB literals into arena byte slices
+* [ ] COW-safe variable-width TEXT/BLOB extents and PAX descriptors
 * [x] per-column NULL bitmaps
 * [x] batch insertion into one PAX page through the internal API
 * [x] scalar row materialization with NULL and bit-pattern preservation

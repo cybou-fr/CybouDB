@@ -309,6 +309,10 @@ sql_tok_next:
     ; Check identifier or keyword: [a-zA-Z_]
     cmp     al, '_'
     je      .lex_ident
+    cmp     al, 'X'
+    je      .check_blob_prefix
+    cmp     al, 'x'
+    je      .check_blob_prefix
     cmp     al, 'A'
     jb      .check_digit
     cmp     al, 'Z'
@@ -326,13 +330,27 @@ sql_tok_next:
 
 .check_string:
     cmp     al, "'"
-    je      .lex_string
+    jne     .unknown_char
+    mov     qword [rbp - 56], TOK_STRING_LIT
+    jmp     .lex_string
 
     ; Unknown character
+.unknown_char:
     inc     rsi
     inc     ecx
     mov     rdi, TOK_ERROR
     jmp     .finish_token
+
+.check_blob_prefix:
+    lea     rdx, [rsi + 1]
+    cmp     rdx, r9
+    jae     .lex_ident
+    cmp     byte [r8 + rdx], "'"
+    jne     .lex_ident
+    mov     qword [rbp - 56], TOK_BLOB_LIT
+    inc     rsi                         ; leave RSI on the opening quote
+    inc     ecx
+    jmp     .lex_string
 
 .tok_comma:
     inc     rsi
@@ -591,7 +609,7 @@ sql_tok_next:
     jmp     .str_loop
 
 .str_done:
-    mov     rdi, TOK_STRING_LIT
+    mov     rdi, [rbp - 56]
     jmp     .finish_token
 
 .str_unterminated:

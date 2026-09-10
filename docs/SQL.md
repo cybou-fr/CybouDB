@@ -43,10 +43,12 @@ INSERT INTO table_name VALUES (val1, val2, ...), (val1, val2, ...);
 - **Values**: Must match schema column count and data types.
 - **Literals**:
   - Integer literals: Decimal numbers with optional unary + or -. Checked for 64-bit signed integer overflow.
-  - Single-quoted TEXT literals are tokenized and represented as source slices
-    in the AST (including doubled-quote lexical escaping). They currently fail
-    fixed-width INSERT binding with a type mismatch; decoding and persistence
-    become active with variable-width storage.
+  - Single-quoted TEXT literals are decoded into arena-owned byte slices;
+    doubled quotes (`''`) become one quote byte.
+  - Binary literals use `X'00ff'` syntax (case-insensitive `X`) and require an
+    even number of hexadecimal digits. They decode into arena-owned BLOB bytes.
+    Both literal kinds currently fail fixed-width INSERT binding with a type
+    mismatch; persistence becomes active with variable-width storage.
   - Float literals: `digits.digits` with optional unary `+` or `-`. At most 128
     decimal digits, counting leading/trailing zeros but excluding the dot and sign.
     Scientific notation, `.5`, `1.`, NaN and Inf literals are unsupported.

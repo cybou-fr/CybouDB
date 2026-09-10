@@ -28,6 +28,7 @@ err_expected_expr:   db "expected expression", 0
 err_bad_number:      db "malformed numeric literal", 0
 err_overflow:        db "integer literal overflow", 0
 err_float_range:     db "FLOAT32 literal exceeds range or 128 digits", 0
+err_bad_blob:        db "BLOB literal must contain only an even number of hex digits", 0
 err_col_limit:       db "column count exceeds maximum of 64", 0
 err_row_limit:       db "row count exceeds maximum of 256", 0
 err_proj_limit:      db "projection count exceeds maximum of 64", 0
@@ -444,6 +445,28 @@ parse_number:
     FRAME_END
     ret
 
+; ASCII hex digit in AL -> EAX 0..15, or -1.
+hex_nibble:
+    cmp     al, '0'
+    jb      .bad
+    cmp     al, '9'
+    jbe     .digit
+    or      al, 32
+    cmp     al, 'a'
+    jb      .bad
+    cmp     al, 'f'
+    ja      .bad
+    movzx   eax, al
+    sub     eax, 'a' - 10
+    ret
+.digit:
+    movzx   eax, al
+    sub     eax, '0'
+    ret
+.bad:
+    mov     eax, -1
+    ret
+
 ; -----------------------------------------------------------------------------
 ;  parse_primary(tok_ctx, sql_src, arena, out_err) -> RAX: AST_EXPR* or 0
 ; -----------------------------------------------------------------------------
@@ -479,10 +502,11 @@ parse_primary:
     cmp     rax, TOK_FLOAT_LIT
     je      .is_num
 
-    ; String literals are retained as an arena-independent slice of the SQL
-    ; source. Decoding doubled quotes belongs to the future varlen binder.
+    ; Variable-width literals are decoded into arena-owned byte slices.
     cmp     rax, TOK_STRING_LIT
     je      .is_string
+    cmp     rax, TOK_BLOB_LIT
+    je      .is_blob
 
     ; Check TRUE
     cmp     rax, TOK_TRUE
@@ -648,17 +672,121 @@ parse_primary:
     jz      .oom
     mov     qword [rax + EXPR_KIND], EXPR_LITERAL
     mov     qword [rax + EXPR_OP], 0
-    mov     rdx, [rbp - 64 + TOK_OFFSET]
-    add     rdx, [rbp - 16]
-    inc     rdx                         ; exclude opening quote
-    mov     [rax + EXPR_LIT_PTR], rdx
+    mov     [rbp - 72], rax
     mov     rdx, [rbp - 64 + TOK_LEN]
-    sub     rdx, 2                      ; exclude both quotes
-    mov     [rax + EXPR_LIT_LEN], rdx
+    sub     rdx, 2                      ; decoded length is at most this
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, rdx
+    inc     ARG2                        ; keep empty strings addressable
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+    mov     rdi, rax
+    mov     r8, rax                     ; decoded start
+    mov     rsi, [rbp - 64 + TOK_OFFSET]
+    add     rsi, [rbp - 16]
+    inc     rsi                         ; exclude opening quote
+    mov     rcx, [rbp - 64 + TOK_LEN]
+    sub     rcx, 2
+.string_decode:
+    test    rcx, rcx
+    jz      .string_decoded
+    mov     al, [rsi]
+    mov     [rdi], al
+    inc     rsi
+    inc     rdi
+    dec     rcx
+    cmp     al, "'"
+    jne     .string_decode
+    ; The tokenizer only permits an interior quote as a doubled quote.
+    inc     rsi
+    dec     rcx
+    jmp     .string_decode
+.string_decoded:
+    mov     rax, [rbp - 72]
+    mov     [rax + EXPR_LIT_PTR], r8
+    sub     rdi, r8
+    mov     [rax + EXPR_LIT_LEN], rdi
     mov     qword [rax + EXPR_LIT_VAL], 0
     mov     dword [rax + EXPR_LIT_TYPE], CAT_TEXT
     mov     edx, [rbp - 64 + TOK_OFFSET]
     mov     [rax + EXPR_TOK_OFFSET], edx
+    FRAME_END
+    ret
+
+.is_blob:
+    mov     ARG1, [rbp - 8]
+    lea     ARG2, [rbp - 64]
+    call    sql_tok_next
+
+    mov     rcx, [rbp - 64 + TOK_LEN]
+    sub     rcx, 3                      ; X plus opening/closing quotes
+    test    rcx, 1
+    jnz     .bad_blob
+
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, AST_EXPR_SIZE
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+    mov     [rbp - 72], rax
+    mov     qword [rax + EXPR_KIND], EXPR_LITERAL
+    mov     qword [rax + EXPR_OP], 0
+
+    mov     rdx, [rbp - 64 + TOK_LEN]
+    sub     rdx, 3
+    shr     rdx, 1
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, rdx
+    inc     ARG2
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+    mov     rdi, rax
+    mov     r8, rax
+    mov     rsi, [rbp - 64 + TOK_OFFSET]
+    add     rsi, [rbp - 16]
+    add     rsi, 2                      ; exclude X and opening quote
+    mov     rcx, [rbp - 64 + TOK_LEN]
+    sub     rcx, 3
+.blob_decode:
+    test    rcx, rcx
+    jz      .blob_decoded
+    movzx   eax, byte [rsi]
+    call    hex_nibble
+    test    eax, eax
+    js      .bad_blob
+    mov     r10d, eax
+    shl     r10d, 4
+    movzx   eax, byte [rsi + 1]
+    call    hex_nibble
+    test    eax, eax
+    js      .bad_blob
+    or      eax, r10d
+    mov     [rdi], al
+    add     rsi, 2
+    inc     rdi
+    sub     rcx, 2
+    jmp     .blob_decode
+.blob_decoded:
+    mov     rax, [rbp - 72]
+    mov     [rax + EXPR_LIT_PTR], r8
+    sub     rdi, r8
+    mov     [rax + EXPR_LIT_LEN], rdi
+    mov     qword [rax + EXPR_LIT_VAL], 0
+    mov     dword [rax + EXPR_LIT_TYPE], CAT_BLOB
+    mov     edx, [rbp - 64 + TOK_OFFSET]
+    mov     [rax + EXPR_TOK_OFFSET], edx
+    FRAME_END
+    ret
+
+.bad_blob:
+    mov     ARG1, [rbp - 32]
+    mov     ARG2, SQL_ERR_SYNTAX
+    lea     ARG3, [rbp - 64]
+    lea     ARG4, [err_bad_blob]
+    call    set_error
+    xor     eax, eax
     FRAME_END
     ret
 
