@@ -51,8 +51,20 @@ def run():
           rc=0, message='INSERT 3')
     check('reserved_update_keyword', 'CREATE TABLE reserved_kw (update INT32)', rc=2, message='expected column name')
     check('vector_type_reserved_not_stored', 'CREATE TABLE vector_decl (embedding VECTOR(FLOAT32, 3))', rc=2, message='expected column data type')
+    check('text_type_reserved_not_stored', 'CREATE TABLE text_decl (body TEXT)', rc=2,
+          message='TEXT/BLOB storage extents are not implemented yet')
+    check('blob_type_reserved_not_stored', 'CREATE TABLE blob_decl (payload BLOB NOT NULL)', rc=2,
+          message='TEXT/BLOB storage extents are not implemented yet')
+    check('text_type_case_insensitive', 'CREATE TABLE text_upper (body TeXt)', rc=2,
+          message='TEXT/BLOB storage extents are not implemented yet')
     check('create_duplicate_table', 'CREATE TABLE users ( x INT32 )', rc=2, message='table already exists')
     check('create_duplicate_case', 'CREATE TABLE USERS ( x INT32 )', rc=2, message='table already exists')
+    check('string_literal_type_mismatch',
+          "INSERT INTO users VALUES (5, 30, TRUE, 'hello')", rc=2,
+          message='type mismatch')
+    check('escaped_string_literal_type_mismatch',
+          "INSERT INTO users VALUES (5, 30, TRUE, 'it''s')", rc=2,
+          message='type mismatch')
     check('insert_valid_rows', 'INSERT INTO users VALUES (1, 25, TRUE, 10.5), (2, NULL, FALSE, 99.5), (3, 40, TRUE, 75.0), (4, -15, TRUE, -5.25)', rc=0, message='INSERT 4')
     check('insert_null_into_not_null', 'INSERT INTO users VALUES (NULL, 30, TRUE, 0.0)', rc=2, message='cannot insert NULL into non-nullable column')
     check('insert_type_mismatch_float', 'INSERT INTO users VALUES (5, 3.14, TRUE, 0.0)', rc=2, message='type mismatch')
@@ -228,13 +240,13 @@ def run():
     check('limit_requires_integer', 'SELECT id FROM users LIMIT 1.5', rc=2)
     check('limit_rejects_negative', 'SELECT id FROM users LIMIT -1', rc=2)
     check('offset_requires_limit', 'SELECT id FROM users OFFSET 1', rc=2)
-    check('order_by_ast_asc', 'SELECT id FROM users ORDER BY id', rc=2,
-          message='ORDER BY execution is not implemented yet')
-    check('order_by_ast_explicit_asc', 'SELECT id FROM users ORDER BY id ASC', rc=2,
-          message='ORDER BY execution is not implemented yet')
+    check('order_by_ast_asc', 'SELECT id FROM users ORDER BY id', rc=0,
+          rows=[(1,), (2,), (3,), (4,)])
+    check('order_by_ast_explicit_asc', 'SELECT id FROM users ORDER BY id ASC', rc=0,
+          rows=[(1,), (2,), (3,), (4,)])
     check('order_by_ast_desc_limit',
-          'SELECT id FROM users ORDER BY id DESC LIMIT 2 OFFSET 1', rc=2,
-          message='ORDER BY execution is not implemented yet')
+          'SELECT id FROM users ORDER BY id DESC LIMIT 2 OFFSET 1', rc=0,
+          rows=[(3,), (2,)])
     check('order_by_ast_qualified_join',
           'SELECT u.id FROM users u JOIN aliases a ON u.age = a.i ORDER BY u.id DESC LIMIT 2',
           rc=2, message='ORDER BY execution is not implemented yet')
@@ -250,6 +262,16 @@ def run():
     check('order_by_join_namespace_must_match_projection',
           'SELECT u.id FROM users u JOIN aliases a ON u.age = a.i ORDER BY a.id',
           rc=2, message='column not found in schema')
+    check('order_by_int32_nulls_asc', 'SELECT id,age FROM users ORDER BY age',
+          rc=0, rows=[(4,-15), (1,25), (3,40), (2,'NULL')])
+    check('order_by_int32_nulls_desc', 'SELECT id,age FROM users ORDER BY age DESC',
+          rc=0, rows=[(2,'NULL'), (3,40), (1,25), (4,-15)])
+    check('order_by_float32', 'SELECT id,score FROM users ORDER BY score', rc=0,
+          rows=[(4,'-5.25'), (1,'10.50'), (3,'75.00'), (2,'99.50')])
+    check('order_by_bool_stable', 'SELECT id,active FROM users ORDER BY active',
+          rc=0, rows=[(2,'FALSE'), (1,'TRUE'), (3,'TRUE'), (4,'TRUE')])
+    check('order_by_stable_equal_keys', 'SELECT i,b FROM aliases ORDER BY i',
+          rc=0, rows=[(-7,9000000000), (25,10), (40,11), (40,12)])
     check('count_all', 'SELECT count(*) FROM users', rows=[(4,)])
     check('count_case_insensitive', 'SELECT COUNT(*) FROM USERS', rows=[(4,)])
     check('count_filter', 'SELECT count(*) FROM users WHERE age > 30', rows=[(1,)])

@@ -28,6 +28,7 @@ err_join_condition:  db "JOIN ON currently requires column = column", 0
 err_join_projection: db "JOIN projections must be explicitly qualified", 0
 err_join_key_type: db "JOIN keys currently require INT32 or INT64", 0
 err_order_pending: db "ORDER BY execution is not implemented yet", 0
+err_varlen_pending: db "TEXT/BLOB storage extents are not implemented yet", 0
 err_oom:             db "memory arena capacity exceeded", 0
 
 section .text
@@ -880,6 +881,10 @@ sql_bind:
 .outer_col:
     imul    rax, rbx, AST_COLDEF_SIZE
     add     rax, r11
+    cmp     dword [rax + COLDEF_TYPE], CAT_TEXT
+    je      .varlen_pending
+    cmp     dword [rax + COLDEF_TYPE], CAT_BLOB
+    je      .varlen_pending
     mov     r12, [rax + COLDEF_NAME_PTR]
     mov     r13, [rax + COLDEF_NAME_LEN]
     cmp     r13, 23
@@ -1130,6 +1135,12 @@ sql_bind:
     jmp     .ins_cell_done
 
 .ins_not_null:
+    ; Until variable-width storage is implemented, no non-numeric literal may
+    ; enter a fixed-width PAX batch through a permissive conversion branch.
+    mov     eax, [r9 + EXPR_LIT_TYPE]
+    cmp     eax, CAT_BOOL
+    ja      .type_mismatch
+
     mov     rdi, [rbp - 96]
     mov     rax, [rbp - 120]
     mov     byte [rdi + rax], 0
@@ -1672,7 +1683,9 @@ sql_bind:
     mov     r11, [rbp - 16]
     mov     rax, [r11 + SELECT_ORDER_DESC]
     mov     [r10 + PLAN_ORDER_DESC], rax
-    jmp     .order_pending
+    cmp     qword [r10 + PLAN_JOIN_TYPE], 0
+    jne     .order_pending
+    jmp     .order_bound
 .order_projection_next:
     inc     rbx
     jmp     .order_projection_loop
@@ -1817,6 +1830,15 @@ sql_bind:
     mov     ARG2, SQL_ERR_SYNTAX
     xor     ARG3, ARG3
     lea     ARG4, [err_order_pending]
+    call    set_binder_error
+    mov     eax, SQL_ERR_SYNTAX
+    jmp     .binder_exit
+
+.varlen_pending:
+    mov     ARG1, [rbp - 40]
+    mov     ARG2, SQL_ERR_SYNTAX
+    xor     ARG3, ARG3
+    lea     ARG4, [err_varlen_pending]
     call    set_binder_error
     mov     eax, SQL_ERR_SYNTAX
     jmp     .binder_exit

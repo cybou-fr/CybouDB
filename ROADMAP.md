@@ -124,6 +124,8 @@ transactional payload writes until these gates pass.
 * [x] legacy free-page management
 * [x] single-page PAX format (whole 64-row groups, schema-dependent capacity)
 * [x] fixed-width column types: INT32, INT64, FLOAT32, BOOL
+* [x] reserve stable TEXT/BLOB catalog IDs, SQL type tokens, and TEXT literal AST slices
+* [ ] COW-safe variable-width TEXT/BLOB extents, literal decoding, and PAX descriptors
 * [x] per-column NULL bitmaps
 * [x] batch insertion into one PAX page through the internal API
 * [x] scalar row materialization with NULL and bit-pattern preservation
@@ -413,9 +415,11 @@ or join production through one selection-mask adapter, including early producer
 termination at the requested row count. Pull-style C stepping remains gated for
 JOIN, while the shared one-input cursor records LIMIT/OFFSET progress for both
 row and batch C stepping, including reset.
-The SELECT AST also has a dedicated single-key ORDER BY descriptor with ASC/DESC
-and qualified-name support. Binding keeps it behind an explicit execution gate
-until the bounded materialization and typed comparison contract is complete.
+The SELECT AST and plan have a dedicated single-key ORDER BY descriptor with
+ASC/DESC, qualified-name, result-ordinal, and scalar-type metadata. Single-table
+callback execution now uses arena-bounded row materialization plus stable typed
+insertion sort, with deterministic NULL placement and LIMIT/OFFSET applied after
+sorting. JOIN ordering and pull-style C stepping remain explicitly gated.
 
 * [x] runtime-native normalized `FLOAT32` vectors
 * [x] caller-owned contiguous vector arena

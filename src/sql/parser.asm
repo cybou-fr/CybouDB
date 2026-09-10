@@ -479,6 +479,11 @@ parse_primary:
     cmp     rax, TOK_FLOAT_LIT
     je      .is_num
 
+    ; String literals are retained as an arena-independent slice of the SQL
+    ; source. Decoding doubled quotes belongs to the future varlen binder.
+    cmp     rax, TOK_STRING_LIT
+    je      .is_string
+
     ; Check TRUE
     cmp     rax, TOK_TRUE
     je      .is_true
@@ -628,6 +633,32 @@ parse_primary:
     lea     ARG4, [err_expected_expr]
     call    set_error
     xor     eax, eax
+    FRAME_END
+    ret
+
+.is_string:
+    mov     ARG1, [rbp - 8]
+    lea     ARG2, [rbp - 64]
+    call    sql_tok_next
+
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, AST_EXPR_SIZE
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+    mov     qword [rax + EXPR_KIND], EXPR_LITERAL
+    mov     qword [rax + EXPR_OP], 0
+    mov     rdx, [rbp - 64 + TOK_OFFSET]
+    add     rdx, [rbp - 16]
+    inc     rdx                         ; exclude opening quote
+    mov     [rax + EXPR_LIT_PTR], rdx
+    mov     rdx, [rbp - 64 + TOK_LEN]
+    sub     rdx, 2                      ; exclude both quotes
+    mov     [rax + EXPR_LIT_LEN], rdx
+    mov     qword [rax + EXPR_LIT_VAL], 0
+    mov     dword [rax + EXPR_LIT_TYPE], CAT_TEXT
+    mov     edx, [rbp - 64 + TOK_OFFSET]
+    mov     [rax + EXPR_TOK_OFFSET], edx
     FRAME_END
     ret
 
@@ -1263,6 +1294,12 @@ sql_parse:
     je      .type_ok
     mov     r8d, CAT_BOOL
     cmp     rax, TOK_TYPE_BOOL
+    je      .type_ok
+    mov     r8d, CAT_TEXT
+    cmp     rax, TOK_TYPE_TEXT
+    je      .type_ok
+    mov     r8d, CAT_BLOB
+    cmp     rax, TOK_TYPE_BLOB
     je      .type_ok
     jmp     .bad_type
 

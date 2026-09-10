@@ -664,6 +664,8 @@ api_select_next:
     mov r10, [r12 + STMT_H_PLAN]
     cmp qword [r10 + PLAN_JOIN_TYPE], 0
     jne .join_pull_pending
+    test qword [r10 + PLAN_FLAGS], PLAN_FLAG_ORDER
+    jnz .join_pull_pending
     lea rax, [r12 + STMT_H_DECODE]
     PASS_ARG5 rax
     lea ARG1, [r12 + STMT_H_SELECT]

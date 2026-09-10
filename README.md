@@ -39,8 +39,8 @@ underlying CPU.
 | Multi-page PAX tables | working; two-level directory tree (up to 28M rows per table), cross-page batches |
 | Paired multi-page allocation map | working; `create-large`, 63 GiB ceiling, page reclamation |
 | SQL engine: parser, binder, executor | working; pure x86-64 scalar and batch execution |
-| SQL statements | working; `CREATE TABLE`, `INSERT INTO` (multi-row), `SELECT ... WHERE`, `LIMIT [OFFSET]`, correctness-first `INNER JOIN`/`LEFT JOIN` on qualified INT32/INT64 equi-keys |
-| SQL types and semantics | working; `INT32`, `INT64`, `FLOAT32`, `BOOL`, 3VL logic, exact decimal-to-binary32 conversion with defined comparison semantics |
+| SQL statements | working; `CREATE TABLE`, `INSERT INTO` (multi-row), `SELECT ... WHERE`, stable single-key `ORDER BY`, `LIMIT [OFFSET]`, correctness-first `INNER JOIN`/`LEFT JOIN` on qualified INT32/INT64 equi-keys |
+| SQL types and semantics | fixed-width storage working for `INT32`, `INT64`, `FLOAT32`, `BOOL`; `TEXT`/`BLOB` type IDs and grammar reserved behind an explicit storage gate |
 | CLI: `query` | working; executes statements, autocommits mutations, tabular output |
 | CLI: `create`, `info`, `check`, `alloc`, `free` | working |
 | Open proportional to the change, not the file | working; `cyboudb check` still reads everything |
@@ -112,6 +112,10 @@ cyboudb query demo.cyboudb "INSERT INTO users VALUES (1, 98.5, true), (2, null, 
 # Query data with projection and filtering (3VL logic, comparison operators, IS NULL)
 cyboudb query demo.cyboudb "SELECT id, score FROM users WHERE active = true AND score > 0.0"
 ```
+
+`TEXT` and `BLOB` are recognized type names, but `CREATE TABLE` rejects them
+until persistent variable-width extents are implemented. This prevents an
+unsupported schema from being published into the fixed-width PAX format.
 
 Output:
 

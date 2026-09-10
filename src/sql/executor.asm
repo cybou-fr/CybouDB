@@ -3,6 +3,7 @@
 ; =============================================================================
 
 %include "sql.inc"
+%include "order_executor.inc"
 
 BITS 64
 default rel
@@ -11,6 +12,7 @@ extern db_catalog_put, db_pax_insert, db_commit
 extern sql_select_open, sql_select_next
 extern sql_arena_alloc
 extern sql_join_execute
+extern sql_order_init, sql_order_collect, sql_order_emit
 extern for8_eq, for8_ne, for8_lt, for8_le, for8_gt, for8_ge
 extern for16_eq, for16_ne, for16_lt, for16_le, for16_gt, for16_ge
 global sql_execute_batch
@@ -529,6 +531,16 @@ sql_execute_batch:
     mov [rbp - 144], rax              ; rows still to skip
     mov rax, [r10 + PLAN_LIMIT_VALUE]
     mov [rbp - 152], rax              ; rows still to deliver
+    test qword [r10 + PLAN_FLAGS], PLAN_FLAG_ORDER
+    jz .order_state_ready
+    lea ARG1, [rbp - 256]
+    mov ARG2, [rbp - 24]
+    mov ARG3, r10
+    call sql_order_init
+    test eax, eax
+    jnz .oom
+.order_state_ready:
+    mov r10, [rbp - 16]
     cmp qword [r10 + PLAN_JOIN_TYPE], 0
     jne .exec_join
     mov ARG1, [rbp - 24]
@@ -563,18 +575,41 @@ sql_execute_batch:
     test eax, eax
     jnz .storage_done
     test rdx, rdx
-    jz .success
+    jz .select_complete
     mov ARG4, rdx
-    mov ARG1, [rbp - 40]
     mov ARG2, [rbp - 120]
     mov r10, [rbp - 16]
     lea ARG3, [r10 + PLAN_DATA1]
+    test qword [r10 + PLAN_FLAGS], PLAN_FLAG_ORDER
+    jz .select_direct_sink
+    lea ARG1, [rbp - 256]
+    call sql_order_collect
+    jmp .select_sink_result
+.select_direct_sink:
+    mov ARG1, [rbp - 40]
     call [rbp - 32]
+.select_sink_result:
     test eax, eax
     jz .next_select
     cmp eax, CybouDB_SINK_STOP
     jne .sink_failed
     jmp .success
+
+.select_complete:
+    mov r10, [rbp - 16]
+    test qword [r10 + PLAN_FLAGS], PLAN_FLAG_ORDER
+    jz .success
+    lea ARG1, [rbp - 256]
+    mov ARG2, [rbp - 32]
+    mov ARG3, [rbp - 40]
+    call sql_order_emit
+    test eax, eax
+    jz .success
+    cmp eax, SQL_ERR_NO_STORAGE
+    je .oom
+    cmp eax, SQL_ERR_SINK
+    je .sink_failed
+    jmp .storage_done
 
 .exec_join:
     mov r10, [rbp - 16]
@@ -669,6 +704,12 @@ sql_execute_batch:
     mov     eax, SQL_ERR_EXEC
     jmp     .exec_exit
 .sink_failed:
+    mov r10, [rbp - 16]
+    test qword [r10 + PLAN_FLAGS], PLAN_FLAG_ORDER
+    jz .sink_failed_plain
+    cmp qword [rbp - 256 + ORDER_ERROR], SQL_ERR_NO_STORAGE
+    je .oom
+.sink_failed_plain:
     mov     eax, SQL_ERR_SINK
     jmp     .exec_exit
 .oom:

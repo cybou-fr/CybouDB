@@ -53,6 +53,8 @@
 %define TOK_TYPE_INT64      31
 %define TOK_TYPE_FLOAT32    32
 %define TOK_TYPE_BOOL       33
+%define TOK_TYPE_TEXT       34
+%define TOK_TYPE_BLOB       35
 
 ; Operators and Punctuation
 %define TOK_COMMA           40          ; ,
@@ -193,10 +195,12 @@
 %define EXPR_RIGHT          24          ; qword: right child expr ptr
 %define EXPR_QUAL_PTR       EXPR_LEFT   ; for EXPR_COLUMN: optional qualifier
 %define EXPR_QUAL_LEN       EXPR_RIGHT
+%define EXPR_LIT_PTR        EXPR_LEFT   ; for variable-width literal: source slice
+%define EXPR_LIT_LEN        EXPR_RIGHT
 %define EXPR_NAME_PTR       32          ; qword: for EXPR_COLUMN: name ptr
 %define EXPR_NAME_LEN       40          ; qword: for EXPR_COLUMN: name len
 %define EXPR_LIT_VAL        48          ; qword: for EXPR_LITERAL: 64-bit value
-%define EXPR_LIT_TYPE       56          ; dword: CAT_INT32, CAT_INT64, CAT_FLOAT32, CAT_BOOL, 0 (NULL)
+%define EXPR_LIT_TYPE       56          ; dword: CAT_*, or 0 (NULL)
 %define EXPR_TOK_OFFSET     60          ; dword: source offset for error reporting
 %define AST_EXPR_SIZE       64
 

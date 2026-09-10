@@ -33,6 +33,8 @@ sql_select_open:
     mov qword [r12 + SEL_LIMIT_LEFT], -1
     test qword [r10 + PLAN_FLAGS], PLAN_FLAG_LIMIT
     jz .limit_state_ready
+    test qword [r10 + PLAN_FLAGS], PLAN_FLAG_ORDER
+    jnz .limit_state_ready
     mov rax, [r10 + PLAN_OFFSET_VALUE]
     mov [r12 + SEL_LIMIT_SKIP], rax
     mov rax, [r10 + PLAN_LIMIT_VALUE]

@@ -23,6 +23,9 @@ CREATE TABLE table_name (
   - INT64: 64-bit signed integer (-9223372036854775808 to 9223372036854775807).
   - FLOAT32: 32-bit IEEE 754 single-precision float.
   - BOOL: 1-byte boolean (TRUE / FALSE, stored as 1 / 0).
+  - TEXT and BLOB have stable internal type IDs and are recognized by the
+    grammar, but CREATE TABLE rejects them until persistent variable-width
+    extents and their COW ownership rules are implemented.
   - SQL aliases map to the same physical types: INTEGER -> INT32,
     BIGINT -> INT64, REAL -> FLOAT32, and BOOLEAN -> BOOL.
   - VECTOR is reserved for Phase 8 syntax but is rejected in CREATE TABLE
@@ -40,6 +43,10 @@ INSERT INTO table_name VALUES (val1, val2, ...), (val1, val2, ...);
 - **Values**: Must match schema column count and data types.
 - **Literals**:
   - Integer literals: Decimal numbers with optional unary + or -. Checked for 64-bit signed integer overflow.
+  - Single-quoted TEXT literals are tokenized and represented as source slices
+    in the AST (including doubled-quote lexical escaping). They currently fail
+    fixed-width INSERT binding with a type mismatch; decoding and persistence
+    become active with variable-width storage.
   - Float literals: `digits.digits` with optional unary `+` or `-`. At most 128
     decimal digits, counting leading/trailing zeros but excluding the dot and sign.
     Scientific notation, `.5`, `1.`, NaN and Inf literals are unsupported.
@@ -82,11 +89,13 @@ SELECT col1 FROM table_name [WHERE expression] LIMIT count [OFFSET count];
   is rejected. The callback/CLI path supports LIMIT for ordinary SELECT, COUNT,
   INNER JOIN, and LEFT JOIN. Public pull-style C stepping supports LIMIT for
   ordinary SELECT and COUNT; JOIN still awaits a resumable two-input cursor.
-- **ORDER BY staging**: The parser accepts one `[qualifier.]column` with optional
-  `ASC` or `DESC`, followed by optional LIMIT/OFFSET. The binder resolves that
-  key to a projected result ordinal and records its scalar type and direction;
-  non-projected keys and invalid namespaces are rejected. Execution remains
-  gated until the materializing typed-sort executor lands.
+- **ORDER BY**: Single-table callback/CLI SELECT accepts one projected
+  `[qualifier.]column` with optional `ASC` or `DESC`, followed by optional
+  LIMIT/OFFSET. Sorting is stable across equal keys and supports INT32, INT64,
+  FLOAT32, and BOOL. NULL sorts last in ASC and first in DESC. Rows are
+  materialized in the statement arena; exhaustion fails explicitly rather than
+  returning a partial result. ORDER BY for JOIN and the pull-style C stepping
+  API remain gated until they own resumable materialized state.
 - **Projection**:
   - `*` projects all columns in schema order.
   - Explicit projection: 1 to 64 column names.

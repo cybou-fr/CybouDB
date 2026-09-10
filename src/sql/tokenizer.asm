@@ -32,6 +32,8 @@ kw_int32:    db "int32", 0
 kw_int64:    db "int64", 0
 kw_float32:  db "float32", 0
 kw_bool:     db "bool", 0
+kw_text:     db "text", 0
+kw_blob:     db "blob", 0
 kw_integer:  db "integer", 0
 kw_bigint:   db "bigint", 0
 kw_real:     db "real", 0
@@ -75,6 +77,8 @@ kw_table_entries:
     dq kw_int64,   5, TOK_TYPE_INT64
     dq kw_float32, 7, TOK_TYPE_FLOAT32
     dq kw_bool,    4, TOK_TYPE_BOOL
+    dq kw_text,    4, TOK_TYPE_TEXT
+    dq kw_blob,    4, TOK_TYPE_BLOB
     dq kw_integer, 7, TOK_TYPE_INT32
     dq kw_bigint,  6, TOK_TYPE_INT64
     dq kw_real,    4, TOK_TYPE_FLOAT32
