@@ -201,6 +201,9 @@ str_space:             db " ", 0
 str_minus:             db "-", 0
 str_dot:               db ".", 0
 str_zero:              db "0", 0
+str_blob_open:         db "X'", 0
+str_quote:             db "'", 0
+hex_digits:            db "0123456789ABCDEF"
 
     align 4
 flt_100:               dd 100.0
@@ -1357,11 +1360,13 @@ print_sql_error:
 ;  query_row_callback(cb_ctx, proj_count, row_values, row_nulls) -> RAX: 0
 ; -----------------------------------------------------------------------------
 query_row_callback:
-    FRAME_BEGIN 96, 0
+    FRAME_BEGIN 112, 0
     mov     [rbp - 8], ARG1             ; cb_ctx
     mov     [rbp - 16], ARG2            ; proj_count
     mov     [rbp - 24], ARG3            ; row_values
     mov     [rbp - 32], ARG4            ; row_nulls
+    mov     rax, IN_ARG5
+    mov     [rbp - 96], rax             ; row varlen lengths
 
     ; Preserve callee-saved registers
     mov     [rbp - 40], rbx
@@ -1397,6 +1402,10 @@ query_row_callback:
     je      .cell_f32
     cmp     eax, CAT_BOOL
     je      .cell_bool
+    cmp     eax, CAT_TEXT
+    je      .cell_text
+    cmp     eax, CAT_BLOB
+    je      .cell_blob
 
     mov     ARG1, rdx
     call    put_u64
@@ -1428,6 +1437,28 @@ query_row_callback:
     jmp     .next_p
 .cell_bool_false:
     PUTS    str_false
+    jmp     .next_p
+
+.cell_text:
+    mov     rsi, [rbp - 96]
+    mov     ARG3, [rsi + rbx * 8]
+    mov     ARG2, rdx
+    mov     r10, [row_cb_plan]
+    mov     r10, [r10 + PLAN_CTX]
+    mov     ARG1, [r10 + DB_BASE]
+    xor     ARG4d, ARG4d
+    call    print_varlen
+    jmp     .next_p
+
+.cell_blob:
+    mov     rsi, [rbp - 96]
+    mov     ARG3, [rsi + rbx * 8]
+    mov     ARG2, rdx
+    mov     r10, [row_cb_plan]
+    mov     r10, [r10 + PLAN_CTX]
+    mov     ARG1, [r10 + DB_BASE]
+    mov     ARG4, 1
+    call    print_varlen
 
 .next_p:
     inc     rbx
@@ -1450,6 +1481,67 @@ query_row_callback:
     mov     rdi, [rbp - 88]
 
     xor     eax, eax                    ; continue scanning
+    FRAME_END
+    ret
+
+; print_varlen(base, root, length, hex_mode). The PAX graph walk validated the
+; complete chain before the descriptor reached this output sink.
+print_varlen:
+    FRAME_BEGIN 80, 0
+    mov     [rbp - 8], ARG1
+    mov     [rbp - 16], ARG2
+    mov     [rbp - 24], ARG3
+    mov     [rbp - 32], ARG4
+    test    ARG4, ARG4
+    jz      .var_page
+    PUTS    str_blob_open
+.var_page:
+    cmp     qword [rbp - 24], 0
+    je      .var_done
+    mov     r10, [rbp - 16]
+    shl     r10, CybouDB_PAGE_SHIFT
+    add     r10, [rbp - 8]
+    mov     rax, [r10 + VAR_NEXT]
+    mov     [rbp - 40], rax
+    mov     eax, [r10 + VAR_USED]
+    mov     [rbp - 48], rax
+    mov     [rbp - 64], rax
+    lea     r10, [r10 + VAR_DATA]
+    mov     [rbp - 56], r10
+    cmp     qword [rbp - 32], 0
+    jne     .var_hex
+    mov     ARG1, r10
+    mov     ARG2, [rbp - 48]
+    call    os_write
+    jmp     .var_advance
+.var_hex:
+    mov     r10, [rbp - 56]
+    movzx   eax, byte [r10]
+    mov     ecx, eax
+    shr     eax, 4
+    and     ecx, 15
+    lea     r11, [hex_digits]
+    mov     al, [r11 + rax]
+    mov     [numbuf], al
+    mov     al, [r11 + rcx]
+    mov     [numbuf + 1], al
+    lea     ARG1, [numbuf]
+    mov     ARG2, 2
+    call    os_write
+    inc     qword [rbp - 56]
+    dec     qword [rbp - 48]
+    jnz     .var_hex
+.var_advance:
+    mov     rax, [rbp - 64]
+    sub     [rbp - 24], rax
+    mov     rax, [rbp - 40]
+    mov     [rbp - 16], rax
+    jmp     .var_page
+.var_done:
+    cmp     qword [rbp - 32], 0
+    je      .var_return
+    PUTS    str_quote
+.var_return:
     FRAME_END
     ret
 

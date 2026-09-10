@@ -12,11 +12,11 @@ section .text
 sql_execute:
     test    ARG4, ARG4
     jz      sql_execute_batch          ; mutations need no sink; SELECT reports missing sink
-    FRAME_BEGIN 640, 2
+    FRAME_BEGIN 1152, 2
     mov     [rbp - 8], ARG1
     mov     [rbp - 16], ARG2
     mov     [rbp - 24], ARG3
-    lea     r10, [rbp - 640]            ; cb, ctx, 64 qword values, 64 NULL bytes
+    lea     r10, [rbp - 1152]           ; cb, ctx, values, NULL bytes, varlen lengths
     mov     [r10], ARG4
     mov     rax, IN_ARG5
     mov     [r10 + 8], rax
@@ -35,7 +35,7 @@ sql_execute:
 
 ; result_rows(adapter_ctx, batch_view, projection, selected_mask)
 result_rows:
-    FRAME_BEGIN 128, 0
+    FRAME_BEGIN 144, 1
     mov     [rbp - 88], r12
     mov     [rbp - 96], r13
     mov     [rbp - 104], r14
@@ -55,6 +55,8 @@ result_rows:
     mov     [rbp - 64], rax             ; row values (512 bytes)
     lea     rax, [r10 + 528]
     mov     [rbp - 72], rax             ; row nulls (64 bytes)
+    lea     rax, [r10 + 592]
+    mov     [rbp - 136], rax            ; row varlen lengths (512 bytes)
     mov     r10, [rbp - 16]
     mov     rax, [r10 + RESULT_PROJ_COUNT]
     mov     [rbp - 32], rax
@@ -88,9 +90,14 @@ result_rows:
     test    al, al
     jnz     .cell_is_null
 
+    mov     rdi, [rbp - 136]
+    mov     qword [rdi + r15 * 8], 0
+
     ; Read value directly from mapped PAX memory
     mov     rsi, [rdx + COLVIEW_VALUES_PTR]
     mov     ecx, [rdx + COLVIEW_WIDTH]
+    cmp     ecx, VAR_CELL_SIZE
+    je      .read_varlen
     cmp     ecx, 8
     je      .read_width_8
     cmp     ecx, 4
@@ -114,8 +121,20 @@ result_rows:
     mov     eax, [rsi + r13 * 4]
     jmp     .store_row_val
 
+.read_varlen:
+    mov     rax, r13
+    shl     rax, 4
+    add     rsi, rax
+    mov     rax, [rsi + VAR_CELL_ROOT]
+    mov     rdi, [rbp - 136]
+    mov     rcx, [rsi + VAR_CELL_LENGTH]
+    mov     [rdi + r15 * 8], rcx
+    jmp     .store_row_val
+
 .cell_is_null:
     xor     eax, eax
+    mov     rdi, [rbp - 136]
+    mov     qword [rdi + r15 * 8], 0
 
 .store_row_val:
     mov     rdi, [rbp - 64]            ; row_values
@@ -130,6 +149,8 @@ result_rows:
     mov     ARG2, [rbp - 32]           ; proj_count
     mov     ARG3, [rbp - 64]           ; row_values
     mov     ARG4, [rbp - 72]           ; row_nulls
+    mov     rax, [rbp - 136]
+    PASS_ARG5 rax                      ; optional varlen lengths
     call    [rbp - 80]
     test    eax, eax
     jnz     .adapter_done

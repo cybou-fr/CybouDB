@@ -110,9 +110,9 @@
 ; encoded with Frame-of-Reference (bitpacking) or Constant encodings.
 ; An uncompressed leaf remains bit-for-bit identical to v1.
 %define CybouDB_FEATURE_COMPRESSION 512
-; Variable-width TEXT/BLOB cell descriptors and owned extent chains. Reserved
-; until the catalog graph validator follows every descriptor; creators do not
-; emit this bit yet. See docs/VARLEN.md.
+; Variable-width TEXT/BLOB cell descriptors and owned extent chains. New
+; create-large databases emit this bit; narrower legacy creators remain stable.
+; See docs/VARLEN.md.
 %define CybouDB_FEATURE_VARLEN 1024
 
 ; Column compression codecs (stored in bits 8..15 of leaf column flags):

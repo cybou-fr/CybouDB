@@ -139,7 +139,9 @@ transactional payload writes until these gates pass.
       an internal validate-before-copy extent reader
 * [x] expose a caller-owned row copy accessor without leaking extent page ids
 * [x] define a selected-cell copy API for non-contiguous varlen batches
-* [ ] enable the capability after end-to-end SQL/API output coverage
+* [x] enable the capability for new `create-large` databases with end-to-end
+      SQL/CLI coverage; other creators retain their previous feature sets
+* [x] cover persisted TEXT/BLOB through both row and batch C accessors
 * [x] per-column NULL bitmaps
 * [x] batch insertion into one PAX page through the internal API
 * [x] scalar row materialization with NULL and bit-pattern preservation
