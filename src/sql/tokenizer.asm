@@ -50,6 +50,8 @@ kw_by:       db "by", 0
 kw_limit:    db "limit", 0
 kw_offset:   db "offset", 0
 kw_vector:   db "vector", 0
+kw_asc:      db "asc", 0
+kw_desc:     db "desc", 0
 
     align 8
 kw_table_entries:
@@ -90,6 +92,8 @@ kw_table_entries:
     dq kw_limit,   5, TOK_LIMIT
     dq kw_offset,  6, TOK_OFFSET_KW
     dq kw_vector,  6, TOK_VECTOR
+    dq kw_asc,      3, TOK_ASC
+    dq kw_desc,     4, TOK_DESC
     dq 0,          0, 0                 ; terminator
 
 section .text

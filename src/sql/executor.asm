@@ -10,6 +10,7 @@ default rel
 extern db_catalog_put, db_pax_insert, db_commit
 extern sql_select_open, sql_select_next
 extern sql_arena_alloc
+extern sql_join_execute
 extern for8_eq, for8_ne, for8_lt, for8_le, for8_gt, for8_ge
 extern for16_eq, for16_ne, for16_lt, for16_le, for16_gt, for16_ge
 global sql_execute_batch
@@ -523,6 +524,13 @@ sql_execute_batch:
 .exec_select:
     cmp qword [rbp - 32], 0
     je .missing_sink
+    mov r10, [rbp - 16]
+    mov rax, [r10 + PLAN_OFFSET_VALUE]
+    mov [rbp - 144], rax              ; rows still to skip
+    mov rax, [r10 + PLAN_LIMIT_VALUE]
+    mov [rbp - 152], rax              ; rows still to deliver
+    cmp qword [r10 + PLAN_JOIN_TYPE], 0
+    jne .exec_join
     mov ARG1, [rbp - 24]
     mov ARG2, CybouDB_BATCH_VIEW_SIZE
     call sql_arena_alloc
@@ -567,6 +575,92 @@ sql_execute_batch:
     cmp eax, CybouDB_SINK_STOP
     jne .sink_failed
     jmp .success
+
+.exec_join:
+    mov r10, [rbp - 16]
+    mov rax, [rbp - 32]
+    mov [rbp - 160], rax              ; selected sink
+    mov rax, [rbp - 40]
+    mov [rbp - 168], rax              ; selected sink context
+    test qword [r10 + PLAN_FLAGS], PLAN_FLAG_LIMIT
+    jz .join_sink_ready
+    lea rax, [.limited_sink]
+    mov [rbp - 160], rax
+    mov [rbp - 168], rbp
+.join_sink_ready:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 24]
+    mov ARG4, [rbp - 160]
+    mov rax, [rbp - 168]
+    PASS_ARG5 rax
+    mov rax, [rbp - 128]
+    PASS_ARG6 rax
+    call sql_join_execute
+    test eax, eax
+    jz .success
+    cmp eax, SQL_ERR_SINK
+    je .sink_failed
+    cmp eax, SQL_ERR_NO_STORAGE
+    je .oom
+    jmp .storage_done
+
+; Adapter for LIMIT/OFFSET. ARG1 is the parent executor frame; other arguments
+; match the result-sink ABI. It preserves the lowest selected lanes in row order.
+.limited_sink:
+    FRAME_BEGIN 64, 0
+    mov [rbp - 8], ARG1               ; parent frame
+    mov [rbp - 16], ARG2              ; batch
+    mov [rbp - 24], ARG3              ; projection
+    mov [rbp - 32], rbx
+    mov [rbp - 40], r12
+    mov rbx, ARG4                     ; input selection
+    xor r12d, r12d                    ; limited selection
+.limit_lane:
+    test rbx, rbx
+    jz .limit_selected
+    bsf rcx, rbx
+    lea rax, [rbx - 1]
+    and rbx, rax                      ; remove lowest selected lane
+    mov r10, [rbp - 8]
+    cmp qword [r10 - 144], 0
+    je .limit_take
+    dec qword [r10 - 144]
+    jmp .limit_lane
+.limit_take:
+    cmp qword [r10 - 152], 0
+    je .limit_selected
+    bts r12, rcx
+    dec qword [r10 - 152]
+    jmp .limit_lane
+.limit_selected:
+    test r12, r12
+    jnz .limit_call
+    mov r10, [rbp - 8]
+    cmp qword [r10 - 152], 0
+    je .limit_stop
+    jmp .limit_continue
+.limit_call:
+    mov ARG4, r12
+    mov ARG1, [r10 - 40]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 24]
+    call [r10 - 32]
+    test eax, eax
+    jnz .limit_done
+    mov r10, [rbp - 8]
+    cmp qword [r10 - 152], 0
+    je .limit_stop
+.limit_continue:
+    xor eax, eax
+    jmp .limit_done
+.limit_stop:
+    mov eax, CybouDB_SINK_STOP
+.limit_done:
+    mov rbx, [rbp - 32]
+    mov r12, [rbp - 40]
+    FRAME_END
+    ret
 
 .success:
     xor     eax, eax

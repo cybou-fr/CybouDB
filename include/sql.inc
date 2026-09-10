@@ -45,6 +45,8 @@
 %define TOK_LIMIT           70
 %define TOK_OFFSET_KW       71
 %define TOK_VECTOR          72
+%define TOK_ASC             73
+%define TOK_DESC            74
 
 ; Types
 %define TOK_TYPE_INT32      30
@@ -110,7 +112,7 @@
 %define STMT_EXTRA2         24          ; qword: columns / projections array ptr
 %define STMT_EXTRA3         32          ; qword: row_count / where_expr ptr
 %define STMT_EXTRA4         40          ; qword: rows array ptr
-%define AST_STMT_PAYLOAD_SIZE 64
+%define AST_STMT_PAYLOAD_SIZE 96
 
 ; Statement-specific payload field names. Their layouts may evolve
 ; independently even though the initial arena allocation size is shared.
@@ -134,7 +136,11 @@
 %define SELECT_TABLE_ALIAS     40
 %define SELECT_JOIN_HEAD       48       ; AST_JOIN* or 0
 %define SELECT_JOIN_COUNT      56
-%define SELECT_PAYLOAD_SIZE    64
+%define SELECT_LIMIT_VALUE     64       ; qword, -1 when absent
+%define SELECT_OFFSET_VALUE    72       ; qword, zero when absent
+%define SELECT_ORDER_NAME      80       ; AST_NAME* or 0
+%define SELECT_ORDER_DESC      88       ; qword boolean
+%define SELECT_PAYLOAD_SIZE    96
 
 ; JOIN descriptors are arena-owned and chained from a future SELECT payload
 ; extension without changing AST_STMT.
@@ -279,8 +285,16 @@
 %define PLAN_JOIN_LEFT_COL  160         ; qword physical index in left schema
 %define PLAN_JOIN_RIGHT_COL 168         ; qword physical index in right schema
 %define PLAN_JOIN_KEY_TYPE  176         ; qword CAT_* shared by both keys
-%define BOUND_PLAN_SIZE     184
+%define PLAN_JOIN_PROJECTIONS 184       ; encoded source/index descriptors
+%define PLAN_LIMIT_VALUE    192         ; qword row limit
+%define PLAN_OFFSET_VALUE   200         ; qword rows skipped before delivery
+%define PLAN_ORDER_ORDINAL  208         ; qword compact result-column ordinal
+%define PLAN_ORDER_TYPE     216         ; qword CAT_* scalar type
+%define PLAN_ORDER_DESC     224         ; qword boolean
+%define BOUND_PLAN_SIZE     232
 %define PLAN_PROJ_RIGHT_BIT 0x80000000  ; u32 projection index belongs to RHS
+%define PLAN_FLAG_LIMIT     2           ; bit 1: LIMIT clause is present
+%define PLAN_FLAG_ORDER     4           ; bit 2: ORDER BY is present
 
 ; Projection descriptor passed to batch result sinks (aliases PLAN_DATA1..3).
 %define RESULT_PROJ_COUNT   0           ; qword: projection count, 1..64

@@ -18,5 +18,7 @@
 %define SEL_ERROR       184
 %define SEL_OPTIONS     192             ; PAX_SCANOPT_SIZE private bytes
 %define SEL_ENCODING_VIEWS (SEL_OPTIONS + PAX_SCANOPT_SIZE) ; zero when predicates use typed values
-%define SQL_SELECT_SIZE (SEL_ENCODING_VIEWS + 48)
+%define SEL_LIMIT_SKIP  (SEL_ENCODING_VIEWS + 48)
+%define SEL_LIMIT_LEFT  (SEL_LIMIT_SKIP + 8)
+%define SQL_SELECT_SIZE (SEL_LIMIT_LEFT + 8)
 %endif

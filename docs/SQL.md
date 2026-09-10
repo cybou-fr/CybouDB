@@ -59,17 +59,34 @@ SELECT col1, col2 FROM table_name;
 SELECT col1 FROM table_name WHERE condition;
 SELECT COUNT(*) FROM table_name [WHERE condition];
 SELECT u.col1 FROM table_name [AS] u WHERE u.col2 > 0;
+SELECT col1 FROM table_name [WHERE expression] LIMIT count [OFFSET count];
 ```
 - **Table namespace**: A single table may have an optional `AS` or bare alias.
   Qualified names are accepted in projections and predicates. Once an alias is
   declared, it hides the base table name.
-- **JOIN staging**: `JOIN`, `INNER JOIN`, and `LEFT JOIN` with a mandatory `ON`
-  expression are represented by dedicated AST descriptors. Binding resolves
-  both catalog inputs, resolves qualified key columns in either equality order,
-  and requires identical physical key types. Execution is then rejected
-  explicitly until two-input row production is available.
+- **JOIN**: `JOIN`, `INNER JOIN`, and `LEFT JOIN` execute a correctness-first
+  nested-loop join with a mandatory `ON` equality between qualified `INT32` or `INT64`
+  columns. Equality operands may appear in either order. NULL keys never match.
+  LEFT JOIN emits one row with NULL right-side values for every unmatched left
+  row. JOIN queries with `WHERE`, BOOL/FLOAT32 keys, wildcard expansion, and
+  unqualified JOIN projections remain explicitly rejected.
+  The callback/CLI execution path is enabled; the public pull-style C stepping
+  API returns a state error for JOIN until a resumable join cursor is added.
   Explicit projections are bound against either input schema; unqualified
-  projections and `SELECT *` remain rejected as ambiguous during this stage.
+  projections and `SELECT *` are rejected as ambiguous.
+  The bound plan keeps source-aware input descriptors separately from compact
+  output ordinals, so joined rows can use the existing result-sink batch ABI.
+- **LIMIT**: `LIMIT count` and optional `OFFSET count` accept non-negative INT64
+  literals. They are applied after `WHERE` and JOIN row production and stop the
+  producer as soon as enough rows have been delivered. `OFFSET` without `LIMIT`
+  is rejected. The callback/CLI path supports LIMIT for ordinary SELECT, COUNT,
+  INNER JOIN, and LEFT JOIN. Public pull-style C stepping supports LIMIT for
+  ordinary SELECT and COUNT; JOIN still awaits a resumable two-input cursor.
+- **ORDER BY staging**: The parser accepts one `[qualifier.]column` with optional
+  `ASC` or `DESC`, followed by optional LIMIT/OFFSET. The binder resolves that
+  key to a projected result ordinal and records its scalar type and direction;
+  non-projected keys and invalid namespaces are rejected. Execution remains
+  gated until the materializing typed-sort executor lands.
 - **Projection**:
   - `*` projects all columns in schema order.
   - Explicit projection: 1 to 64 column names.

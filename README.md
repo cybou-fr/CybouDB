@@ -39,7 +39,7 @@ underlying CPU.
 | Multi-page PAX tables | working; two-level directory tree (up to 28M rows per table), cross-page batches |
 | Paired multi-page allocation map | working; `create-large`, 63 GiB ceiling, page reclamation |
 | SQL engine: parser, binder, executor | working; pure x86-64 scalar and batch execution |
-| SQL statements | working; `CREATE TABLE`, `INSERT INTO` (multi-row), `SELECT ... WHERE` |
+| SQL statements | working; `CREATE TABLE`, `INSERT INTO` (multi-row), `SELECT ... WHERE`, `LIMIT [OFFSET]`, correctness-first `INNER JOIN`/`LEFT JOIN` on qualified INT32/INT64 equi-keys |
 | SQL types and semantics | working; `INT32`, `INT64`, `FLOAT32`, `BOOL`, 3VL logic, exact decimal-to-binary32 conversion with defined comparison semantics |
 | CLI: `query` | working; executes statements, autocommits mutations, tabular output |
 | CLI: `create`, `info`, `check`, `alloc`, `free` | working |
@@ -47,12 +47,12 @@ underlying CPU.
 | Linux x86-64, raw syscalls, no libc | working |
 | Windows x64, kernel32 only | working |
 | Storage, fault-injection, and SQL test suites | working; 3,300+ automated tests on Linux and Windows |
-| CI on Linux and Windows | working; hosted runs are green on both |
+| CI on Linux and Windows | configured; local Windows baseline verified after the CybouDB rename |
 | Interactive console (REPL) | working; interactive terminal (`ReadConsoleW` / stdin), piped scripts, multiline queries, meta-commands (Phase 4) |
 | Public C library ABI (`cyboudb.h`, `libcyboudb.a`, `cyboudb.lib`) | working; borrowed typed batch views, prepared statement caching (Phase 5) |
 | Hardware acceleration & SIMD | working; SSE4.2 hardware CRC-32C, BMI2 primitives (pext/pdep/bzhi), AVX2 256-bit scan kernels, CPUID detection (Phase 6) |
 | ARM64 execution backend | not started (Phase 7) |
-| Vector engine | not started (Phase 8) |
+| Vector engine | runtime core working: caller-owned normalized arena, scalar/AVX2 dot and cosine, squared L2, filtered streaming top-K; persistent storage and SQL surface pending |
 | Multi-statement transactions, WAL, concurrency | not started (Phase 9) |
 | Encryption | not started (Phase 10) |
 

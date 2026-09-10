@@ -1085,6 +1085,11 @@ cyboudb_exec_query:
     mov     r12, [r10 + PLAN_SCHEMA_PAGE]
     mov     r13, [r10 + PLAN_DATA1]     ; proj_count
     mov     r14, [r10 + PLAN_DATA2]     ; proj_indices
+    xor     r15d, r15d
+    cmp     qword [r10 + PLAN_JOIN_TYPE], 0
+    je      .hdr_sources_ready
+    mov     r15, [r10 + PLAN_JOIN_PROJECTIONS]
+.hdr_sources_ready:
 
     xor     rbx, rbx                    ; p = 0
 .hdr_loop:
@@ -1092,9 +1097,20 @@ cyboudb_exec_query:
     jz      .hdr_no_sep
     PUTS    str_pipe_sep
 .hdr_no_sep:
-    mov     eax, [r14 + rbx * 4]        ; col_idx
+    mov     r11, r12                    ; default: left schema
+    mov     eax, [r14 + rbx * 4]        ; ordinary physical col_idx
+    test    r15, r15
+    jz      .hdr_column_ready
+    mov     eax, [r15 + rbx * 4]        ; joined source descriptor
+    test    eax, PLAN_PROJ_RIGHT_BIT
+    jz      .hdr_join_left
+    and     eax, 0x7fffffff
+    mov     r10, [rbp - 40]
+    mov     r11, [r10 + PLAN_RIGHT_SCHEMA]
+.hdr_join_left:
+.hdr_column_ready:
     shl     rax, 5
-    lea     ARG1, [r12 + CAT_COLUMNS + rax + 8] ; col name
+    lea     ARG1, [r11 + CAT_COLUMNS + rax + 8] ; col name
     call    puts_asciiz
     inc     rbx
     cmp     rbx, r13

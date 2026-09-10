@@ -1484,6 +1484,10 @@ sql_parse:
     mov     r10, [rbp - 48]
     mov     qword [r10 + SELECT_JOIN_HEAD], 0
     mov     qword [r10 + SELECT_JOIN_COUNT], 0
+    mov     qword [r10 + SELECT_LIMIT_VALUE], -1
+    mov     qword [r10 + SELECT_OFFSET_VALUE], 0
+    mov     qword [r10 + SELECT_ORDER_NAME], 0
+    mov     qword [r10 + SELECT_ORDER_DESC], 0
 
     ; Peek projection
     lea     ARG1, [rbp - 160]
@@ -1849,11 +1853,143 @@ sql_parse:
     jz      .fail
     mov     r10, [rbp - 48]
     mov     [r10 + STMT_EXTRA3], rax    ; where_expr
-    jmp     .check_eof
+    jmp     .select_tail
 
 .no_where:
     mov     r10, [rbp - 48]
     mov     qword [r10 + STMT_EXTRA3], 0
+
+.select_tail:
+    ; Optional ORDER BY [qualifier.]column [ASC|DESC].
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_peek
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_ORDER
+    jne     .select_limit_tail
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next                ; consume ORDER
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_BY
+    jne     .bad_syntax
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_col_name
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [rbp - 200], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [rbp - 208], rax
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, AST_NAME_SIZE
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+    mov     [rbp - 216], rax
+    mov     rdx, [rbp - 200]
+    mov     [rax + AST_NAME_PTR], rdx
+    mov     rdx, [rbp - 208]
+    mov     [rax + AST_NAME_LEN], rdx
+    mov     qword [rax + AST_NAME_QUAL_PTR], 0
+    mov     qword [rax + AST_NAME_QUAL_LEN], 0
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_peek
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_DOT
+    jne     .order_name_ready
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_col_name
+    mov     r10, [rbp - 216]
+    mov     rdx, [r10 + AST_NAME_PTR]
+    mov     [r10 + AST_NAME_QUAL_PTR], rdx
+    mov     rdx, [r10 + AST_NAME_LEN]
+    mov     [r10 + AST_NAME_QUAL_LEN], rdx
+    mov     rdx, [rbp - 192 + TOK_OFFSET]
+    add     rdx, [rbp - 8]
+    mov     [r10 + AST_NAME_PTR], rdx
+    mov     rdx, [rbp - 192 + TOK_LEN]
+    mov     [r10 + AST_NAME_LEN], rdx
+.order_name_ready:
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 216]
+    mov     [r10 + SELECT_ORDER_NAME], rax
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_peek
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_ASC
+    je      .order_consume_direction
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_DESC
+    jne     .select_limit_tail
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + SELECT_ORDER_DESC], 1
+.order_consume_direction:
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+
+.select_limit_tail:
+    ; Optional LIMIT n [OFFSET n]. Both values are non-negative INT64 literals.
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_peek
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_LIMIT
+    jne     .check_eof
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next                ; consume LIMIT
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_INT_LIT
+    jne     .bad_syntax
+    lea     ARG1, [rbp - 192]
+    mov     ARG2, [rbp - 8]
+    lea     ARG3, [rbp - 232]
+    lea     ARG4, [rbp - 240]
+    xor     eax, eax
+    PASS_ARG5 rax
+    call    parse_number
+    cmp     eax, 1
+    jne     .bad_syntax
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 232]
+    mov     [r10 + SELECT_LIMIT_VALUE], rax
+
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_peek
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_OFFSET_KW
+    jne     .check_eof
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next                ; consume OFFSET
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_INT_LIT
+    jne     .bad_syntax
+    lea     ARG1, [rbp - 192]
+    mov     ARG2, [rbp - 8]
+    lea     ARG3, [rbp - 232]
+    lea     ARG4, [rbp - 240]
+    xor     eax, eax
+    PASS_ARG5 rax
+    call    parse_number
+    cmp     eax, 1
+    jne     .bad_syntax
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 232]
+    mov     [r10 + SELECT_OFFSET_VALUE], rax
 
 .check_eof:
     ; Optional semicolon

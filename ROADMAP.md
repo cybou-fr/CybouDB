@@ -400,14 +400,31 @@ types, and records the two physical key indices in the bound plan.
 Qualified JOIN projections are also mapped to either input schema using a
 source bit in the physical projection descriptor. Wildcard expansion remains
 gated until the joined output-schema contract is finalized.
+The runtime plan now preserves those source descriptors separately and exposes
+compact projection ordinals to result sinks, defining the joined-batch ABI
+needed by the nested-loop producer.
+A correctness-first nested-loop producer now executes INNER and LEFT equi-joins
+for qualified INT32/INT64 keys over raw or compressed PAX inputs. It materializes
+compact 64-row output batches, preserves duplicate matches and projected NULLs,
+and skips NULL join keys; LEFT JOIN synthesizes NULL right-side values for
+unmatched rows. JOIN predicates beyond ON remain gated.
+The callback executor also applies `LIMIT count [OFFSET count]` after filtering
+or join production through one selection-mask adapter, including early producer
+termination at the requested row count. Pull-style C stepping remains gated for
+JOIN, while the shared one-input cursor records LIMIT/OFFSET progress for both
+row and batch C stepping, including reset.
+The SELECT AST also has a dedicated single-key ORDER BY descriptor with ASC/DESC
+and qualified-name support. Binding keeps it behind an explicit execution gate
+until the bounded materialization and typed comparison contract is complete.
 
-* [ ] native `FLOAT32` vectors
-* [ ] vector arena and extents
+* [x] runtime-native normalized `FLOAT32` vectors
+* [x] caller-owned contiguous vector arena
+* [ ] persistent vector extents
 * [ ] SQL surface for vector columns and distance expressions
-* [ ] architecture-specific dot products
-* [ ] cosine similarity
-* [ ] top-k
-* [ ] exact vector search
+* [x] scalar and AVX2 dot products with runtime dispatch
+* [x] normalized cosine similarity
+* [x] deterministic filtered streaming top-k
+* [x] runtime exact vector search over contiguous candidates
 * [ ] reproducible benchmarks
 
 ---

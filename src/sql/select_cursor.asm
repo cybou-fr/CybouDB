@@ -29,6 +29,15 @@ sql_select_open:
     mov qword [r12 + SEL_DONE], 0
     mov qword [r12 + SEL_ERROR], 0
     mov r10, [r12 + SEL_PLAN]
+    mov qword [r12 + SEL_LIMIT_SKIP], 0
+    mov qword [r12 + SEL_LIMIT_LEFT], -1
+    test qword [r10 + PLAN_FLAGS], PLAN_FLAG_LIMIT
+    jz .limit_state_ready
+    mov rax, [r10 + PLAN_OFFSET_VALUE]
+    mov [r12 + SEL_LIMIT_SKIP], rax
+    mov rax, [r10 + PLAN_LIMIT_VALUE]
+    mov [r12 + SEL_LIMIT_LEFT], rax
+.limit_state_ready:
     ; Fast path contract:
     ; 1. PLAN_SCHEMA_PAGE must be non-null
     mov     rax, [r10 + PLAN_SCHEMA_PAGE]
@@ -261,7 +270,38 @@ sql_select_next:
     test    qword [r10 + PLAN_FLAGS], PLAN_FLAG_COUNT_STAR
     jnz     .count_star_accum
 
-
+    test    qword [r10 + PLAN_FLAGS], PLAN_FLAG_LIMIT
+    jz      .selection_ready
+    mov     r8, rax                    ; input selection
+    xor     r9d, r9d                   ; limited selection
+.limit_lane:
+    test    r8, r8
+    jz      .limit_lanes_done
+    bsf     rcx, r8
+    lea     rax, [r8 - 1]
+    and     r8, rax
+    cmp     qword [r12 + SEL_LIMIT_SKIP], 0
+    je      .limit_take
+    dec     qword [r12 + SEL_LIMIT_SKIP]
+    jmp     .limit_lane
+.limit_take:
+    cmp     qword [r12 + SEL_LIMIT_LEFT], 0
+    je      .limit_lanes_done
+    bts     r9, rcx
+    dec     qword [r12 + SEL_LIMIT_LEFT]
+    jmp     .limit_lane
+.limit_lanes_done:
+    mov     rax, r9
+    cmp     qword [r12 + SEL_LIMIT_LEFT], 0
+    jne     .limit_not_done
+    mov     qword [r12 + SEL_DONE], 1
+.limit_not_done:
+    test    rax, rax
+    jnz     .selection_ready
+    cmp     qword [r12 + SEL_DONE], 0
+    jne     .done
+    jmp     .scan_loop
+.selection_ready:
     mov rdx, rax
     xor eax, eax
     jmp .next_exit
@@ -279,6 +319,17 @@ sql_select_next:
     test qword [r10 + PLAN_FLAGS], PLAN_FLAG_COUNT_STAR
     jz .done
 .count_star_deliver:
+    test qword [r10 + PLAN_FLAGS], PLAN_FLAG_LIMIT
+    jz .count_star_emit
+    cmp qword [r12 + SEL_LIMIT_LEFT], 0
+    je .done
+    cmp qword [r12 + SEL_LIMIT_SKIP], 0
+    je .count_limit_take
+    dec qword [r12 + SEL_LIMIT_SKIP]
+    jmp .done
+.count_limit_take:
+    dec qword [r12 + SEL_LIMIT_LEFT]
+.count_star_emit:
     mov     r10, [r12 + SEL_BATCH]            ; batch_view
     mov     qword [r10 + BATCH_VIEW_ROWS], 1
     lea     r11, [r10 + BATCH_VIEW_COLUMNS] ; colview 0

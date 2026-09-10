@@ -233,6 +233,38 @@ static void test_step_batch(const char *db_path) {
     printf("ok   test_step_batch\n");
 }
 
+static void test_limit_cursor(const char *db_path) {
+    cyboudb_db *db = NULL;
+    cyboudb_stmt *stmt = NULL;
+    ASSERT_EQ(cyboudb_open(db_path, CybouDB_OPEN_READONLY, &db), CybouDB_OK,
+              "open limit cursor");
+    ASSERT_EQ(cyboudb_prepare(db, "SELECT id FROM items LIMIT 2 OFFSET 1", &stmt),
+              CybouDB_OK, "prepare limit cursor");
+    ASSERT_EQ(cyboudb_step(stmt), CybouDB_ROW, "limit first row");
+    ASSERT_EQ(cyboudb_column_int64(stmt, 0), 2, "limit first value");
+    ASSERT_EQ(cyboudb_step(stmt), CybouDB_ROW, "limit second row");
+    ASSERT_EQ(cyboudb_column_int64(stmt, 0), 3, "limit second value");
+    ASSERT_EQ(cyboudb_step(stmt), CybouDB_DONE, "limit row cursor exhausted");
+
+    ASSERT_EQ(cyboudb_reset(stmt), CybouDB_OK, "reset limit cursor");
+    const cyboudb_batch_view *batch = NULL;
+    uint64_t mask = 0;
+    ASSERT_EQ(cyboudb_step_batch(stmt, &batch, &mask), CybouDB_ROW,
+              "limit batch row");
+    ASSERT_EQ(mask, 0x6, "limit batch preserves physical lanes");
+    ASSERT_EQ(cyboudb_step_batch(stmt, &batch, &mask), CybouDB_DONE,
+              "limit batch exhausted");
+    cyboudb_finalize(stmt);
+
+    ASSERT_EQ(cyboudb_prepare(db, "SELECT count(*) FROM items LIMIT 0", &stmt),
+              CybouDB_OK, "prepare zero aggregate limit");
+    ASSERT_EQ(cyboudb_step(stmt), CybouDB_DONE, "zero aggregate limit exhausted");
+    cyboudb_finalize(stmt);
+    ASSERT_EQ(cyboudb_close(db), CybouDB_OK, "close limit cursor");
+    total_tests++;
+    printf("ok   test_limit_cursor\n");
+}
+
 static void test_statement_lifetime_and_stale_generation(const char *db_path) {
     cyboudb_db *db = NULL;
     int rc = cyboudb_open(db_path, CybouDB_OPEN_READWRITE, &db);
@@ -875,6 +907,7 @@ int main(int argc, char **argv) {
     test_crud_and_step(db_path);
     test_count_star(db_path);
     test_step_batch(db_path);
+    test_limit_cursor(db_path);
     test_statement_lifetime_and_stale_generation(db_path);
     test_batch_projection_contract(db_path);
     test_batch_count_contract(db_path);

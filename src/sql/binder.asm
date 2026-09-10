@@ -23,9 +23,11 @@ err_no_pax:          db "database does not have PAX table storage enabled", 0
 err_tbl_name_len:    db "table name exceeds 31 characters", 0
 err_col_name_len:    db "column name exceeds 23 characters", 0
 err_unsupported_op:  db "unsupported expression comparison", 0
-err_join_pending:    db "JOIN execution is not implemented yet", 0
+err_join_pending:    db "JOIN WHERE predicates are not implemented yet", 0
 err_join_condition:  db "JOIN ON currently requires column = column", 0
 err_join_projection: db "JOIN projections must be explicitly qualified", 0
+err_join_key_type: db "JOIN keys currently require INT32 or INT64", 0
+err_order_pending: db "ORDER BY execution is not implemented yet", 0
 err_oom:             db "memory arena capacity exceeded", 0
 
 section .text
@@ -284,6 +286,40 @@ qualifier_name_matches:
 .qual_no:
     xor     eax, eax
     FRAME_END
+    ret
+
+; slice_name_matches(a_ptr, a_len, b_ptr, b_len) -> EAX bool
+slice_name_matches:
+    cmp     ARG2, ARG4
+    jne     .slice_no
+    test    ARG2, ARG2
+    jz      .slice_yes
+    mov     r10, ARG1
+    mov     r11, ARG3
+    mov     rcx, ARG2
+.slice_loop:
+    mov     al, [r10]
+    mov     dl, [r11]
+    cmp     al, dl
+    je      .slice_next
+    or      al, 0x20
+    or      dl, 0x20
+    cmp     al, dl
+    jne     .slice_no
+    cmp     al, 'a'
+    jb      .slice_no
+    cmp     al, 'z'
+    ja      .slice_no
+.slice_next:
+    inc     r10
+    inc     r11
+    dec     rcx
+    jnz     .slice_loop
+.slice_yes:
+    mov     eax, 1
+    ret
+.slice_no:
+    xor     eax, eax
     ret
 
 ; qualifier_matches(stmt_payload, qualifier_ptr, qualifier_len) -> EAX bool
@@ -1212,10 +1248,24 @@ sql_bind:
     mov     qword [r10 + PLAN_JOIN_LEFT_COL], 0
     mov     qword [r10 + PLAN_JOIN_RIGHT_COL], 0
     mov     qword [r10 + PLAN_JOIN_KEY_TYPE], 0
+    mov     qword [r10 + PLAN_JOIN_PROJECTIONS], 0
+    mov     qword [r10 + PLAN_LIMIT_VALUE], 0
+    mov     qword [r10 + PLAN_OFFSET_VALUE], 0
+    mov     qword [r10 + PLAN_ORDER_ORDINAL], 0
+    mov     qword [r10 + PLAN_ORDER_TYPE], 0
+    mov     qword [r10 + PLAN_ORDER_DESC], 0
+    mov     r11, [rbp - 16]
+    cmp     qword [r11 + SELECT_LIMIT_VALUE], -1
+    je      .select_limit_bound
+    or      qword [r10 + PLAN_FLAGS], PLAN_FLAG_LIMIT
+    mov     rax, [r11 + SELECT_LIMIT_VALUE]
+    mov     [r10 + PLAN_LIMIT_VALUE], rax
+    mov     rax, [r11 + SELECT_OFFSET_VALUE]
+    mov     [r10 + PLAN_OFFSET_VALUE], rax
+.select_limit_bound:
 
-    ; Semantic JOIN staging: resolve both catalog inputs and validate the
-    ; equi-join AST before the executor barrier. This prevents useful binding
-    ; errors from being hidden behind the temporary execution diagnostic.
+    ; Resolve both catalog inputs and validate the executable equi-join AST so
+    ; namespace, column, and type errors are reported before feature gates.
     mov     r10, [rbp - 16]
     cmp     qword [r10 + SELECT_JOIN_COUNT], 0
     je      .join_bound
@@ -1339,6 +1389,11 @@ sql_bind:
     mov     edx, [rax]
     cmp     rdx, [rbp - 248]
     jne     .type_mismatch
+    cmp     edx, CAT_INT32
+    je      .join_key_type_ok
+    cmp     edx, CAT_INT64
+    jne     .join_key_type_bad
+.join_key_type_ok:
 
     mov     r10, [rbp - 48]
     mov     rax, [rbp - 232]
@@ -1490,7 +1545,7 @@ sql_bind:
 
 .proj_count_star:
     mov     r10, [rbp - 48]
-    mov     qword [r10 + PLAN_FLAGS], PLAN_FLAG_COUNT_STAR
+    or      qword [r10 + PLAN_FLAGS], PLAN_FLAG_COUNT_STAR
     mov     qword [rbp - 72], 1         ; proj_count = 1
 
     ; Allocate 1 entry for proj_indices (4 bytes)
@@ -1559,10 +1614,106 @@ sql_bind:
     mov     rax, [rbp - 88]
     mov     [r10 + PLAN_DATA3], rax     ; proj_types
 
+    ; ORDER BY currently names one projected result column. Resolve it to the
+    ; compact result ordinal so materialization no longer depends on schemas.
+    mov     r11, [rbp - 16]
+    mov     r12, [r11 + SELECT_ORDER_NAME]
+    test    r12, r12
+    jz      .order_bound
+    test    qword [r10 + PLAN_FLAGS], PLAN_FLAG_COUNT_STAR
+    jnz     .order_pending
+    cmp     qword [r11 + SELECT_PROJ_COUNT], 0
+    je      .order_pending
     cmp     qword [r10 + PLAN_JOIN_TYPE], 0
+    jne     .order_projection_loop_start
+    cmp     qword [r12 + AST_NAME_QUAL_LEN], 0
+    je      .order_projection_loop_start
+    mov     ARG1, r11
+    mov     ARG2, [r12 + AST_NAME_QUAL_PTR]
+    mov     ARG3, [r12 + AST_NAME_QUAL_LEN]
+    call    qualifier_matches
+    test    eax, eax
+    jz      .col_not_found
+.order_projection_loop_start:
+    xor     ebx, ebx
+.order_projection_loop:
+    cmp     rbx, [rbp - 72]
+    jae     .col_not_found
+    mov     r11, [rbp - 16]
+    mov     rax, rbx
+    imul    rax, AST_NAME_SIZE
+    add     rax, [r11 + SELECT_PROJECTIONS_PTR]
+    mov     [rbp - 96], rax
+    mov     ARG1, [r12 + AST_NAME_PTR]
+    mov     ARG2, [r12 + AST_NAME_LEN]
+    mov     ARG3, [rax + AST_NAME_PTR]
+    mov     ARG4, [rax + AST_NAME_LEN]
+    call    slice_name_matches
+    test    eax, eax
+    jz      .order_projection_next
+    mov     r10, [rbp - 48]
+    cmp     qword [r10 + PLAN_JOIN_TYPE], 0
+    je      .order_projection_found
+    mov     rax, [rbp - 96]
+    mov     ARG1, [r12 + AST_NAME_QUAL_PTR]
+    mov     ARG2, [r12 + AST_NAME_QUAL_LEN]
+    mov     ARG3, [rax + AST_NAME_QUAL_PTR]
+    mov     ARG4, [rax + AST_NAME_QUAL_LEN]
+    call    qualifier_name_matches
+    test    eax, eax
+    jz      .order_projection_next
+.order_projection_found:
+    mov     r10, [rbp - 48]
+    or      qword [r10 + PLAN_FLAGS], PLAN_FLAG_ORDER
+    mov     [r10 + PLAN_ORDER_ORDINAL], rbx
+    mov     rax, [rbp - 88]
+    mov     eax, [rax + rbx * 4]
+    mov     [r10 + PLAN_ORDER_TYPE], rax
+    mov     r11, [rbp - 16]
+    mov     rax, [r11 + SELECT_ORDER_DESC]
+    mov     [r10 + PLAN_ORDER_DESC], rax
+    jmp     .order_pending
+.order_projection_next:
+    inc     rbx
+    jmp     .order_projection_loop
+.order_bound:
+
+    cmp     qword [r10 + PLAN_JOIN_TYPE], 0
+    je      .bind_where
+
+    ; Preserve source-aware descriptors for the join producer, while exposing
+    ; compact ordinal slots to the existing result-sink ABI.
+    mov     rax, [r10 + PLAN_DATA2]
+    mov     [r10 + PLAN_JOIN_PROJECTIONS], rax
+    mov     rax, [rbp - 72]
+    shl     rax, 2
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, rax
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+    mov     r10, [rbp - 48]
+    mov     [r10 + PLAN_DATA2], rax
+    xor     ecx, ecx
+.join_projection_ordinals:
+    cmp     rcx, [rbp - 72]
+    jae     .join_projection_done
+    mov     [rax + rcx * 4], ecx
+    inc     rcx
+    jmp     .join_projection_ordinals
+.join_projection_done:
+    mov     r10, [rbp - 48]
+    mov     r11, [rbp - 16]
+    cmp     qword [r11 + SELECT_WHERE_EXPR], 0
     jne     .join_pending
+    mov     qword [r10 + PLAN_DATA4], 0
+    mov     qword [r10 + PLAN_REQUIRED_COLS], 0
+    mov     qword [r10 + PLAN_REQUIRED_VALUES], 0
+    xor     eax, eax
+    jmp     .binder_exit
 
     ; Bind WHERE expression if present
+.bind_where:
     mov     r10, [rbp - 16]
     mov     rax, [r10 + STMT_EXTRA3]    ; where_expr AST
     test    rax, rax
@@ -1648,6 +1799,24 @@ sql_bind:
     mov     ARG2, SQL_ERR_SYNTAX
     xor     ARG3, ARG3
     lea     ARG4, [err_join_projection]
+    call    set_binder_error
+    mov     eax, SQL_ERR_SYNTAX
+    jmp     .binder_exit
+
+.join_key_type_bad:
+    mov     ARG1, [rbp - 40]
+    mov     ARG2, SQL_ERR_SYNTAX
+    xor     ARG3, ARG3
+    lea     ARG4, [err_join_key_type]
+    call    set_binder_error
+    mov     eax, SQL_ERR_SYNTAX
+    jmp     .binder_exit
+
+.order_pending:
+    mov     ARG1, [rbp - 40]
+    mov     ARG2, SQL_ERR_SYNTAX
+    xor     ARG3, ARG3
+    lea     ARG4, [err_order_pending]
     call    set_binder_error
     mov     eax, SQL_ERR_SYNTAX
     jmp     .binder_exit

@@ -349,6 +349,18 @@ cyboudb_prepare:
     jae     .metadata_repoint
     mov     eax, [r8 + rcx * 4]
     mov     [r12 + STMT_H_RESULT_INDICES + rcx * 4], eax
+    mov     r10, [r12 + STMT_H_PLAN]
+    mov     r11, [r10 + PLAN_SCHEMA_PAGE]
+    cmp     qword [r10 + PLAN_JOIN_TYPE], 0
+    je      .metadata_column_ready
+    mov     r10, [r10 + PLAN_JOIN_PROJECTIONS]
+    mov     eax, [r10 + rcx * 4]
+    test    eax, PLAN_PROJ_RIGHT_BIT
+    jz      .metadata_column_ready
+    and     eax, 0x7fffffff
+    mov     r10, [r12 + STMT_H_PLAN]
+    mov     r11, [r10 + PLAN_RIGHT_SCHEMA]
+.metadata_column_ready:
     shl     rax, 5
     lea     rax, [r11 + CAT_COLUMNS + rax + 8]
     imul    rdx, rcx, 24
@@ -649,6 +661,9 @@ api_select_next:
     je .done
     cmp dword [r12 + STMT_H_STATE], STMT_STATE_INIT
     jne .next
+    mov r10, [r12 + STMT_H_PLAN]
+    cmp qword [r10 + PLAN_JOIN_TYPE], 0
+    jne .join_pull_pending
     lea rax, [r12 + STMT_H_DECODE]
     PASS_ARG5 rax
     lea ARG1, [r12 + STMT_H_SELECT]
@@ -675,6 +690,9 @@ api_select_next:
 .row:
     mov eax, CybouDB_C_ROW
     jmp .exit
+.join_pull_pending:
+    mov eax, CybouDB_E_STATE
+    jmp .error
 .error:
     mov r10, [r12 + STMT_H_DB]
     mov [r10 + DB_H_ERRCODE], eax
