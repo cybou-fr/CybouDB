@@ -43,10 +43,11 @@ filter comparison outright and change nothing on materialization. Per-scenario r
 conditions are recorded in [benchmarks/README.md](benchmarks/README.md);
 performance depends on the query, execution mode and hardware.
 
-Persistent vector storage and SQL vector types, SQL transactions, `DROP TABLE`, `DELETE`, and an ARM64 backend remain
+Persistent vector storage and SQL vector types, SQL transactions, `DELETE`, and an ARM64 backend remain
 unimplemented. `UPDATE` supports single-column assignments with a mandatory
 predicate across flat and tree-directory PAX tables, including fixed-width and
-persisted variable-width TEXT/BLOB columns.
+persisted variable-width TEXT/BLOB columns. `DROP TABLE` drops tables and
+stages new catalog roots atomically across both CLI and REPL.
 
 ## How the phases are ordered
 
@@ -179,7 +180,7 @@ cyboudb query demo.cdb "SELECT id, score FROM runs WHERE score > 90"
 * [x] tokenizer, with source positions kept for error messages
 * [x] expression parser with correct operator precedence
 * [x] statement parser: `CREATE TABLE`, `INSERT`, `SELECT ... FROM ... WHERE`
-* [ ] statement parser: `DROP TABLE`
+* [x] statement parser and catalog executor: `DROP TABLE`
 * [x] statement parser contract: single-column `UPDATE ... SET literal WHERE ...`
 * [x] binder contract for typed single-column `UPDATE`
 * [x] COW executor for flat multi-leaf, fixed-width `UPDATE`

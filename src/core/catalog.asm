@@ -9,7 +9,7 @@ extern db_bitmap_deep
 extern db_cow_alloc_page, db_cow_copy_page, db_cow_set_root
 extern db_pax_validate, db_pax_check_new
 extern db_zone_validate
-global db_catalog_validate, db_catalog_put, db_catalog_get
+global db_catalog_validate, db_catalog_put, db_catalog_get, db_catalog_drop
 global db_catalog_set_data, db_catalog_set_data_stats, db_catalog_replace_data
 global db_catalog_replace_data_stats
 section .text
@@ -648,6 +648,176 @@ db_catalog_put:
     jmp .done
 .catalog_full:
     mov eax, CybouDB_E_CATALOG_FULL
+.done:
+    FRAME_END
+    ret
+
+; db_catalog_drop(ctx, table_id): remove a table from the catalog directory.
+; If it was the only table, stages a zero root (empty catalog).
+; Otherwise, allocates a new directory page, copies the remaining entries,
+; seals the page, and stages the new directory root.
+; The dropped table's schema and data pages are retired and will be reclaimed
+; when unreferenced by both active generations.
+db_catalog_drop:
+    FRAME_BEGIN 64, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov r10, ARG1
+    cmp qword [r10 + DB_WRITABLE], 0
+    je .readonly
+    cmp qword [r10 + DB_MODE], 1
+    jne .state
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_CATALOG
+    jz .state
+    cmp qword [r10 + DB_GENERATION], -1
+    je .generation
+    test ARG2, ARG2
+    jz .notfound
+    mov ARG1, [rbp - 8]
+    call current_valid
+    test eax, eax
+    jz .corrupt
+
+    mov r10, [rbp - 8]
+    mov rax, [r10 + DB_ROOT]
+    test rax, rax
+    jz .notfound
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
+    mov [rbp - 24], rax
+    mov eax, [rax + CAT_COUNT]
+    test eax, eax
+    jz .notfound
+    mov [rbp - 32], rax
+
+    mov qword [rbp - 40], 0
+.scan:
+    mov r10, [rbp - 40]
+    shl r10, 4
+    add r10, [rbp - 24]
+    mov rax, [r10 + CAT_DATA]
+    cmp rax, [rbp - 16]
+    je .found
+    inc qword [rbp - 40]
+    mov rax, [rbp - 40]
+    cmp rax, [rbp - 32]
+    jb .scan
+    jmp .notfound
+
+.found:
+    cmp qword [rbp - 32], 1
+    jne .drop_multi
+    mov ARG1, [rbp - 8]
+    xor ARG2, ARG2
+    call db_cow_set_root
+    xor eax, eax
+    jmp .done
+
+.drop_multi:
+    mov ARG1, [rbp - 8]
+    call db_bitmap_headroom
+    cmp rax, 1
+    jb .full
+
+    mov r10, [rbp - 8]
+    mov ARG1, r10
+    lea ARG2, [rbp - 48]
+    call db_cow_alloc_page
+    test eax, eax
+    jnz .done
+
+    mov r10, [rbp - 8]
+    mov rax, [rbp - 48]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
+    mov [rbp - 56], rax
+
+    mov ARG1, rax
+    mov ARG2, r10
+    call stamp
+
+    mov r10, [rbp - 56]
+    mov qword [r10 + CAT_OWNER], 0
+    mov dword [r10 + CAT_TYPE], CAT_DIRECTORY
+    mov eax, [rbp - 32]
+    dec eax
+    mov [r10 + CAT_COUNT], eax
+
+    mov r8, [rbp - 24]
+    mov r9, [rbp - 56]
+    xor ecx, ecx
+.copy_before:
+    cmp rcx, [rbp - 40]
+    jae .copy_after_start
+    mov r10, rcx
+    shl r10, 4
+    mov rax, [r8 + CAT_DATA + r10]
+    mov [r9 + CAT_DATA + r10], rax
+    mov rax, [r8 + CAT_DATA + r10 + 8]
+    mov [r9 + CAT_DATA + r10 + 8], rax
+    inc rcx
+    jmp .copy_before
+
+.copy_after_start:
+    mov rdx, [rbp - 40]
+    mov rcx, rdx
+    inc rcx
+.copy_after:
+    cmp rcx, [rbp - 32]
+    jae .zero_tail_start
+    mov r10, rcx
+    shl r10, 4
+    mov r11, rdx
+    shl r11, 4
+    mov rax, [r8 + CAT_DATA + r10]
+    mov [r9 + CAT_DATA + r11], rax
+    mov rax, [r8 + CAT_DATA + r10 + 8]
+    mov [r9 + CAT_DATA + r11 + 8], rax
+    inc rcx
+    inc rdx
+    jmp .copy_after
+
+.zero_tail_start:
+    mov rax, [rbp - 32]
+    dec rax
+    shl rax, 4
+    add rax, CAT_DATA
+    mov r10, [rbp - 56]
+    xor edx, edx
+.zero_loop:
+    cmp rax, CAT_CRC
+    jae .seal
+    mov byte [r10 + rax], dl
+    inc rax
+    jmp .zero_loop
+
+.seal:
+    mov ARG1, [rbp - 56]
+    call seal_page
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 48]
+    call db_cow_set_root
+    xor eax, eax
+    jmp .done
+
+.readonly:
+    mov eax, CybouDB_E_READONLY
+    jmp .done
+.state:
+    mov eax, CybouDB_E_STATE
+    jmp .done
+.generation:
+    mov eax, CybouDB_E_GENERATION
+    jmp .done
+.notfound:
+    mov eax, CybouDB_E_NOTFOUND
+    jmp .done
+.corrupt:
+    mov eax, CybouDB_E_CATALOG
+    jmp .done
+.full:
+    mov eax, CybouDB_E_FULL
 .done:
     FRAME_END
     ret

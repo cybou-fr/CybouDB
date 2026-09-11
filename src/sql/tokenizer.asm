@@ -54,6 +54,7 @@ kw_offset:   db "offset", 0
 kw_vector:   db "vector", 0
 kw_asc:      db "asc", 0
 kw_desc:     db "desc", 0
+kw_drop:     db "drop", 0
 
     align 8
 kw_table_entries:
@@ -98,6 +99,7 @@ kw_table_entries:
     dq kw_vector,  6, TOK_VECTOR
     dq kw_asc,      3, TOK_ASC
     dq kw_desc,     4, TOK_DESC
+    dq kw_drop,     4, TOK_DROP
     dq 0,          0, 0                 ; terminator
 
 section .text

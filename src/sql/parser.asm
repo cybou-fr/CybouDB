@@ -1329,6 +1329,8 @@ sql_parse:
     je      .parse_select
     cmp     rax, TOK_UPDATE
     je      .parse_update
+    cmp     rax, TOK_DROP
+    je      .parse_drop
 
     ; Unknown initial token
     mov     ARG1, [rbp - 40]
@@ -1714,6 +1716,35 @@ sql_parse:
     jz      .fail
     mov     r10, [rbp - 48]
     mov     [r10 + UPDATE_WHERE_EXPR], rax
+    jmp     .check_eof
+
+; --- DROP TABLE table --------------------------------------------------------
+.parse_drop:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_DROP_TABLE
+
+    ; Expect TABLE keyword.
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_TABLE
+    jne     .bad_syntax
+
+    ; Expect table name (IDENT).
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_table_name
+
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + DROP_TABLE_NAME_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + DROP_TABLE_NAME_LEN], rax
+
     jmp     .check_eof
 
 ; --- SELECT ------------------------------------------------------------------

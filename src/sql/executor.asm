@@ -9,7 +9,7 @@
 BITS 64
 default rel
 
-extern db_catalog_put, db_pax_insert, db_pax_update_one, db_pax_capacity, db_commit
+extern db_catalog_put, db_catalog_drop, db_pax_insert, db_pax_update_one, db_pax_capacity, db_commit
 extern db_var_write_chain
 extern sql_select_open, sql_select_next
 extern sql_arena_alloc
@@ -513,8 +513,15 @@ sql_execute_batch:
     je      .exec_select
     cmp     rax, STMT_UPDATE
     je      .exec_update
+    cmp     rax, STMT_DROP_TABLE
+    je      .exec_drop
     mov     eax, SQL_ERR_SYNTAX
     jmp     .exec_exit
+.exec_drop:
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    call    db_catalog_drop
+    jmp     .storage_done
 .exec_create:
     mov     ARG1, [rbp - 8]
     mov     ARG2, [r10 + PLAN_TABLE_ID]

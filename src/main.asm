@@ -183,6 +183,7 @@ err_table:
 
 err_no_pax_cli:  db "error: database does not support PAX tables (create with create-pax-multi)", 10, 0
 msg_sql_table_created: db "Table created.", 10, 0
+msg_sql_table_dropped: db "Table dropped.", 10, 0
 msg_sql_insert_prefix: db "INSERT ", 0
 msg_sql_update_prefix: db "UPDATE ", 0
 msg_sql_rows_prefix:   db "(", 0
@@ -1076,6 +1077,8 @@ cyboudb_exec_query:
     mov     r10, [rbp - 40]
     cmp     qword [r10 + PLAN_TYPE], STMT_CREATE_TABLE
     je      .create_done
+    cmp     qword [r10 + PLAN_TYPE], STMT_DROP_TABLE
+    je      .drop_done
     cmp     qword [r10 + PLAN_TYPE], STMT_UPDATE
     je      .update_done
 
@@ -1094,6 +1097,10 @@ cyboudb_exec_query:
     mov     ARG1, [r10 + PLAN_DATA1]
     call    put_u64
     PUTS    str_nl
+    jmp     .exec_success
+
+.drop_done:
+    PUTS    msg_sql_table_dropped
     jmp     .exec_success
 
 .create_done:

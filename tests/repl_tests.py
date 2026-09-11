@@ -145,6 +145,14 @@ def run(db_path):
         expected_in_out=["1 row"],
     )
 
+    check(
+        "repl_create_and_drop_table",
+        [str(db_path)],
+        "CREATE TABLE temp_tbl (x INT32);\n.tables\nDROP TABLE temp_tbl;\n.tables\n.quit\n",
+        rc=0,
+        expected_in_out=["Table created.", "temp_tbl", "Table dropped."],
+    )
+
     for predicate, count in (("", 4), (" WHERE active = TRUE", 3), (" WHERE id = 999", 0)):
         check(f"count_star{predicate}", [str(db_path)],
               f"SELECT COUNT(*) FROM users{predicate};\n",

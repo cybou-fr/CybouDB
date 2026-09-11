@@ -851,6 +851,8 @@ sql_bind:
     je      .bind_select
     cmp     rax, STMT_UPDATE
     je      .bind_update
+    cmp     rax, STMT_DROP_TABLE
+    je      .bind_drop
 
     mov     eax, SQL_ERR_SYNTAX
     jmp     .binder_exit
@@ -1407,6 +1409,33 @@ sql_bind:
     mov     r10, [rbp - 48]
     mov     [r10 + PLAN_REQUIRED_COLS], rax
     mov     [r10 + PLAN_REQUIRED_VALUES], rdx
+    xor     eax, eax
+    jmp     .binder_exit
+
+; --- BIND DROP TABLE ---------------------------------------------------------
+.bind_drop:
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + PLAN_TYPE], STMT_DROP_TABLE
+
+    mov     r10, [rbp - 16]
+    mov     rsi, [r10 + DROP_TABLE_NAME_PTR]
+    mov     rcx, [r10 + DROP_TABLE_NAME_LEN]
+    cmp     rcx, 31
+    ja      .bad_tbl_len
+
+    ; Resolve table
+    mov     ARG1, [rbp - 8]             ; db_ctx
+    mov     ARG2, [r10 + DROP_TABLE_NAME_PTR]
+    mov     ARG3, [r10 + DROP_TABLE_NAME_LEN]
+    lea     ARG4, [rbp - 56]            ; table_id
+    call    catalog_find_table
+    test    rax, rax
+    jz      .tbl_not_found
+
+    mov     r10, [rbp - 48]
+    mov     rdx, [rbp - 56]
+    mov     [r10 + PLAN_TABLE_ID], rdx
+
     xor     eax, eax
     jmp     .binder_exit
 

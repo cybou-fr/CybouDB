@@ -513,6 +513,61 @@ def run():
         raise RuntimeError(f'Integrity check failed: {result.stdout} {result.stderr}')
 
 
+
+
+def drop_table_tests():
+    """Verify DROP TABLE parsing, catalog removal, multi-table drops, and integrity."""
+    global database
+    original_database = database
+    with tempfile.TemporaryDirectory(prefix='cyboudb-drop-') as directory:
+        database = Path(directory) / 'drop.cdb'
+        setup = invoke('create-pax-multi', database, '100', '--force')
+        assert setup.returncode == 0, setup.stdout + setup.stderr
+
+        # Syntax errors
+        check('drop_syntax_no_table_kw', 'DROP mytable', rc=2, message='syntax error near token')
+        check('drop_syntax_no_table_name', 'DROP TABLE', rc=2, message='expected table name')
+        check('drop_nonexistent_table', 'DROP TABLE nonexistent', rc=2, message='table not found in catalog')
+
+        # Create 3 tables: t1, t2, t3
+        check('drop_create_t1', 'CREATE TABLE t1 (id INT32 NOT NULL, v INT64)', message='Table created')
+        check('drop_create_t2', 'CREATE TABLE t2 (x BOOL, y FLOAT32)', message='Table created')
+        check('drop_create_t3', 'CREATE TABLE t3 (val INT32)', message='Table created')
+
+        # Insert data
+        check('drop_insert_t1', 'INSERT INTO t1 VALUES (1, 100), (2, 200)', message='INSERT 2')
+        check('drop_insert_t2', 'INSERT INTO t2 VALUES (TRUE, 1.5), (FALSE, 2.5)', message='INSERT 2')
+        check('drop_insert_t3', 'INSERT INTO t3 VALUES (42)', message='INSERT 1')
+
+        # Drop middle table t2
+        check('drop_table_middle', 'DROP TABLE t2', message='Table dropped')
+        check('drop_query_dropped_t2', 'SELECT * FROM t2', rc=2, message='table not found in catalog')
+
+        # Verify t1 and t3 still have their data intact
+        check('drop_verify_t1', 'SELECT id, v FROM t1', rows=[(1, 100), (2, 200)])
+        check('drop_verify_t3', 'SELECT val FROM t3', rows=[(42,)])
+
+        # Drop t1 (case-insensitive test: DROP TABLE T1)
+        check('drop_table_case_insensitive', 'DROP TABLE T1', message='Table dropped')
+        check('drop_query_dropped_t1', 'SELECT id FROM t1', rc=2, message='table not found in catalog')
+        check('drop_verify_t3_again', 'SELECT val FROM t3', rows=[(42,)])
+
+        # Drop last remaining table t3 -> catalog becomes empty
+        check('drop_table_last', 'DROP TABLE t3', message='Table dropped')
+        check('drop_query_dropped_t3', 'SELECT val FROM t3', rc=2, message='table not found in catalog')
+
+        # Re-create table on empty catalog
+        check('drop_recreate_table', 'CREATE TABLE t_fresh (a INT64 NOT NULL)', message='Table created')
+        check('drop_insert_fresh', 'INSERT INTO t_fresh VALUES (999)', message='INSERT 1')
+        check('drop_query_fresh', 'SELECT a FROM t_fresh', rows=[(999,)])
+
+        # Whole-database integrity check
+        result = invoke('check', database)
+        assert result.returncode == 0 and 'Status:          OK' in result.stdout, \
+            result.stdout + result.stderr
+    database = original_database
+
+
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory(prefix='cyboudb-sql-') as directory:
         database = Path(directory) / 'test.cdb'
@@ -521,5 +576,6 @@ if __name__ == '__main__':
             sys.exit(f'Database setup failed: {setup.stdout} {setup.stderr}')
         run()
         update_enospc_atomicity()
+        drop_table_tests()
     print(f'SQL test suite: {passed} passed, {failed} failed')
     sys.exit(1 if failed else 0)

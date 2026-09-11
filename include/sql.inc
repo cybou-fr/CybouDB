@@ -48,6 +48,7 @@
 %define TOK_VECTOR          72
 %define TOK_ASC             73
 %define TOK_DESC            74
+%define TOK_DROP            75
 
 ; Types
 %define TOK_TYPE_INT32      30
@@ -103,6 +104,7 @@
 %define STMT_INSERT         2
 %define STMT_SELECT         3
 %define STMT_UPDATE         4
+%define STMT_DROP_TABLE     5
 
 ; --- AST Statement header and statement-specific payload --------------------
 %define AST_STMT_TYPE       0           ; qword: STMT_*
@@ -140,6 +142,10 @@
 %define UPDATE_VALUE_EXPR      32       ; AST_EXPR*; parser requires literal
 %define UPDATE_WHERE_EXPR      40       ; AST_EXPR*; mandatory in V1
 %define UPDATE_PAYLOAD_SIZE    48
+ 
+%define DROP_TABLE_NAME_PTR    0
+%define DROP_TABLE_NAME_LEN    8
+%define DROP_PAYLOAD_SIZE      16
 
 %define SELECT_TABLE_NAME_PTR   0
 %define SELECT_TABLE_NAME_LEN   8
