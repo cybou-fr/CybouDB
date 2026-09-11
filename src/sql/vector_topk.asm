@@ -8,8 +8,10 @@ default rel
 extern vector_cosine_normalized_f32_resolve
 extern vector_l2sq_f32_resolve
 global vector_topk_cosine_f32, vector_topk_l2sq_f32
+global cyboudb_vector_topk_cosine_f32, cyboudb_vector_topk_l2sq_f32
 
 section .text
+cyboudb_vector_topk_cosine_f32:
 vector_topk_cosine_f32:
     FRAME_BEGIN 64, 0
     mov [rbp - 8], rbx
@@ -122,6 +124,7 @@ vector_topk_cosine_f32:
 
 ; Exact streaming Top-K squared L2. Smaller distance sorts first; equal
 ; distances retain ascending vector id. State and validation match cosine.
+cyboudb_vector_topk_l2sq_f32:
 vector_topk_l2sq_f32:
     FRAME_BEGIN 64, 0
     mov [rbp - 8], rbx

@@ -90,3 +90,12 @@ The optional arguments are `count dimensions k iterations`; defaults are
 `20000 128 10 3`. Generation and normalization happen before timing. Reported
 throughput therefore measures the allocation-free Top-K scan, not fixture
 construction.
+
+## Public C API
+
+`include/cyboudb.h` exposes the storage-independent runtime as
+`cyboudb_vector_arena_*`, `cyboudb_vector_normalize_f32`, and
+`cyboudb_vector_topk_{cosine,l2sq}_f32`. State remains caller-owned and the
+functions do not depend on an open database handle. Return values use the
+`CybouDB_VECTOR_*` status family so capacity and non-finite input remain
+distinguishable from database/SQL errors.

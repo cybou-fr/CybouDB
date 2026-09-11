@@ -6,9 +6,11 @@ default rel
 
 extern vector_normalize_f32_resolve
 global vector_arena_init, vector_arena_append, vector_arena_get
+global cyboudb_vector_arena_init, cyboudb_vector_arena_append, cyboudb_vector_arena_get
 
 section .text
 ; vector_arena_init(state, base, capacity_bytes, dimensions) -> status
+cyboudb_vector_arena_init:
 vector_arena_init:
     test ARG1, ARG1
     jz .init_invalid
@@ -36,6 +38,7 @@ vector_arena_init:
     ret
 
 ; vector_arena_append(state, input, out_id) -> status
+cyboudb_vector_arena_append:
 vector_arena_append:
     FRAME_BEGIN 32, 0
     mov [rbp - 8], r12
@@ -86,6 +89,7 @@ vector_arena_append:
     ret
 
 ; vector_arena_get(state, vector_id) -> pointer or NULL
+cyboudb_vector_arena_get:
 vector_arena_get:
     test ARG1, ARG1
     jz .get_missing

@@ -235,7 +235,7 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
         if errorlevel 1 goto :fail
     )
     if "%~1"=="--vector-bench" (
-        cl.exe /O2 /W3 /nologo benchmarks\vector_search_bench.c /Febuild\vector_search_bench.exe /Fobuild\vector_search_bench.obj /link build\cyboudb.lib kernel32.lib
+        cl.exe /O2 /W3 /nologo /Iinclude benchmarks\vector_search_bench.c /Febuild\vector_search_bench.exe /Fobuild\vector_search_bench.obj /link build\cyboudb.lib kernel32.lib
         if errorlevel 1 goto :fail
     )
     if "%~1"=="--for-experiment" (
@@ -265,7 +265,7 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     echo Build OK -^> build\c_api_test.exe
     cl.exe /O2 /W3 /nologo tests\compress_harness.c /Febuild\compress_harness.exe /Fobuild\compress_harness.obj /link build\cyboudb.lib kernel32.lib
     if errorlevel 1 goto :fail
-    cl.exe /O2 /W3 /nologo tests\vector_topk_test.c /Febuild\vector_topk_test.exe /Fobuild\vector_topk_test.obj /link build\cyboudb.lib kernel32.lib
+    cl.exe /O2 /W3 /nologo /Iinclude tests\vector_topk_test.c /Febuild\vector_topk_test.exe /Fobuild\vector_topk_test.obj /link build\cyboudb.lib kernel32.lib
     if errorlevel 1 goto :fail
     endlocal
     exit /b 0

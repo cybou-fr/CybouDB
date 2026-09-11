@@ -1,30 +1,20 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "cyboudb.h"
 
-typedef struct {
-    const float *query;
-    const float *vectors;
-    uint64_t count, dim, k, stride;
-    uint64_t *out_ids;
-    float *out_scores;
-    uint64_t out_count;
-    const uint64_t *candidates;
-    uint64_t eval_count;
-} vector_topk_state;
+typedef cyboudb_vector_topk vector_topk_state;
 
 extern int vector_topk_cosine_f32(vector_topk_state *);
 extern int vector_topk_l2sq_f32(vector_topk_state *);
 extern int vector_normalize_f32_scalar(const float *, float *, uint64_t);
 extern void *vector_normalize_f32_resolve(void);
+extern int cyboudb_vector_normalize_f32(const float *, float *, uint64_t);
 typedef int (*normalize_fn)(const float *, float *, uint64_t);
-typedef struct {
-    float *base;
-    uint64_t capacity, used, dim, stride, count;
-} vector_arena;
-extern int vector_arena_init(vector_arena *, void *, uint64_t, uint64_t);
-extern int vector_arena_append(vector_arena *, const float *, uint64_t *);
-extern const float *vector_arena_get(const vector_arena *, uint64_t);
+typedef cyboudb_vector_arena vector_arena;
+extern int cyboudb_vector_arena_init(vector_arena *, void *, uint64_t, uint64_t);
+extern int cyboudb_vector_arena_append(vector_arena *, const float *, uint64_t *);
+extern const float *cyboudb_vector_arena_get(const vector_arena *, uint64_t);
 extern int sql_kernel_force_scalar;
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); return 1; } } while (0)
@@ -45,7 +35,7 @@ static int run_case(int scalar, uint64_t k) {
     CHECK(vector_topk_cosine_f32(&state) == 0);
     uint64_t expected_count = k < 7 ? k : 7;
     CHECK(state.out_count == expected_count);
-    CHECK(state.eval_count == 7);
+    CHECK(state.evaluated_count == 7);
     for (uint64_t i = 0; i < expected_count; i++) {
         CHECK(ids[i] == expected_ids[i]);
         CHECK(scores[i] == expected_scores[i]);
@@ -66,18 +56,18 @@ int main(void) {
         float zero[2] = {0.0f, 0.0f};
         vector_arena arena;
         uint64_t id = 99;
-        CHECK(vector_arena_init(&arena, storage, sizeof(storage), 2) == 0);
+        CHECK(cyboudb_vector_arena_init(&arena, storage, sizeof(storage), 2) == 0);
         CHECK(arena.used == 0 && arena.count == 0 && arena.stride == 8);
-        CHECK(vector_arena_append(&arena, a, &id) == 0 && id == 0);
-        CHECK(vector_arena_append(&arena, zero, &id) == -1);
+        CHECK(cyboudb_vector_arena_append(&arena, a, &id) == 0 && id == 0);
+        CHECK(cyboudb_vector_arena_append(&arena, zero, &id) == -1);
         CHECK(arena.used == 8 && arena.count == 1 && id == 0);
-        CHECK(vector_arena_append(&arena, b, &id) == 0 && id == 1);
-        CHECK(vector_arena_append(&arena, a, &id) == 0 && id == 2);
-        CHECK(vector_arena_append(&arena, a, &id) == -3);
+        CHECK(cyboudb_vector_arena_append(&arena, b, &id) == 0 && id == 1);
+        CHECK(cyboudb_vector_arena_append(&arena, a, &id) == 0 && id == 2);
+        CHECK(cyboudb_vector_arena_append(&arena, a, &id) == -3);
         CHECK(arena.used == sizeof(storage) && arena.count == 3);
-        CHECK(vector_arena_get(&arena, 0) == storage);
-        CHECK(vector_arena_get(&arena, 2) == storage + 4);
-        CHECK(vector_arena_get(&arena, 3) == NULL);
+        CHECK(cyboudb_vector_arena_get(&arena, 0) == storage);
+        CHECK(cyboudb_vector_arena_get(&arena, 2) == storage + 4);
+        CHECK(cyboudb_vector_arena_get(&arena, 3) == NULL);
         CHECK(storage[0] > 0.599999f && storage[1] > 0.799999f);
         CHECK(storage[2] == 0.0f && storage[3] == 1.0f);
     }
@@ -87,6 +77,10 @@ int main(void) {
         union { uint32_t u; float f; } nan = {0x7fc00001u};
         union { uint32_t u; float f; } inf = {0x7f800000u};
         CHECK(vector_normalize_f32_scalar(input, output, 2) == 0);
+        CHECK(output[0] > 0.599999f && output[0] < 0.600001f);
+        CHECK(output[1] > 0.799999f && output[1] < 0.800001f);
+        output[0] = output[1] = -1.0f;
+        CHECK(cyboudb_vector_normalize_f32(input, output, 2) == 0);
         CHECK(output[0] > 0.599999f && output[0] < 0.600001f);
         CHECK(output[1] > 0.799999f && output[1] < 0.800001f);
         CHECK(vector_normalize_f32_scalar(input, input, 2) == 0);
@@ -142,7 +136,7 @@ int main(void) {
         for (int scalar = 1; scalar >= 0; scalar--) {
             sql_kernel_force_scalar = scalar;
             CHECK(vector_topk_l2sq_f32(&l2) == 0);
-            CHECK(l2.out_count == 4 && l2.eval_count == 6);
+            CHECK(l2.out_count == 4 && l2.evaluated_count == 6);
             CHECK(ids[0] == 3 && ids[1] == 1 && ids[2] == 2 && ids[3] == 4);
             CHECK(distances[0] == 0.0f && distances[1] == 1.0f &&
                   distances[2] == 1.0f && distances[3] == 1.0f);
@@ -151,15 +145,15 @@ int main(void) {
             uint64_t candidates = (1ull << 0) | (1ull << 5);
             l2.k = 2; l2.candidates = &candidates;
             CHECK(vector_topk_l2sq_f32(&l2) == 0);
-            CHECK(l2.eval_count == 2 && ids[0] == 5 && ids[1] == 0);
+            CHECK(l2.evaluated_count == 2 && ids[0] == 5 && ids[1] == 0);
             CHECK(distances[0] == 4.0f && distances[1] == 25.0f);
         }
         {
             static const float huge[2] = {3.4028234e38f, 0.0f};
             l2.vectors = huge; l2.count = 1; l2.k = 1; l2.candidates = NULL;
-            l2.out_count = 99; l2.eval_count = 99;
+            l2.out_count = 99; l2.evaluated_count = 99;
             CHECK(vector_topk_l2sq_f32(&l2) == -2);
-            CHECK(l2.out_count == 0 && l2.eval_count == 1);
+            CHECK(l2.out_count == 0 && l2.evaluated_count == 1);
         }
     }
     {
@@ -168,7 +162,7 @@ int main(void) {
         vector_topk_state empty = {query, vectors, 0, 1, 1, 4, id, score, 99, NULL, 99};
         CHECK(vector_topk_cosine_f32(&empty) == 0);
         CHECK(empty.out_count == 0);
-        CHECK(empty.eval_count == 0);
+        CHECK(empty.evaluated_count == 0);
         { union { uint32_t u; float f; } nan = {0x7fc00001u}; vectors[0] = nan.f; }
         empty.count = 1;
         CHECK(vector_topk_cosine_f32(&empty) == -2);
@@ -186,7 +180,7 @@ int main(void) {
         vector_topk_state filtered = {query, &vectors[0][0], 7, 2, 3, 8,
                                       ids, scores, 0, &mask, 0};
         CHECK(vector_topk_cosine_f32(&filtered) == 0);
-        CHECK(filtered.eval_count == 3 && filtered.out_count == 3);
+        CHECK(filtered.evaluated_count == 3 && filtered.out_count == 3);
         CHECK(ids[0] == 5 && ids[1] == 3 && ids[2] == 0);
         CHECK(scores[0] == 0.8f && scores[1] == 0.5f && scores[2] == 0.0f);
     }
@@ -199,7 +193,7 @@ int main(void) {
         vector_topk_state cross_word = {query, vectors, 70, 1, 1, 4,
                                         id, score, 0, mask, 0};
         CHECK(vector_topk_cosine_f32(&cross_word) == 0);
-        CHECK(cross_word.eval_count == 1 && cross_word.out_count == 1);
+        CHECK(cross_word.evaluated_count == 1 && cross_word.out_count == 1);
         CHECK(id[0] == 69 && score[0] == 69.0f);
     }
     sql_kernel_force_scalar = 0;

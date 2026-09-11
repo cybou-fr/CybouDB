@@ -13,6 +13,7 @@ global vector_dot_f32_scalar, vector_l2sq_f32_scalar, vector_dot_f32_resolve
 global vector_l2sq_f32_resolve
 global vector_cosine_normalized_f32_scalar, vector_cosine_normalized_f32_resolve
 global vector_normalize_f32_scalar, vector_normalize_f32_resolve
+global cyboudb_vector_normalize_f32
 extern vector_dot_f32_avx2, vector_l2sq_f32_avx2, vector_normalize_f32_avx2
 
 section .text
@@ -62,6 +63,7 @@ vector_normalize_f32_resolve:
     lea rax, [rel vector_normalize_f32_avx2]
     FRAME_END
     ret
+
 .normalize_scalar_framed:
     lea rax, [rel vector_normalize_f32_scalar]
     FRAME_END
@@ -69,6 +71,20 @@ vector_normalize_f32_resolve:
 .normalize_scalar:
     lea rax, [rel vector_normalize_f32_scalar]
     ret
+
+; Public normalization resolves once per call while preserving its three
+; volatile ABI arguments across CPUID on the first invocation.
+cyboudb_vector_normalize_f32:
+    FRAME_BEGIN 32, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    call vector_normalize_f32_resolve
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 24]
+    FRAME_END
+    jmp rax
 
 ; Normalized cosine is definitionally the dot product. Keep named entry points
 ; so SQL/search code can state intent without introducing a second kernel.

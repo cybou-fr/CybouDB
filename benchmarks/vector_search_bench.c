@@ -1,24 +1,13 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "cyboudb.h"
 #ifdef _WIN32
 #include <windows.h>
 #else
 #include <time.h>
 #endif
 
-typedef struct {
-    const float *query, *vectors;
-    uint64_t count, dim, k, stride;
-    uint64_t *out_ids;
-    float *out_scores;
-    uint64_t out_count;
-    const uint64_t *candidates;
-    uint64_t eval_count;
-} vector_topk_state;
-
-extern int vector_topk_cosine_f32(vector_topk_state *);
-extern int vector_topk_l2sq_f32(vector_topk_state *);
 extern int vector_normalize_f32_scalar(const float *, float *, uint64_t);
 extern int sql_kernel_force_scalar;
 
@@ -42,15 +31,15 @@ static double seconds_now(void) {
     return (double)value.tv_sec + (double)value.tv_nsec * 1e-9;
 #endif
 }
-static int run(const char *name, int scalar, int l2, vector_topk_state *state,
+static int run(const char *name, int scalar, int l2, cyboudb_vector_topk *state,
                uint64_t iterations, uint64_t *out_checksum) {
     uint64_t checksum = 1469598103934665603ull;
     sql_kernel_force_scalar = scalar;
-    if ((l2 ? vector_topk_l2sq_f32(state) : vector_topk_cosine_f32(state)) != 0)
+    if ((l2 ? cyboudb_vector_topk_l2sq_f32(state) : cyboudb_vector_topk_cosine_f32(state)) != 0)
         return -1;
     double start = seconds_now();
     for (uint64_t n = 0; n < iterations; n++) {
-        int rc = l2 ? vector_topk_l2sq_f32(state) : vector_topk_cosine_f32(state);
+        int rc = l2 ? cyboudb_vector_topk_l2sq_f32(state) : cyboudb_vector_topk_cosine_f32(state);
         if (rc != 0) return rc;
         for (uint64_t i = 0; i < state->out_count; i++) {
             checksum ^= state->out_ids[i];
@@ -58,7 +47,7 @@ static int run(const char *name, int scalar, int l2, vector_topk_state *state,
         }
     }
     double elapsed = seconds_now() - start;
-    double evaluated = (double)state->eval_count * (double)iterations;
+    double evaluated = (double)state->evaluated_count * (double)iterations;
     printf("%-6s %-6s %8.2f Mvec/s  %7.2f ns/vector  checksum=%llu\n",
            name, scalar ? "scalar" : "auto", evaluated / elapsed / 1e6,
            elapsed * 1e9 / evaluated, (unsigned long long)checksum);
@@ -86,7 +75,7 @@ int main(int argc, char **argv) {
         for (uint64_t i = 0; i < dim; i++) v[i] = sample();
         if (vector_normalize_f32_scalar(v, v, dim) != 0) return 2;
     }
-    vector_topk_state state = {query, vectors, count, dim, k, dim * sizeof(float),
+    cyboudb_vector_topk state = {query, vectors, count, dim, k, dim * sizeof(float),
                                ids, scores, 0, NULL, 0};
     printf("seed=0x6d2b79f5 vectors=%llu dimensions=%llu k=%llu iterations=%llu\n",
            (unsigned long long)count, (unsigned long long)dim,

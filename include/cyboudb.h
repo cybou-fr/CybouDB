@@ -61,6 +61,46 @@ typedef struct cyboudb_batch_view {
     cyboudb_colview columns[64]; /* Physical slots; use cyboudb_batch_column for SELECT order */
 } cyboudb_batch_view;
 
+/* --- Allocation-free Vector Runtime -------------------------------------- */
+#define CybouDB_VECTOR_OK          0
+#define CybouDB_VECTOR_INVALID    -1
+#define CybouDB_VECTOR_NONFINITE  -2
+#define CybouDB_VECTOR_FULL       -3
+
+typedef struct cyboudb_vector_arena {
+    float *base;
+    uint64_t capacity;          /* caller-owned bytes at base */
+    uint64_t used;
+    uint64_t dimensions;
+    uint64_t stride;
+    uint64_t count;
+} cyboudb_vector_arena;
+
+typedef struct cyboudb_vector_topk {
+    const float *query;
+    const float *vectors;
+    uint64_t count;
+    uint64_t dimensions;
+    uint64_t k;
+    uint64_t stride;
+    uint64_t *out_ids;
+    float *out_scores;
+    uint64_t out_count;
+    const uint64_t *candidates;
+    uint64_t evaluated_count;
+} cyboudb_vector_topk;
+
+int cyboudb_vector_arena_init(cyboudb_vector_arena *arena, void *memory,
+                              uint64_t capacity, uint64_t dimensions);
+int cyboudb_vector_arena_append(cyboudb_vector_arena *arena,
+                                const float *vector, uint64_t *out_id);
+const float *cyboudb_vector_arena_get(const cyboudb_vector_arena *arena,
+                                      uint64_t vector_id);
+int cyboudb_vector_normalize_f32(const float *input, float *output,
+                                 uint64_t dimensions);
+int cyboudb_vector_topk_cosine_f32(cyboudb_vector_topk *search);
+int cyboudb_vector_topk_l2sq_f32(cyboudb_vector_topk *search);
+
 /* =============================================================================
  *  Database Connection Management
  * =============================================================================
