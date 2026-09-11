@@ -89,8 +89,8 @@ membership is never inferred from an earlier generation's validation.
 `db_var_write_chain` preflights the exact page count, allocates individual COW
 pages, links them through `VAR_NEXT`, writes canonical headers/payload/tails,
 seals every page, and only then returns its root/length descriptor. Physical
-contiguity is not required. It does not publish a catalog edge;
-that remains the responsibility of the future PAX varlen insertion path.
+contiguity is not required. The PAX materialization path publishes the
+descriptor only after the complete chain exists.
 
 The internal INSERT batch keeps its existing row-major u64 value slots. For a
 varlen cell the slot carries the decoded source pointer and the optional

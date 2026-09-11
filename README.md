@@ -322,6 +322,15 @@ Built with `--core-tests` (`build/cow_harness`):
 * `tests/span_tests.py`: Paired span maps, 63 GiB scaling, and page recycling.
 * `tests/sql_numeric_tests.py`: IEEE 754 floats, signed zeros, subnormals,
   infinities, and 3VL NaN predicate evaluation.
+* `tests/varlen_tests.py`: TEXT/BLOB extent round-trips, corruption rejection,
+  CRC and chain topology validation, canonical descriptors, and unchanged
+  output buffers on failed reads.
+* `tests/varlen_fragmentation_tests.py`: non-contiguous extent allocation after
+  alternating retired-page holes.
+
+Build the varlen drivers with `sh build.sh --varlen-tests` and
+`sh build.sh --varlen-fragmentation-tests` (or the corresponding
+`build.bat` targets on Windows).
 
 ### SQL and Kernel Test Suites
 
