@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+# SPDX-License-Identifier: Apache-2.0
 """IEEE edge cases using exact raw bits seeded through the storage API."""
 from pax_support import *
 

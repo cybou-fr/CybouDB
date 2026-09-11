@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; Shared pull SELECT core. No allocation, callback, or public ABI dependency.
 %ifndef CybouDB_SELECT_CURSOR_INC
 %define CybouDB_SELECT_CURSOR_INC

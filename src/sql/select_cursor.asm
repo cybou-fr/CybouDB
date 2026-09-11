@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; One pull-based SELECT executor, shared by callback and public C APIs.
 ; sql_select_open(state, db, plan, batch_view, decode_storage) -> eax status.
 ; Caller owns state, batch and optional 32 KiB decode storage for the lifetime

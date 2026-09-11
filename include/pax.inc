@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; PAX leaves and optional data directories. Requires COW + catalog + PAX.
 %ifndef CybouDB_PAX_INC
 %define CybouDB_PAX_INC

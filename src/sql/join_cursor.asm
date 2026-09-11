@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; Correctness-first INNER equi-join executor. It scans batch x batch, skips
 ; NULL keys, and materializes at most 64 joined rows into a compact sink batch.
 %include "sql.inc"

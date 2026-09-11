@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; SQL API contract driver. Emits SQL_ERROR, first literal bits, required mask.
 ; Usage: sql_harness <database> <sql> [mode: 0 normal, 1 invalid plan, 2 OOM, 3 missing table, 4 NULL error]
 %include "sql.inc"

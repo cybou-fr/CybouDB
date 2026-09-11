@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; =============================================================================
 ;  src/sql/for_kernels_avx2.asm - AVX2 FOR8/FOR16 direct predicate kernels
 ; =============================================================================

@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; COW allocation map: two bits per physical page.
 ; 00 available, 01 payload, 10 reserved metadata, 11 retired (span layout only).
 ;

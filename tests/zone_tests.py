@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+# SPDX-License-Identifier: Apache-2.0
 """Per-leaf zone statistics: what an insert records, and what it must not.
 
 The statistics are read back through the harness rather than decoded out of

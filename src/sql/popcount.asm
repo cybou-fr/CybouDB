@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; Generic x86-64 population count with optional CPUID-selected POPCNT.
 %include "sql.inc"
 BITS 64

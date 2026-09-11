@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+# SPDX-License-Identifier: Apache-2.0
 """Required-column plans, zero-copy sparse views, and wide multi-leaf SELECTs."""
 from pathlib import Path
 import struct

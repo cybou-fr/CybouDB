@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+# SPDX-License-Identifier: Apache-2.0
 """Paired multi-page allocation map: layout, growth past 16112 pages, recovery."""
 from pax_support import *
 

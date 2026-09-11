@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; Scalar FLOAT32 vector references used as the oracle for SIMD implementations.
 ; vector_dot_f32_scalar(a, b, dimensions) -> XMM0 float32
 ; vector_l2sq_f32_scalar(a, b, dimensions) -> XMM0 float32

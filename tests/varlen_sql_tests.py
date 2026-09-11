@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+# SPDX-License-Identifier: Apache-2.0
 """End-to-end SQL/CLI coverage for persisted TEXT and BLOB values."""
 import pathlib
 import subprocess

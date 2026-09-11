@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; Per-leaf zone metadata, with CybouDB_FEATURE_ZONE_MAPS.
 ;
 ; A zone entry summarises what one column holds inside one PAX leaf: whether it

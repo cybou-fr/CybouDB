@@ -1,3 +1,7 @@
+/*
+ * Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
 /* Portable codec ABI driver. Input: 8 little-endian uint64s, 8192 data bytes,
  * 1024 null bytes. Output: codec uint64 and 8192 result bytes. */
 #include <stdint.h>

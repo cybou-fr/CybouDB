@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; =============================================================================
 ;  tests/hardware_harness.asm - Hardware CRC-32C and BMI2 Test Driver
 ; =============================================================================

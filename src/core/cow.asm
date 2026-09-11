@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; Append-only COW for format v1 with CybouDB_FEATURE_COW, single writer only.
 ; A copy retires its source; whether that page comes back depends on the map
 ; layout. No catalog graph validation or concurrent access yet.

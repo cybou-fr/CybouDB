@@ -137,6 +137,7 @@ jobs:
           python tests/varlen_fragmentation_tests.py ./cyboudb.exe ./build/varlen_fragmentation_harness.exe
           python tests/varlen_sql_tests.py ./cyboudb.exe
           python tests/vector_sql_tests.py ./cyboudb.exe
+          python tests/cmdline_tests.py ./cyboudb.exe
           python tests/zone_tests.py ./cyboudb.exe ./build/cow_harness.exe
           python tests/zone_validation_tests.py ./cyboudb.exe ./build/cow_harness.exe
           python tests/span_tests.py ./cyboudb.exe ./build/cow_harness.exe

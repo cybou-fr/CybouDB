@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+# SPDX-License-Identifier: Apache-2.0
 """Zone graph corruption, candidate recovery and exhaustive data agreement."""
 from pax_support import *
 

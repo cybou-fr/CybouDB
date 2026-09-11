@@ -480,10 +480,10 @@ and no encryption claim should be made without external review.
 
 Small, real, and worth fixing when they are next touched:
 
-* [ ] the Windows command-line parser does not implement the backslash-escape
+* [x] the Windows command-line parser does not implement the backslash-escape
       rules of `CommandLineToArgvW`
-* [ ] `os_write` on Windows does not loop on a partial write, unlike the Linux
+* [x] `os_write` on Windows does not loop on a partial write, unlike the Linux
       path
 * [ ] the double-free guard is a heuristic and will need a real allocation
       bitmap once pages carry data
-* [ ] no `NOTICE` file and no per-file licence headers
+* [x] no `NOTICE` file and no per-file licence headers

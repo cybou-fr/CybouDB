@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; Storage-independent contiguous arena for FLOAT32 vectors.
 %include "cyboudb.inc"
 %include "vector.inc"

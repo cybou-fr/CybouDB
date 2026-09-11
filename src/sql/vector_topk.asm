@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; Exact streaming top-K for normalized cosine and squared L2.
 ; Results are sorted deterministically:
 ; Cosine: score descending, then vector id ascending.

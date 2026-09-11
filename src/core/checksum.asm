@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; =============================================================================
 ;  core/checksum.asm - CRC-32C used by the on-disk format
 ; =============================================================================

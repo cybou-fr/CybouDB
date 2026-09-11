@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+# SPDX-License-Identifier: Apache-2.0
 """SQL error domains and exact FLOAT32 parsing under nondefault MXCSR."""
 from fractions import Fraction
 from pathlib import Path

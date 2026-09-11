@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+# SPDX-License-Identifier: Apache-2.0
 """Interactive REPL and pipe regression suite for CybouDB.
 Run: python tests/repl_tests.py [binary]
 """

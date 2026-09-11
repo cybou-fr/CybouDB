@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; =============================================================================
 ;  src/sql/executor.asm - Batch SQL Plan Executor (CREATE, INSERT, SELECT; UPDATE gated)
 ; =============================================================================

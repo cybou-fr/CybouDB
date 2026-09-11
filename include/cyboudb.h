@@ -1,3 +1,7 @@
+/*
+ * Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
 /* =============================================================================
  *  cyboudb.h - Public C API for the CybouDB Columnar Database Engine
  * =============================================================================

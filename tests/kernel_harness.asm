@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; Direct kernel ABI driver. Fixed records: 6 qwords + 520 bytes (568 bytes).
 ; Header: type, op, nulls, active, literal, flags. Data starts at 48 (+1 if flag4).
 ; flag1 uses NULL values pointer; flag2 sets unmasked MXCSR, otherwise FTZ/DAZ.

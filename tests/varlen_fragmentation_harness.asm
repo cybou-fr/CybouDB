@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; Regression driver for non-contiguous variable-width extent allocation.
 %include "cyboudb.inc"
 BITS 64

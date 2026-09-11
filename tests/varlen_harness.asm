@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; Focused integration driver for variable-width extent read/write primitives.
 %include "cyboudb.inc"
 BITS 64

@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; =============================================================================
 ;  src/sql/bmi2.asm - BMI2 Bit Manipulation Primitives & CPUID Detection
 ; =============================================================================

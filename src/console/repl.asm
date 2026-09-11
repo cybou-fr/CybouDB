@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; =============================================================================
 ;  src/console/repl.asm - CybouDB Interactive Console and Batch REPL
 ; =============================================================================

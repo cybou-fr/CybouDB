@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+# SPDX-License-Identifier: Apache-2.0
 """COW core tests with independent disk inspection and injected sync failures.
 
 Usage: python tests/cow_tests.py <cyboudb> <cow_harness>

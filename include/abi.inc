@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; =============================================================================
 ;  abi.inc - Transparent layer over two ABIs: Windows x64 and System V AMD64
 ; =============================================================================

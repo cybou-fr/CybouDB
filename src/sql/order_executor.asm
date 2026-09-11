@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; Bounded, arena-owned materialization for one-key ORDER BY.
 %include "sql.inc"
 %include "order_executor.inc"

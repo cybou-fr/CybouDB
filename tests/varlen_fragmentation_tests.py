@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+# SPDX-License-Identifier: Apache-2.0
 """Regression test for non-contiguous variable-width extent allocation."""
 import pathlib
 import subprocess

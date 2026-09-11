@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; Fixed-height COW catalog: sorted table-id directory -> schema pages.
 ; Optional PAX data roots; no deletion or B-tree splits.
 %include "cyboudb.inc"

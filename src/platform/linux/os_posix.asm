@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; =============================================================================
 ;  platform/linux/os_posix.asm - OS layer for Linux x86-64 (raw system calls)
 ; =============================================================================

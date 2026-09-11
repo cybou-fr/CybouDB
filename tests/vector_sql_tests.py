@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+# SPDX-License-Identifier: Apache-2.0
 # =============================================================================
 #  tests/vector_sql_tests.py - SQL Vector Type & Storage Extents Test Suite
 # =============================================================================

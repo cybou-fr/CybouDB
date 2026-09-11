@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; Core integration driver, linked to the real VFS without the CLI.
 ; Usage: cow_harness <path> <mode>. See cow_tests.py for the scenarios.
 %include "cyboudb.inc"

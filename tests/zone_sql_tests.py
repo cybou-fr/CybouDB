@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+# SPDX-License-Identifier: Apache-2.0
 """SQL results with zones ON/OFF, independent 3VL oracle and leaf-path counters.
 
 Usage: zone_sql_tests.py <cyboudb> <cow_harness> <sql_harness>

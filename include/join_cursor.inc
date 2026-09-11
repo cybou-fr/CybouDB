@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 %ifndef CYBOUDB_JOIN_CURSOR_INC
 %define CYBOUDB_JOIN_CURSOR_INC
 

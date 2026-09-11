@@ -1,3 +1,7 @@
+/*
+ * Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
 /* =============================================================================
  *  tests/c_api_test.c - Regression test suite for the CybouDB C ABI
  * =============================================================================

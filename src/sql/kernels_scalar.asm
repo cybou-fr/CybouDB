@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; Scalar predicate kernel ABI v1. No storage access, allocation or expression walk.
 ; kernel(values, null_mask, active_mask, literal_bits) -> RAX=true, RDX=unknown
 ; Only active, non-NULL lanes may be loaded; no padding or alignment requirement.

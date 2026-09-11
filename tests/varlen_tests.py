@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+# SPDX-License-Identifier: Apache-2.0
 """Focused integration test for validate-before-copy varlen reads."""
 import pathlib
 import subprocess

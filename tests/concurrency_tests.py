@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+# SPDX-License-Identifier: Apache-2.0
 """Process-level writer exclusion and reader-pinned reclamation regression.
 
 Usage: concurrency_tests.py <cyboudb> [cow_harness]

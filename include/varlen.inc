@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; Persistent variable-width TEXT/BLOB extent contract.
 %ifndef CybouDB_VARLEN_INC
 %define CybouDB_VARLEN_INC

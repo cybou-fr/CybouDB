@@ -1,4 +1,6 @@
 @echo off
+@rem Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+@rem SPDX-License-Identifier: Apache-2.0
 rem ===========================================================================
 rem  build.bat - build CybouDB for Windows x64
 rem

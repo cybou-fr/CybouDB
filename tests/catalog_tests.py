@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+# SPDX-License-Identifier: Apache-2.0
 """Typed catalog, path-copy and recovery tests with independent disk decoding."""
 import pathlib
 import struct

@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; SQL truth-set summaries over validated per-leaf storage statistics.
 ; NONE: no row is TRUE; ALL: every row is TRUE; UNKNOWN: evaluate the rows.
 ; NONE does not distinguish FALSE from SQL UNKNOWN, so NOT cannot invert it.

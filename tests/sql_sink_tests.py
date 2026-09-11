@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+# SPDX-License-Identifier: Apache-2.0
 """Batch delivery and row adapter equivalence, stop semantics and arena bounds."""
 from pathlib import Path
 import struct

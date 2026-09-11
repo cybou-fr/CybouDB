@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+# SPDX-License-Identifier: Apache-2.0
 """Hardware CRC-32C & BMI2 Oracle Test Suite.
 
 Validates both hardware accelerated (SSE4.2 / BMI2) and portable scalar fallback

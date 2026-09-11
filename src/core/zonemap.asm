@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; Per-leaf zone metadata: min/max and NULL statistics for every PAX leaf, kept
 ; in a side structure so the leaf format itself is untouched. See
 ; docs/ZONEMAP.md for the contract and include/zonemap.inc for the layout.

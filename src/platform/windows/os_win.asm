@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; =============================================================================
 ;  platform/windows/os_win.asm - OS layer for Windows x64 (kernel32.dll only)
 ; =============================================================================
@@ -95,6 +97,7 @@ global os_mem_alloc, os_mem_free, os_utf8_to_wide
 %define CH_SPACE               32
 %define CH_TAB                 9
 %define CH_QUOTE               34
+%define CH_BACKSLASH           92
 %define CH_ZERO                48
 
 ; Largest value that can still be multiplied by ten inside 64 bits.
@@ -142,89 +145,252 @@ start:
 
 ; -----------------------------------------------------------------------------
 ;  parse_cmdline - copies the command line into cmdbuf and splits it into
-;  tokens. Double-quoted arguments are supported, which paths with spaces
-;  need. Only volatile registers are used (rax, rcx, rdx, r8-r11).
-;
-;  NOTE: this does not implement the backslash-escape rules of
-;  CommandLineToArgvW, so a quoted argument ending in a backslash is parsed
-;  differently from what a C runtime would produce.
+;  tokens according to the standard Windows CommandLineToArgvW rules:
+;    - Leading and separating whitespace (spaces, tabs) is skipped.
+;    - argv[0] (executable name) treats quotes as verbatim delimiters and does
+;      not interpret backslashes as escape characters.
+;    - argv[1..] implements full backslash and quotation escaping:
+;        * 2n backslashes before a quote emit n backslashes and toggle quote mode.
+;        * 2n+1 backslashes before a quote emit n backslashes and a literal quote.
+;        * n backslashes not followed by a quote emit n literal backslashes.
+;        * Consecutive quotes inside quotes ("") emit a single literal quote.
+;        * Quotes inside a token (embedded quotes) toggle quote mode without
+;          breaking the argument.
+;  Parsing compacts the string in-place within cmdbuf.
 ; -----------------------------------------------------------------------------
 parse_cmdline:
-    FRAME_BEGIN 0, 0
+    FRAME_BEGIN 64, 0
+    mov     [rbp - 8], rbx
+    mov     [rbp - 16], rsi
+    mov     [rbp - 24], rdi
+    mov     [rbp - 32], r12
+    mov     [rbp - 40], r13
+    mov     [rbp - 48], r14
+    mov     [rbp - 56], r15
+
     CALL_ABI GetCommandLineW            ; RAX = pointer to the wide string
-
-    ; --- copy at most CMDLINE_WCHARS-1 characters into our own buffer --------
-    lea     r10, [cmdbuf]
-    mov     r11, CMDLINE_WCHARS - 1
+    mov     rsi, rax                    ; rsi = src (read from system command line)
+    lea     rdi, [cmdbuf]               ; rdi = dst (write to our buffer)
+    lea     r14, [cmdbuf + (CMDLINE_WCHARS - 2) * 2] ; r14 = buffer limit
     mov     qword [cmdline_ok], 1
-.copy:
-    movzx   edx, word [rax]
-    mov     [r10], dx
-    test    dx, dx
-    jz      .copied
-    add     rax, 2
-    add     r10, 2
-    dec     r11
-    jnz     .copy
-    mov     word [r10], 0               ; force-terminate an oversized line
-    mov     qword [cmdline_ok], 0       ; and remember that something was lost
-.copied:
+    xor     ebx, ebx                    ; ebx = argc
 
-    ; --- split into tokens ---------------------------------------------------
-    lea     r10, [cmdbuf]
-    xor     r8d, r8d                    ; r8 = argc
-.next_token:
-.skip_ws:
-    movzx   eax, word [r10]
+    test    rsi, rsi
+    jz      .finish
+
+    ; --- Parse argv[0] (the program name) -----------------------------------
+.skip_ws_0:
+    movzx   eax, word [rsi]
     cmp     eax, CH_SPACE
-    je      .advance
+    je      .adv_ws_0
     cmp     eax, CH_TAB
-    jne     .token_start
-.advance:
-    add     r10, 2
+    jne     .start_0
+.adv_ws_0:
+    add     rsi, 2
+    jmp     .skip_ws_0
+
+.start_0:
+    test    eax, eax
+    jz      .finish                     ; empty command line
+    cmp     ebx, MAX_ARGS
+    jae     .finish
+
+    lea     rdx, [argv_v]
+    mov     [rdx + rbx * 8], rdi        ; argv[0] = dst
+    inc     ebx
+
+    cmp     eax, CH_QUOTE
+    jne     .unquoted_0
+
+    ; Quoted program name: spans until matching quote or NUL
+    add     rsi, 2                      ; skip opening quote
+.scan_quoted_0:
+    movzx   eax, word [rsi]
+    test    eax, eax
+    jz      .end_0
+    cmp     eax, CH_QUOTE
+    je      .close_quote_0
+    cmp     rdi, r14
+    jae     .trunc_0
+    mov     word [rdi], ax
+    add     rdi, 2
+.trunc_0:
+    add     rsi, 2
+    jmp     .scan_quoted_0
+.close_quote_0:
+    add     rsi, 2                      ; skip closing quote
+    jmp     .end_0
+
+.unquoted_0:
+    ; Unquoted program name: spans until whitespace or NUL
+    movzx   eax, word [rsi]
+    test    eax, eax
+    jz      .end_0
+    cmp     eax, CH_SPACE
+    je      .end_0
+    cmp     eax, CH_TAB
+    je      .end_0
+    cmp     rdi, r14
+    jae     .trunc_unq_0
+    mov     word [rdi], ax
+    add     rdi, 2
+.trunc_unq_0:
+    add     rsi, 2
+    jmp     .unquoted_0
+
+.end_0:
+    mov     word [rdi], 0
+    add     rdi, 2
+
+    ; --- Parse argv[1..] (arguments) ----------------------------------------
+.next_arg:
+    ; Skip inter-token whitespace
+.skip_ws:
+    movzx   eax, word [rsi]
+    cmp     eax, CH_SPACE
+    je      .adv_ws
+    cmp     eax, CH_TAB
+    jne     .arg_start
+.adv_ws:
+    add     rsi, 2
     jmp     .skip_ws
 
-.token_start:
+.arg_start:
     test    eax, eax
-    jz      .finish                     ; end of the command line
-    cmp     r8, MAX_ARGS
-    jae     .finish                     ; no room for more arguments
+    jz      .finish                     ; end of command line
+    cmp     ebx, MAX_ARGS
+    jae     .finish                     ; reached MAX_ARGS
 
-    xor     r9d, r9d                    ; r9 = "token is quoted" flag
-    cmp     eax, CH_QUOTE
-    jne     .remember
-    mov     r9d, 1
-    add     r10, 2                      ; the opening quote is not part of it
-.remember:
     lea     rdx, [argv_v]
-    mov     [rdx + r8 * 8], r10
-    inc     r8
+    mov     [rdx + rbx * 8], rdi        ; argv[argc] = dst
+    inc     ebx
+    xor     r12d, r12d                  ; in_quote = 0
 
-.scan:
-    movzx   eax, word [r10]
+.scan_arg:
+    movzx   eax, word [rsi]
     test    eax, eax
-    jz      .finish                     ; the last token is already terminated
-    test    r9d, r9d
-    jnz     .scan_quoted
+    jz      .arg_done
+    test    r12d, r12d
+    jnz     .check_slashes
     cmp     eax, CH_SPACE
-    je      .end_token
+    je      .arg_done_skip
     cmp     eax, CH_TAB
-    je      .end_token
-    jmp     .scan_next
-.scan_quoted:
-    cmp     eax, CH_QUOTE
-    je      .end_token
-.scan_next:
-    add     r10, 2
-    jmp     .scan
+    je      .arg_done_skip
 
-.end_token:
-    mov     word [r10], 0               ; terminate the token inside the buffer
-    add     r10, 2
-    jmp     .next_token
+.check_slashes:
+    ; Count consecutive backslashes
+    xor     r13d, r13d                  ; slash_count = 0
+.count_slashes:
+    cmp     word [rsi], CH_BACKSLASH
+    jne     .slashes_done
+    inc     r13d
+    add     rsi, 2
+    jmp     .count_slashes
+
+.slashes_done:
+    ; Check character following the backslashes
+    cmp     word [rsi], CH_QUOTE
+    jne     .not_before_quote
+
+    ; Followed by quote: emit (slash_count / 2) backslashes
+    mov     eax, r13d
+    shr     eax, 1                      ; eax = slash_count / 2
+.emit_half_slashes:
+    test    eax, eax
+    jz      .half_slashes_done
+    cmp     rdi, r14
+    jae     .skip_hs
+    mov     word [rdi], CH_BACKSLASH
+    add     rdi, 2
+.skip_hs:
+    dec     eax
+    jmp     .emit_half_slashes
+
+.half_slashes_done:
+    test    r13b, 1                     ; slash_count odd? (2n + 1)
+    jz      .quote_action
+
+    ; Odd backslashes: emit literal quote
+    cmp     rdi, r14
+    jae     .skip_odd_q
+    mov     word [rdi], CH_QUOTE
+    add     rdi, 2
+.skip_odd_q:
+    add     rsi, 2                      ; consumed quote
+    jmp     .scan_arg
+
+.quote_action:
+    ; Even backslashes (2n): quote acts as delimiter / toggle
+    ; Check consecutive double quotes inside quotes: in_quote && rsi[2] == '"'
+    test    r12d, r12d
+    jz      .toggle_quote
+    cmp     word [rsi + 2], CH_QUOTE
+    jne     .toggle_quote
+    ; Consecutive quotes inside quotes: emit one quote and advance past both
+    cmp     rdi, r14
+    jae     .skip_cons_q
+    mov     word [rdi], CH_QUOTE
+    add     rdi, 2
+.skip_cons_q:
+    add     rsi, 4                      ; skip both quotes
+    jmp     .scan_arg
+
+.toggle_quote:
+    xor     r12d, 1                     ; in_quote = !in_quote
+    add     rsi, 2                      ; consumed quote
+    jmp     .scan_arg
+
+.not_before_quote:
+    ; Not followed by quote: emit all slash_count backslashes
+.emit_all_slashes:
+    test    r13d, r13d
+    jz      .slashes_emitted
+    cmp     rdi, r14
+    jae     .skip_as
+    mov     word [rdi], CH_BACKSLASH
+    add     rdi, 2
+.skip_as:
+    dec     r13d
+    jmp     .emit_all_slashes
+
+.slashes_emitted:
+    ; Now check current character after backslashes
+    movzx   eax, word [rsi]
+    test    eax, eax
+    jz      .arg_done
+    test    r12d, r12d
+    jnz     .copy_char
+    cmp     eax, CH_SPACE
+    je      .arg_done_skip
+    cmp     eax, CH_TAB
+    je      .arg_done_skip
+
+.copy_char:
+    cmp     rdi, r14
+    jae     .skip_cc
+    mov     word [rdi], ax
+    add     rdi, 2
+.skip_cc:
+    add     rsi, 2
+    jmp     .scan_arg
+
+.arg_done_skip:
+    add     rsi, 2                      ; skip terminating space/tab
+.arg_done:
+    mov     word [rdi], 0               ; NUL-terminate argument string
+    add     rdi, 2
+    jmp     .next_arg
 
 .finish:
-    mov     [argc_v], r8
+    mov     word [rdi], 0
+    mov     [argc_v], rbx
+    mov     rbx, [rbp - 8]
+    mov     rsi, [rbp - 16]
+    mov     rdi, [rbp - 24]
+    mov     r12, [rbp - 32]
+    mov     r13, [rbp - 40]
+    mov     r14, [rbp - 48]
+    mov     r15, [rbp - 56]
     FRAME_END
     ret
 

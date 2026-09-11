@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+# SPDX-License-Identifier: Apache-2.0
 """Multi-page PAX path copying, boundary reads and graph recovery."""
 from pax_support import *
 

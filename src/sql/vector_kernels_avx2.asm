@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; AVX2 FLOAT32 dot product. Full 8-lane chunks are multiplied in parallel;
 ; products are accumulated in lane order so results remain bit-identical to
 ; vector_dot_f32_scalar. The tail is scalar and never reads past dimensions.

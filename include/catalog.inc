@@ -1,3 +1,5 @@
+; Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
+; SPDX-License-Identifier: Apache-2.0
 ; Two-level catalog, enabled only with CybouDB_FEATURE_CATALOG plus COW.
 %ifndef CybouDB_CATALOG_INC
 %define CybouDB_CATALOG_INC
