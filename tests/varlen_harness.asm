@@ -286,6 +286,54 @@ cyboudb_main:
     call crc32c
     mov [r10 + VAR_CRC], eax
 
+    ; Non-zero bytes after the final used payload are corruption.
+    mov rax, [r10 + VAR_NEXT]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [ctx + DB_BASE]
+    mov [rbp - 8], rax
+    xor byte [rax + VAR_DATA + 37], 1
+    mov ARG1, rax
+    mov ARG2, VAR_CRC
+    call crc32c
+    mov r10, [descriptor + VAR_CELL_ROOT]
+    shl r10, CybouDB_PAGE_SHIFT
+    add r10, [ctx + DB_BASE]
+    mov rdx, [rbp - 8]
+    mov [rdx + VAR_CRC], eax
+    lea ARG1, [ctx]
+    lea ARG2, [candidate]
+    lea ARG3, [descriptor]
+    mov ARG4, TEST_OWNER
+    lea rax, [output]
+    PASS_ARG5 rax
+    mov rax, TEST_LENGTH
+    PASS_ARG6 rax
+    call db_var_read_chain
+    cmp eax, CybouDB_E_PAX
+    jne failure_close
+    mov rdx, [rbp - 8]
+    xor byte [rdx + VAR_DATA + 37], 1
+    mov ARG1, rdx
+    mov ARG2, VAR_CRC
+    call crc32c
+    mov rdx, [rbp - 8]
+    mov [rdx + VAR_CRC], eax
+
+    ; A descriptor length change must invalidate the canonical chain shape.
+    mov qword [descriptor + VAR_CELL_LENGTH], TEST_LENGTH - 1
+    lea ARG1, [ctx]
+    lea ARG2, [candidate]
+    lea ARG3, [descriptor]
+    mov ARG4, TEST_OWNER
+    lea rax, [output]
+    PASS_ARG5 rax
+    mov rax, TEST_LENGTH
+    PASS_ARG6 rax
+    call db_var_read_chain
+    cmp eax, CybouDB_E_PAX
+    jne failure_close
+    mov qword [descriptor + VAR_CELL_LENGTH], TEST_LENGTH
+
     lea ARG1, [ctx]
     call db_close
     xor eax, eax
