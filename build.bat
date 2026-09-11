@@ -29,6 +29,12 @@ if "%~1"=="--varlen-tests" (
     set SOURCES=tests\varlen_harness.asm src\core\database.asm src\core\cow.asm src\core\bitmap.asm src\core\catalog.asm src\core\pax.asm src\core\varlen.asm src\core\zonemap.asm src\core\compress.asm src\core\checksum.asm src\platform\windows\os_win.asm
 )
 
+if "%~1"=="--varlen-fragmentation-tests" (
+    set OUT=build\varlen_fragmentation_harness.exe
+    set OBJDIR=build\varlen-fragmentation-tests
+    set SOURCES=tests\varlen_fragmentation_harness.asm src\core\database.asm src\core\cow.asm src\core\bitmap.asm src\core\catalog.asm src\core\pax.asm src\core\varlen.asm src\core\zonemap.asm src\core\compress.asm src\core\checksum.asm src\platform\windows\os_win.asm
+)
+
 if "%~1"=="--sql-tests" (
     set OUT=build\sql_harness.exe
     set OBJDIR=build\sql-tests
