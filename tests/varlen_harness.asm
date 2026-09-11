@@ -259,6 +259,33 @@ cyboudb_main:
     call crc32c
     mov [r10 + VAR_CRC], eax
 
+    ; Generation ordering and canonical used length are also mandatory.
+    mov qword [r10 + VAR_GENERATION], 0
+    mov qword [r10 + VAR_USED], 0
+    mov ARG1, r10
+    mov ARG2, VAR_CRC
+    call crc32c
+    mov [r10 + VAR_CRC], eax
+    lea ARG1, [ctx]
+    lea ARG2, [candidate]
+    mov ARG3, [descriptor + VAR_CELL_ROOT]
+    mov ARG4, TEST_LENGTH
+    mov rax, TEST_OWNER
+    PASS_ARG5 rax
+    call db_var_validate_chain
+    test eax, eax
+    jnz failure_close
+    mov r10, [descriptor + VAR_CELL_ROOT]
+    shl r10, CybouDB_PAGE_SHIFT
+    add r10, [ctx + DB_BASE]
+    mov rax, [candidate + SB_GENERATION]
+    mov [r10 + VAR_GENERATION], rax
+    mov dword [r10 + VAR_USED], VAR_PAYLOAD_SIZE
+    mov ARG1, r10
+    mov ARG2, VAR_CRC
+    call crc32c
+    mov [r10 + VAR_CRC], eax
+
     lea ARG1, [ctx]
     call db_close
     xor eax, eax
