@@ -98,6 +98,10 @@ const float *cyboudb_vector_arena_get(const cyboudb_vector_arena *arena,
                                       uint64_t vector_id);
 int cyboudb_vector_normalize_f32(const float *input, float *output,
                                  uint64_t dimensions);
+float cyboudb_vector_dot_f32(const float *left, const float *right,
+                             uint64_t dimensions);
+float cyboudb_vector_l2sq_f32(const float *left, const float *right,
+                              uint64_t dimensions);
 int cyboudb_vector_topk_cosine_f32(cyboudb_vector_topk *search);
 int cyboudb_vector_topk_l2sq_f32(cyboudb_vector_topk *search);
 

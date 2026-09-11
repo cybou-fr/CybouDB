@@ -25,6 +25,9 @@ vector_arena_init:
     shl rax, 2
     cmp ARG3, rax
     jb .init_invalid
+    mov r10, ARG2
+    add r10, ARG3
+    jc .init_invalid
     mov [ARG1 + VARENA_BASE], ARG2
     mov [ARG1 + VARENA_CAPACITY], ARG3
     mov qword [ARG1 + VARENA_USED], 0
@@ -53,7 +56,35 @@ vector_arena_append:
     jz .append_invalid
     test r14, r14
     jz .append_invalid
+    mov rax, r14
+    add rax, 8
+    jc .append_invalid
+    mov rax, [r12 + VARENA_DIM]
+    test rax, rax
+    jz .append_invalid
+    mov rcx, 0x3fffffffffffffff
+    cmp rax, rcx
+    ja .append_invalid
+    shl rax, 2
+    cmp rax, [r12 + VARENA_STRIDE]
+    jne .append_invalid
+    mov rcx, [r12 + VARENA_BASE]
+    test rcx, rcx
+    jz .append_invalid
+    add rcx, [r12 + VARENA_CAPACITY]
+    jc .append_invalid
+    mov rcx, r13
+    add rcx, rax
+    jc .append_invalid
+    mov rax, [r12 + VARENA_COUNT]
+    mul qword [r12 + VARENA_STRIDE]
+    test rdx, rdx
+    jnz .append_invalid
+    cmp rax, [r12 + VARENA_USED]
+    jne .append_invalid
     mov rax, [r12 + VARENA_USED]
+    cmp rax, [r12 + VARENA_CAPACITY]
+    ja .append_invalid
     mov rcx, rax
     add rax, [r12 + VARENA_STRIDE]
     jc .append_full
@@ -93,11 +124,34 @@ cyboudb_vector_arena_get:
 vector_arena_get:
     test ARG1, ARG1
     jz .get_missing
-    cmp ARG2, [ARG1 + VARENA_COUNT]
+    mov r10, ARG1
+    mov r11, ARG2
+    mov rax, [r10 + VARENA_COUNT]
+    mul qword [r10 + VARENA_STRIDE]
+    test rdx, rdx
+    jnz .get_missing
+    cmp rax, [r10 + VARENA_USED]
+    jne .get_missing
+    cmp rax, [r10 + VARENA_CAPACITY]
+    ja .get_missing
+    mov rcx, [r10 + VARENA_BASE]
+    test rcx, rcx
+    jz .get_missing
+    add rcx, [r10 + VARENA_CAPACITY]
+    jc .get_missing
+    cmp r11, [r10 + VARENA_COUNT]
     jae .get_missing
-    mov rax, ARG2
-    imul rax, [ARG1 + VARENA_STRIDE]
-    add rax, [ARG1 + VARENA_BASE]
+    mov rax, r11
+    mul qword [r10 + VARENA_STRIDE]
+    test rdx, rdx
+    jnz .get_missing
+    mov rcx, rax
+    add rcx, [r10 + VARENA_STRIDE]
+    jc .get_missing
+    cmp rcx, [r10 + VARENA_CAPACITY]
+    ja .get_missing
+    add rax, [r10 + VARENA_BASE]
+    jc .get_missing
     ret
 .get_missing:
     xor eax, eax

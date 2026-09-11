@@ -56,7 +56,9 @@ provides output arrays and the state layout defined in `include/vector.inc`.
 The current exact-search contract accepts finite, normalized FLOAT32 vectors.
 A non-finite computed score aborts with `VECTOR_NONFINITE`; invalid pointers,
 zero dimension, zero `k`, or a stride smaller than one vector return
-`VECTOR_INVALID`.
+`VECTOR_INVALID`. Dimensions, stride, count, query, candidate bitmap and both
+output spans are also rejected when their derived address range would
+overflow, before any vector memory is read or output is written.
 
 `VTOPK_CANDIDATES` may point to a metadata predicate bitmap using the same
 least-significant-bit-first row convention as PAX selection masks. A null
@@ -75,8 +77,10 @@ the zero-based slot number is the stable vector id used by PAX rows and top-K.
 An append publishes `used`, `count`, and its id only after normalization
 succeeds. Invalid or non-finite vectors therefore leave the arena unchanged.
 Capacity exhaustion returns `VECTOR_FULL`, and address arithmetic is checked
-before writing. The later persistent extent layer can map file extents into
-this same contract without placing vector payloads inside PAX pages.
+before writing. Public calls also reject wrapped base/capacity, input and id
+spans, or inconsistent caller-mutated arena counters. The later persistent
+extent layer can map file extents into this same contract without placing
+vector payloads inside PAX pages.
 
 ## Reproducible benchmark
 
@@ -94,8 +98,14 @@ construction.
 ## Public C API
 
 `include/cyboudb.h` exposes the storage-independent runtime as
-`cyboudb_vector_arena_*`, `cyboudb_vector_normalize_f32`, and
+`cyboudb_vector_arena_*`, `cyboudb_vector_normalize_f32`, direct
+`cyboudb_vector_{dot,l2sq}_f32` distance primitives, and
 `cyboudb_vector_topk_{cosine,l2sq}_f32`. State remains caller-owned and the
 functions do not depend on an open database handle. Return values use the
 `CybouDB_VECTOR_*` status family so capacity and non-finite input remain
 distinguishable from database/SQL errors.
+
+`examples/vector_search.c` is a complete standalone path: it appends and
+normalizes caller-owned vectors, normalizes a query, applies a metadata bitmap,
+and prints deterministic cosine Top-K results. Build it with
+`build.sh --vector-example` or `build.bat --vector-example`.

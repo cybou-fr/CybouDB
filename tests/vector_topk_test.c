@@ -51,6 +51,35 @@ int main(void) {
     CHECK(vector_topk_l2sq_f32(NULL) == -1);
     CHECK(vector_topk_l2sq_f32(&bad) == -1);
     {
+        float value = 1.0f, score;
+        uint64_t id;
+        vector_topk_state overflow = {
+            &value, &value, 1, UINT64_MAX, 1, UINT64_MAX,
+            &id, &score, 99, NULL, 99
+        };
+        CHECK(cyboudb_vector_topk_cosine_f32(&overflow) == CybouDB_VECTOR_INVALID);
+        CHECK(overflow.out_count == 0 && overflow.evaluated_count == 0);
+        CHECK(cyboudb_vector_topk_l2sq_f32(&overflow) == CybouDB_VECTOR_INVALID);
+        overflow.dimensions = 1;
+        overflow.count = UINT64_MAX;
+        CHECK(cyboudb_vector_topk_cosine_f32(&overflow) == CybouDB_VECTOR_INVALID);
+        CHECK(cyboudb_vector_topk_l2sq_f32(&overflow) == CybouDB_VECTOR_INVALID);
+        overflow.count = 1;
+        overflow.stride = 4;
+        overflow.query = (const float *)(uintptr_t)(UINTPTR_MAX - 1);
+        CHECK(cyboudb_vector_topk_cosine_f32(&overflow) == CybouDB_VECTOR_INVALID);
+        overflow.query = &value;
+        overflow.out_ids = (uint64_t *)(uintptr_t)(UINTPTR_MAX - 3);
+        CHECK(cyboudb_vector_topk_l2sq_f32(&overflow) == CybouDB_VECTOR_INVALID);
+        overflow.out_ids = &id;
+        overflow.out_scores = (float *)(uintptr_t)(UINTPTR_MAX - 1);
+        CHECK(cyboudb_vector_topk_cosine_f32(&overflow) == CybouDB_VECTOR_INVALID);
+        overflow.out_scores = &score;
+        overflow.candidates = (const uint64_t *)(uintptr_t)UINTPTR_MAX;
+        overflow.count = 9;
+        CHECK(cyboudb_vector_topk_l2sq_f32(&overflow) == CybouDB_VECTOR_INVALID);
+    }
+    {
         float storage[6] = {0};
         float a[2] = {3.0f, 4.0f}, b[2] = {0.0f, 2.0f};
         float zero[2] = {0.0f, 0.0f};
@@ -70,6 +99,15 @@ int main(void) {
         CHECK(cyboudb_vector_arena_get(&arena, 3) == NULL);
         CHECK(storage[0] > 0.599999f && storage[1] > 0.799999f);
         CHECK(storage[2] == 0.0f && storage[3] == 1.0f);
+        CHECK(cyboudb_vector_arena_init(&arena,
+              (void *)(uintptr_t)(UINTPTR_MAX - 3), 8, 2) == CybouDB_VECTOR_INVALID);
+        CHECK(cyboudb_vector_arena_init(&arena, storage, sizeof(storage), 2) == 0);
+        arena.count = UINT64_MAX;
+        CHECK(cyboudb_vector_arena_append(&arena, a, &id) == CybouDB_VECTOR_INVALID);
+        CHECK(cyboudb_vector_arena_get(&arena, 0) == NULL);
+        CHECK(cyboudb_vector_arena_init(&arena, storage, sizeof(storage), 2) == 0);
+        arena.used = arena.capacity + 1;
+        CHECK(cyboudb_vector_arena_append(&arena, a, &id) == CybouDB_VECTOR_INVALID);
     }
     {
         float input[2] = {3.0f, 4.0f}, output[2] = {-1.0f, -1.0f};
@@ -79,6 +117,14 @@ int main(void) {
         CHECK(vector_normalize_f32_scalar(input, output, 2) == 0);
         CHECK(output[0] > 0.599999f && output[0] < 0.600001f);
         CHECK(output[1] > 0.799999f && output[1] < 0.800001f);
+        {
+            const float left[3] = {1.0f, 2.0f, 3.0f};
+            const float right[3] = {4.0f, 5.0f, 6.0f};
+            CHECK(cyboudb_vector_dot_f32(left, right, 3) == 32.0f);
+            CHECK(cyboudb_vector_l2sq_f32(left, right, 3) == 27.0f);
+            CHECK(cyboudb_vector_dot_f32(NULL, NULL, 0) == 0.0f);
+            CHECK(cyboudb_vector_l2sq_f32(NULL, NULL, 0) == 0.0f);
+        }
         output[0] = output[1] = -1.0f;
         CHECK(cyboudb_vector_normalize_f32(input, output, 2) == 0);
         CHECK(output[0] > 0.599999f && output[0] < 0.600001f);

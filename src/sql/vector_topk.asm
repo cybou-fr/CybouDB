@@ -10,6 +10,65 @@ extern vector_l2sq_f32_resolve
 global vector_topk_cosine_f32, vector_topk_l2sq_f32
 global cyboudb_vector_topk_cosine_f32, cyboudb_vector_topk_l2sq_f32
 
+; r12 = state, rbx = bytes per vector. Validate every derived address before
+; dispatch. This proves arithmetic does not wrap; readable/writable capacity
+; remains the C caller's responsibility, as with any pointer-based API.
+%macro VTOPK_VALIDATE_RANGES 1
+    mov rax, [r12 + VTOPK_QUERY]
+    add rax, rbx
+    jc %1
+    mov r9, [r12 + VTOPK_COUNT]
+    test r9, r9
+    jz %%done
+
+    mov rcx, r9
+    dec rcx
+    mov rax, [r12 + VTOPK_STRIDE]
+    mul rcx
+    test rdx, rdx
+    jnz %1
+    add rax, rbx
+    jc %1
+    add rax, [r12 + VTOPK_VECTORS]
+    jc %1
+
+    mov rax, [r12 + VTOPK_CANDIDATES]
+    test rax, rax
+    jz %%outputs
+    mov rcx, r9
+    dec rcx
+    shr rcx, 3
+    add rax, rcx
+    jc %1
+    inc rax
+    jz %1
+
+%%outputs:
+    mov rcx, [r12 + VTOPK_K]
+    cmp rcx, r9
+    cmova rcx, r9
+    dec rcx
+    mov rax, rcx
+    mov r8d, 8
+    mul r8
+    test rdx, rdx
+    jnz %1
+    add rax, 8
+    jc %1
+    add rax, [r12 + VTOPK_OUT_IDS]
+    jc %1
+    mov rax, rcx
+    mov r8d, 4
+    mul r8
+    test rdx, rdx
+    jnz %1
+    add rax, 4
+    jc %1
+    add rax, [r12 + VTOPK_OUT_SCORES]
+    jc %1
+%%done:
+%endmacro
+
 section .text
 cyboudb_vector_topk_cosine_f32:
 vector_topk_cosine_f32:
@@ -37,9 +96,14 @@ vector_topk_cosine_f32:
     cmp qword [r12 + VTOPK_OUT_SCORES], 0
     je .invalid
     mov rax, [r12 + VTOPK_DIM]
+    mov rdx, 0x3fffffffffffffff
+    cmp rax, rdx
+    ja .invalid
     shl rax, 2
     cmp [r12 + VTOPK_STRIDE], rax
     jb .invalid
+    mov rbx, rax
+    VTOPK_VALIDATE_RANGES .invalid
     call vector_cosine_normalized_f32_resolve
     mov r13, rax                    ; resolved once per search
     xor r14d, r14d                  ; candidate id
@@ -150,9 +214,14 @@ vector_topk_l2sq_f32:
     cmp qword [r12 + VTOPK_OUT_SCORES], 0
     je .l2_invalid
     mov rax, [r12 + VTOPK_DIM]
+    mov rdx, 0x3fffffffffffffff
+    cmp rax, rdx
+    ja .l2_invalid
     shl rax, 2
     cmp [r12 + VTOPK_STRIDE], rax
     jb .l2_invalid
+    mov rbx, rax
+    VTOPK_VALIDATE_RANGES .l2_invalid
     call vector_l2sq_f32_resolve
     mov r13, rax
     xor r14d, r14d

@@ -206,6 +206,11 @@ console also rejects incomplete `ReadConsoleW` chunks (its input buffer holds
 
 Build the static library with `sh build.sh --lib` or `build.bat --lib`; the
 public declarations are in [include/cyboudb.h](include/cyboudb.h).
+
+The standalone vector runtime needs no open database handle. Build and run its
+filtered exact-search example with `sh build.sh --vector-example &&
+./build/vector_search_example` (Windows: `build.bat --vector-example` followed
+by `build\vector_search_example.exe`).
 Use `cyboudb_prepare` and `cyboudb_step` for row access, or `cyboudb_step_batch` followed
 by `cyboudb_batch_column(stmt, batch, result_col)` for borrowed typed access in SELECT
 order. The accessor preserves reordered and duplicate projections; direct
