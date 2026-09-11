@@ -11,7 +11,8 @@ Both return one IEEE-754 binary32 value in `XMM0`.
 
 Inputs are two readable arrays of exactly `dimensions` binary32 values. A zero
 dimension is valid and returns positive zero without reading either pointer.
-The internal caller validates pointers and equal dimensions before dispatch.
+For `dimensions > 0`, the caller must guarantee that both operands reference
+`dimensions` readable floats.
 
 The reference evaluates lanes from index zero upward. Subtraction,
 multiplication and accumulation each use binary32 rounding. It does not use
@@ -45,67 +46,76 @@ lane by that norm. Input and output may alias. Zero vectors return
 `VECTOR_INVALID`; non-finite inputs or an overflowing norm return
 `VECTOR_NONFINITE`. Validation completes before output is changed.
 
-## Streaming top-K
+## Streaming top-K and Batch Feed API
 
-`vector_topk_cosine_f32()` scans a contiguous candidate region once, resolves
-the cosine kernel once per search, and retains at most `k` results. It does not
-allocate or materialize a score for every candidate. Output is sorted by score
-descending and then vector id ascending, giving deterministic ties. The caller
-provides output arrays and the state layout defined in `include/vector.inc`.
+`cyboudb_vector_topk_cosine_f32()` and `cyboudb_vector_topk_l2sq_f32()` scan a
+contiguous candidate region once, resolve the distance kernel once per search,
+and retain at most `k` results without materializing a full score array.
+Results are sorted deterministically:
+- Cosine: score descending, then vector id ascending.
+- Squared L2: distance ascending, then vector id ascending.
 
-The current exact-search contract accepts finite, normalized FLOAT32 vectors.
-A non-finite computed score aborts with `VECTOR_NONFINITE`; invalid pointers,
-zero dimension, zero `k`, or a stride smaller than one vector return
-`VECTOR_INVALID`. Dimensions, stride, count, query, candidate bitmap and both
-output spans are also rejected when their derived address range would
-overflow, before any vector memory is read or output is written.
+For integration with vectorized PAX execution and streaming batch pipelines,
+the engine provides the streaming feed API:
+- `cyboudb_vector_topk_cosine_begin(search)` / `cyboudb_vector_topk_l2sq_begin(search)`
+- `cyboudb_vector_topk_cosine_feed(search, base_id, vectors, count, candidate_mask)` / `_l2sq_feed(...)`
+- `cyboudb_vector_topk_cosine_finish(search)` / `cyboudb_vector_topk_l2sq_finish(search)`
 
-`VTOPK_CANDIDATES` may point to a metadata predicate bitmap using the same
-least-significant-bit-first row convention as PAX selection masks. A null
-pointer means every row is a candidate. Unset rows are skipped before their
-vector address is formed and before cosine is called. `VTOPK_EVAL_COUNT`
-reports the number of distances actually evaluated, making candidate-only
-execution directly testable and later useful for query diagnostics.
+Each feed call processes up to 64 rows with an explicit 64-bit candidate selection
+mask directly produced by PAX predicate evaluation, evaluating only active lanes
+with $O(K)$ space instead of materializing large global selection bitmaps.
+
+The exact-search contract checks for non-finite values (NaN and infinity exponents).
+A non-finite computed score aborts with `VECTOR_NONFINITE`. Invalid pointers,
+unsupported ABI version/size, zero dimension, zero `k`, or a stride smaller than
+one vector return `VECTOR_INVALID`. All address ranges are validated against
+arithmetic overflow before reading vector memory or writing results.
+
+`VTOPK_CANDIDATES` in the monolithic API may point to a metadata predicate bitmap
+using least-significant-bit-first row ordering. A null pointer means every row is
+a candidate. `VTOPK_EVAL_COUNT` tracks the exact number of distances evaluated.
 
 ## Contiguous arena primitive
 
-`vector_arena_init`, `vector_arena_append`, and `vector_arena_get` provide the
-storage-independent core of the separate vector arena. The caller owns one
-contiguous byte extent. Every append normalizes into the next fixed-size slot;
-the zero-based slot number is the stable vector id used by PAX rows and top-K.
+`cyboudb_vector_arena_init`, `cyboudb_vector_arena_append_raw`,
+`cyboudb_vector_arena_append_normalized`, `cyboudb_vector_arena_append`, and
+`cyboudb_vector_arena_get` provide the storage-independent core of the vector
+arena. The caller owns one contiguous byte extent.
 
-An append publishes `used`, `count`, and its id only after normalization
-succeeds. Invalid or non-finite vectors therefore leave the arena unchanged.
-Capacity exhaustion returns `VECTOR_FULL`, and address arithmetic is checked
-before writing. Public calls also reject wrapped base/capacity, input and id
-spans, or inconsistent caller-mutated arena counters. The later persistent
-extent layer can map file extents into this same contract without placing
-vector payloads inside PAX pages.
+- `cyboudb_vector_arena_append_raw()` stores the input vector exactly as supplied,
+  validating that all elements are finite binary32 floats.
+- `cyboudb_vector_arena_append_normalized()` normalizes the input vector into the
+  next arena slot for unit-vector cosine search.
+- `cyboudb_vector_arena_append()` defaults to raw vector append.
+
+An append publishes `used`, `count`, and its slot `out_id` only after validation
+and copying/normalization succeed. Invalid or non-finite vectors leave the arena
+unchanged. Capacity exhaustion returns `VECTOR_FULL`.
 
 ## Reproducible benchmark
 
 `build.sh --vector-bench` (or `build.bat --vector-bench`) builds
-`build/vector_search_bench`. It generates normalized vectors from a fixed
-xorshift seed and reports scalar and runtime-dispatched throughput for cosine
-and squared L2 exact search. Each row includes an order-sensitive result-id
-checksum, and the process fails if scalar and dispatched rankings differ.
+`build/vector_search_bench`. It evaluates three distinct scenarios:
+1. `cosine`: exact search over normalized unit vectors
+2. `l2sq-raw`: true Euclidean distance over unnormalized bounded random vectors
+3. `l2sq-norm`: Euclidean distance over normalized unit vectors
 
-The optional arguments are `count dimensions k iterations`; defaults are
-`20000 128 10 3`. Generation and normalization happen before timing. Reported
-throughput therefore measures the allocation-free Top-K scan, not fixture
-construction.
+Each scenario reports scalar and runtime-dispatched throughput along with an
+order-sensitive 64-bit checksum. The harness asserts bit-exact ranking parity
+between scalar and SIMD execution.
 
 ## Public C API
 
-`include/cyboudb.h` exposes the storage-independent runtime as
-`cyboudb_vector_arena_*`, `cyboudb_vector_normalize_f32`, direct
-`cyboudb_vector_{dot,l2sq}_f32` distance primitives, and
-`cyboudb_vector_topk_{cosine,l2sq}_f32`. State remains caller-owned and the
-functions do not depend on an open database handle. Return values use the
-`CybouDB_VECTOR_*` status family so capacity and non-finite input remain
-distinguishable from database/SQL errors.
+`include/cyboudb.h` exposes:
+- Public ABI metadata: `CybouDB_VECTOR_ABI_VERSION`, `struct_size`, and `abi_version`
+  in `cyboudb_vector_arena` and `cyboudb_vector_topk`.
+- Arena management: `cyboudb_vector_arena_init`, `cyboudb_vector_arena_append_raw`,
+  `cyboudb_vector_arena_append_normalized`, `cyboudb_vector_arena_append`, and
+  `cyboudb_vector_arena_get`.
+- Direct distance functions: `cyboudb_vector_dot_f32`, `cyboudb_vector_l2sq_f32`,
+  and `cyboudb_vector_normalize_f32`.
+- Top-K searches: `cyboudb_vector_topk_init`, monolithic `cyboudb_vector_topk_cosine_f32` /
+  `cyboudb_vector_topk_l2sq_f32`, and streaming batch feed functions.
 
-`examples/vector_search.c` is a complete standalone path: it appends and
-normalizes caller-owned vectors, normalizes a query, applies a metadata bitmap,
-and prints deterministic cosine Top-K results. Build it with
-`build.sh --vector-example` or `build.bat --vector-example`.
+Status codes use the `CybouDB_VECTOR_*` family (`CybouDB_VECTOR_OK`, `CybouDB_VECTOR_INVALID`,
+`CybouDB_VECTOR_NONFINITE`, `CybouDB_VECTOR_FULL`). Direct `dot` and `l2sq` primitives return `float`.

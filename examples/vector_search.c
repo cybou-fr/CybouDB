@@ -17,7 +17,7 @@ int main(void) {
         CybouDB_VECTOR_OK) return 1;
     for (uint64_t i = 0; i < 6; i++) {
         uint64_t id;
-        if (cyboudb_vector_arena_append(&arena, input[i], &id) !=
+        if (cyboudb_vector_arena_append_normalized(&arena, input[i], &id) !=
             CybouDB_VECTOR_OK || id != i) return 1;
     }
     {
@@ -28,10 +28,18 @@ int main(void) {
 
     /* Metadata filter: exclude row 1 before evaluating its vector. */
     const uint64_t candidates = 0x3d;
-    cyboudb_vector_topk search = {
-        query, &storage[0][0], arena.count, arena.dimensions, 3, arena.stride,
-        ids, scores, 0, &candidates, 0
-    };
+    cyboudb_vector_topk search;
+    if (cyboudb_vector_topk_init(&search) != CybouDB_VECTOR_OK) return 1;
+    search.query = query;
+    search.vectors = &storage[0][0];
+    search.count = arena.count;
+    search.dimensions = arena.dimensions;
+    search.k = 3;
+    search.stride = arena.stride;
+    search.out_ids = ids;
+    search.out_scores = scores;
+    search.candidates = &candidates;
+
     if (cyboudb_vector_topk_cosine_f32(&search) != CybouDB_VECTOR_OK) return 1;
 
     printf("evaluated=%" PRIu64 "\n", search.evaluated_count);

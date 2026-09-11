@@ -1,4 +1,4 @@
-﻿# CybouDB Roadmap
+# CybouDB Roadmap
 
 Checkboxes describe the repository as it stands, not as it is meant to end up.
 An item is only ticked when it exists in the code and is covered by the test
@@ -43,7 +43,7 @@ filter comparison outright and change nothing on materialization. Per-scenario r
 conditions are recorded in [benchmarks/README.md](benchmarks/README.md);
 performance depends on the query, execution mode and hardware.
 
-Vectors, SQL transactions, `DROP TABLE`, `DELETE`, and an ARM64 backend remain
+Persistent vector storage and SQL vector types, SQL transactions, `DROP TABLE`, `DELETE`, and an ARM64 backend remain
 unimplemented. `UPDATE` currently supports one fixed-width assignment with a
 mandatory predicate on flat PAX directories; tree and TEXT/BLOB mutation remain
 listed under Phase 3.
@@ -452,15 +452,15 @@ callback execution now uses arena-bounded row materialization plus stable typed
 insertion sort, with deterministic NULL placement and LIMIT/OFFSET applied after
 sorting. JOIN ordering and pull-style C stepping remain explicitly gated.
 
-* [x] runtime-native normalized `FLOAT32` vectors
-* [x] caller-owned contiguous vector arena
+* [x] runtime-native raw and normalized `FLOAT32` vectors
+* [x] caller-owned contiguous vector arena with raw and normalized appends
 * [ ] persistent vector extents
 * [ ] SQL surface for vector columns and distance expressions
-* [x] scalar and AVX2 dot products with runtime dispatch
-* [x] normalized cosine similarity
-* [x] deterministic filtered streaming top-k
+* [x] scalar and AVX2 dot products and squared L2 distances with runtime dispatch
+* [x] normalized cosine similarity and raw/normalized L2 Top-K
+* [x] deterministic filtered streaming Top-K with batch feed API
 * [x] runtime exact vector search over contiguous candidates
-* [x] reproducible exact-search benchmarks with fixed input generation and result checksums
+* [x] reproducible exact-search benchmarks with fixed input generation, raw L2 and cosine scenarios, and result checksums
 
 ---
 

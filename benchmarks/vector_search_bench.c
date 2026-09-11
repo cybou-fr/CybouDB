@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "cyboudb.h"
 #ifdef _WIN32
 #include <windows.h>
@@ -48,7 +49,7 @@ static int run(const char *name, int scalar, int l2, cyboudb_vector_topk *state,
     }
     double elapsed = seconds_now() - start;
     double evaluated = (double)state->evaluated_count * (double)iterations;
-    printf("%-6s %-6s %8.2f Mvec/s  %7.2f ns/vector  checksum=%llu\n",
+    printf("%-10s %-6s %8.2f Mvec/s  %7.2f ns/vector  checksum=%llu\n",
            name, scalar ? "scalar" : "auto", evaluated / elapsed / 1e6,
            elapsed * 1e9 / evaluated, (unsigned long long)checksum);
     *out_checksum = checksum;
@@ -63,32 +64,67 @@ int main(int argc, char **argv) {
         fprintf(stderr, "usage: %s [count>0] [dimensions>0] [k<=count] [iterations>0]\n", argv[0]);
         return 2;
     }
-    float *vectors = (float *)malloc((size_t)(count * dim) * sizeof(float));
-    float *query = (float *)malloc((size_t)dim * sizeof(float));
+    float *raw_vectors = (float *)malloc((size_t)(count * dim) * sizeof(float));
+    float *norm_vectors = (float *)malloc((size_t)(count * dim) * sizeof(float));
+    float *raw_query = (float *)malloc((size_t)dim * sizeof(float));
+    float *norm_query = (float *)malloc((size_t)dim * sizeof(float));
     uint64_t *ids = (uint64_t *)malloc((size_t)k * sizeof(uint64_t));
     float *scores = (float *)malloc((size_t)k * sizeof(float));
-    if (!vectors || !query || !ids || !scores) { fprintf(stderr, "allocation failed\n"); return 2; }
-    for (uint64_t i = 0; i < dim; i++) query[i] = sample();
-    if (vector_normalize_f32_scalar(query, query, dim) != 0) return 2;
-    for (uint64_t row = 0; row < count; row++) {
-        float *v = vectors + row * dim;
-        for (uint64_t i = 0; i < dim; i++) v[i] = sample();
-        if (vector_normalize_f32_scalar(v, v, dim) != 0) return 2;
+    if (!raw_vectors || !norm_vectors || !raw_query || !norm_query || !ids || !scores) {
+        fprintf(stderr, "allocation failed\n");
+        return 2;
     }
-    cyboudb_vector_topk state = {query, vectors, count, dim, k, dim * sizeof(float),
-                               ids, scores, 0, NULL, 0};
+    for (uint64_t i = 0; i < dim; i++) raw_query[i] = sample();
+    memcpy(norm_query, raw_query, (size_t)dim * sizeof(float));
+    if (vector_normalize_f32_scalar(norm_query, norm_query, dim) != 0) return 2;
+
+    for (uint64_t row = 0; row < count; row++) {
+        float *rv = raw_vectors + row * dim;
+        float *nv = norm_vectors + row * dim;
+        for (uint64_t i = 0; i < dim; i++) rv[i] = sample();
+        memcpy(nv, rv, (size_t)dim * sizeof(float));
+        if (vector_normalize_f32_scalar(nv, nv, dim) != 0) return 2;
+    }
+
+    cyboudb_vector_topk state;
+    if (cyboudb_vector_topk_init(&state) != CybouDB_VECTOR_OK) return 2;
+    state.count = count;
+    state.dimensions = dim;
+    state.k = k;
+    state.stride = dim * sizeof(float);
+    state.out_ids = ids;
+    state.out_scores = scores;
+
     printf("seed=0x6d2b79f5 vectors=%llu dimensions=%llu k=%llu iterations=%llu\n",
            (unsigned long long)count, (unsigned long long)dim,
            (unsigned long long)k, (unsigned long long)iterations);
-    uint64_t cosine_scalar, cosine_auto, l2_scalar, l2_auto;
+
+    uint64_t cosine_scalar, cosine_auto;
+    uint64_t l2_scalar, l2_auto;
+    uint64_t l2norm_scalar, l2norm_auto;
+
+    /* Cosine exact search over normalized vectors */
+    state.query = norm_query;
+    state.vectors = norm_vectors;
     if (run("cosine", 1, 0, &state, iterations, &cosine_scalar) ||
-        run("cosine", 0, 0, &state, iterations, &cosine_auto) ||
-        run("l2sq", 1, 1, &state, iterations, &l2_scalar) ||
-        run("l2sq", 0, 1, &state, iterations, &l2_auto)) return 1;
-    if (cosine_scalar != cosine_auto || l2_scalar != l2_auto) {
+        run("cosine", 0, 0, &state, iterations, &cosine_auto)) return 1;
+
+    /* Raw L2 exact search over raw (unnormalized) vectors */
+    state.query = raw_query;
+    state.vectors = raw_vectors;
+    if (run("l2sq-raw", 1, 1, &state, iterations, &l2_scalar) ||
+        run("l2sq-raw", 0, 1, &state, iterations, &l2_auto)) return 1;
+
+    /* Normalized L2 exact search over normalized unit vectors */
+    state.query = norm_query;
+    state.vectors = norm_vectors;
+    if (run("l2sq-norm", 1, 1, &state, iterations, &l2norm_scalar) ||
+        run("l2sq-norm", 0, 1, &state, iterations, &l2norm_auto)) return 1;
+
+    if (cosine_scalar != cosine_auto || l2_scalar != l2_auto || l2norm_scalar != l2norm_auto) {
         fprintf(stderr, "scalar/auto ranking mismatch\n");
         return 1;
     }
-    free(scores); free(ids); free(query); free(vectors);
+    free(scores); free(ids); free(norm_query); free(raw_query); free(norm_vectors); free(raw_vectors);
     return 0;
 }

@@ -62,12 +62,16 @@ typedef struct cyboudb_batch_view {
 } cyboudb_batch_view;
 
 /* --- Allocation-free Vector Runtime -------------------------------------- */
+#define CybouDB_VECTOR_ABI_VERSION 1
+
 #define CybouDB_VECTOR_OK          0
 #define CybouDB_VECTOR_INVALID    -1
 #define CybouDB_VECTOR_NONFINITE  -2
 #define CybouDB_VECTOR_FULL       -3
 
 typedef struct cyboudb_vector_arena {
+    uint32_t struct_size;       /* sizeof(cyboudb_vector_arena) */
+    uint32_t abi_version;       /* CybouDB_VECTOR_ABI_VERSION */
     float *base;
     uint64_t capacity;          /* caller-owned bytes at base */
     uint64_t used;
@@ -77,6 +81,8 @@ typedef struct cyboudb_vector_arena {
 } cyboudb_vector_arena;
 
 typedef struct cyboudb_vector_topk {
+    uint32_t struct_size;       /* sizeof(cyboudb_vector_topk) */
+    uint32_t abi_version;       /* CybouDB_VECTOR_ABI_VERSION */
     const float *query;
     const float *vectors;
     uint64_t count;
@@ -90,19 +96,119 @@ typedef struct cyboudb_vector_topk {
     uint64_t evaluated_count;
 } cyboudb_vector_topk;
 
+/**
+ * Initialize a caller-owned contiguous vector arena.
+ * Sets struct_size and abi_version, initializes counters to zero.
+ */
 int cyboudb_vector_arena_init(cyboudb_vector_arena *arena, void *memory,
                               uint64_t capacity, uint64_t dimensions);
+
+/**
+ * Append a raw FLOAT32 vector exactly as supplied into the arena.
+ * Validates that all float elements are finite (no NaN or Inf).
+ * Returns CybouDB_VECTOR_OK and assigns *out_id on success.
+ */
+int cyboudb_vector_arena_append_raw(cyboudb_vector_arena *arena,
+                                    const float *vector, uint64_t *out_id);
+
+/**
+ * Append and normalize a FLOAT32 vector into the arena for cosine search.
+ * Rejects zero, NaN, and Inf vectors with CybouDB_VECTOR_INVALID or
+ * CybouDB_VECTOR_NONFINITE without modifying the arena.
+ */
+int cyboudb_vector_arena_append_normalized(cyboudb_vector_arena *arena,
+                                           const float *vector, uint64_t *out_id);
+
+/**
+ * Default append: appends a raw FLOAT32 vector (alias for cyboudb_vector_arena_append_raw).
+ */
 int cyboudb_vector_arena_append(cyboudb_vector_arena *arena,
                                 const float *vector, uint64_t *out_id);
+
+/**
+ * Retrieve a pointer to the vector at slot vector_id in the arena.
+ * Returns NULL if vector_id >= arena->count or arena validation fails.
+ */
 const float *cyboudb_vector_arena_get(const cyboudb_vector_arena *arena,
                                       uint64_t vector_id);
+
+/**
+ * Normalize an input FLOAT32 vector using Euclidean (L2) norm.
+ * Input and output may alias. Rejects zero vectors (CybouDB_VECTOR_INVALID)
+ * and non-finite / overflowing vectors (CybouDB_VECTOR_NONFINITE).
+ */
 int cyboudb_vector_normalize_f32(const float *input, float *output,
                                  uint64_t dimensions);
+
+/**
+ * Compute the dot product of two FLOAT32 vectors.
+ * For dimensions > 0, left and right must each reference dimensions readable floats.
+ * For dimensions == 0, returns 0.0f and left/right may be NULL.
+ */
 float cyboudb_vector_dot_f32(const float *left, const float *right,
                              uint64_t dimensions);
+
+/**
+ * Compute the squared Euclidean (L2) distance of two FLOAT32 vectors.
+ * For dimensions > 0, left and right must each reference dimensions readable floats.
+ * For dimensions == 0, returns 0.0f and left/right may be NULL.
+ */
 float cyboudb_vector_l2sq_f32(const float *left, const float *right,
                               uint64_t dimensions);
+
+/**
+ * Initialize a vector Top-K search descriptor with current ABI metadata.
+ */
+int cyboudb_vector_topk_init(cyboudb_vector_topk *search);
+
+/**
+ * Begin a streaming exact cosine Top-K search session.
+ * Resets search->out_count and search->evaluated_count to zero and validates parameters.
+ */
+int cyboudb_vector_topk_cosine_begin(cyboudb_vector_topk *search);
+
+/**
+ * Feed a batch of up to 64 vectors with a 64-bit candidate selection mask into cosine Top-K.
+ * If bit i of candidate_mask is 1, evaluates vectors[i] against search->query and updates Top-K.
+ */
+int cyboudb_vector_topk_cosine_feed(cyboudb_vector_topk *search,
+                                    uint64_t base_id,
+                                    const float *vectors,
+                                    uint64_t count,
+                                    uint64_t candidate_mask);
+
+/**
+ * Finish a streaming exact cosine Top-K session.
+ */
+int cyboudb_vector_topk_cosine_finish(cyboudb_vector_topk *search);
+
+/**
+ * Begin a streaming exact squared-L2 Top-K search session.
+ */
+int cyboudb_vector_topk_l2sq_begin(cyboudb_vector_topk *search);
+
+/**
+ * Feed a batch of up to 64 vectors with a 64-bit candidate selection mask into squared-L2 Top-K.
+ */
+int cyboudb_vector_topk_l2sq_feed(cyboudb_vector_topk *search,
+                                  uint64_t base_id,
+                                  const float *vectors,
+                                  uint64_t count,
+                                  uint64_t candidate_mask);
+
+/**
+ * Finish a streaming exact squared-L2 Top-K session.
+ */
+int cyboudb_vector_topk_l2sq_finish(cyboudb_vector_topk *search);
+
+/**
+ * Monolithic exact cosine Top-K search over contiguous candidate array.
+ */
 int cyboudb_vector_topk_cosine_f32(cyboudb_vector_topk *search);
+
+/**
+ * Monolithic exact squared-L2 Top-K search over contiguous candidate array.
+ */
 int cyboudb_vector_topk_l2sq_f32(cyboudb_vector_topk *search);
 
 /* =============================================================================
