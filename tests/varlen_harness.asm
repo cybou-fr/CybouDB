@@ -334,6 +334,36 @@ cyboudb_main:
     jne failure_close
     mov qword [descriptor + VAR_CELL_LENGTH], TEST_LENGTH
 
+    ; Empty and non-empty descriptors have distinct canonical root/length pairs.
+    mov rax, [descriptor + VAR_CELL_ROOT]
+    mov [rbp - 8], rax
+    mov qword [descriptor + VAR_CELL_ROOT], 0
+    mov qword [descriptor + VAR_CELL_LENGTH], 1
+    lea ARG1, [ctx]
+    lea ARG2, [candidate]
+    lea ARG3, [descriptor]
+    mov ARG4, TEST_OWNER
+    xor eax, eax
+    PASS_ARG5 rax
+    PASS_ARG6 rax
+    call db_var_read_chain
+    cmp eax, CybouDB_E_PAX
+    jne failure_close
+    mov rax, [rbp - 8]
+    mov [descriptor + VAR_CELL_ROOT], rax
+    mov qword [descriptor + VAR_CELL_LENGTH], 0
+    lea ARG1, [ctx]
+    lea ARG2, [candidate]
+    lea ARG3, [descriptor]
+    mov ARG4, TEST_OWNER
+    xor eax, eax
+    PASS_ARG5 rax
+    PASS_ARG6 rax
+    call db_var_read_chain
+    cmp eax, CybouDB_E_PAX
+    jne failure_close
+    mov qword [descriptor + VAR_CELL_LENGTH], TEST_LENGTH
+
     lea ARG1, [ctx]
     call db_close
     xor eax, eax
