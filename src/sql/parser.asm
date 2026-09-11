@@ -1,5 +1,5 @@
 ; =============================================================================
-;  src/sql/parser.asm - SQL Parser (CREATE TABLE, INSERT, SELECT)
+;  src/sql/parser.asm - SQL Parser (CREATE TABLE, INSERT, SELECT, UPDATE)
 ; =============================================================================
 
 %include "sql.inc"
@@ -1327,6 +1327,8 @@ sql_parse:
     je      .parse_insert
     cmp     rax, TOK_SELECT
     je      .parse_select
+    cmp     rax, TOK_UPDATE
+    je      .parse_update
 
     ; Unknown initial token
     mov     ARG1, [rbp - 40]
@@ -1639,6 +1641,79 @@ sql_parse:
     mov     r10, [rbp - 48]
     mov     rax, [rbp - 56]
     mov     [r10 + STMT_EXTRA3], rax    ; row_count
+    jmp     .check_eof
+
+; --- UPDATE table SET column = literal WHERE expression ---------------------
+.parse_update:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_UPDATE
+
+    ; Table name.
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_table_name
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + UPDATE_TABLE_NAME_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + UPDATE_TABLE_NAME_LEN], rax
+
+    ; Exactly one SET target in the first implementation.
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_SET
+    jne     .bad_syntax
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_col_name
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + UPDATE_COLUMN_NAME_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + UPDATE_COLUMN_NAME_LEN], rax
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_EQ
+    jne     .bad_syntax
+
+    lea     ARG1, [rbp - 160]
+    mov     ARG2, [rbp - 8]
+    mov     ARG3, [rbp - 24]
+    mov     ARG4, [rbp - 40]
+    call    parse_primary
+    test    rax, rax
+    jz      .fail
+    cmp     qword [rax + EXPR_KIND], EXPR_LITERAL
+    jne     .bad_syntax
+    mov     r10, [rbp - 48]
+    mov     [r10 + UPDATE_VALUE_EXPR], rax
+
+    ; WHERE is mandatory until full-table mutation receives explicit tests.
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_WHERE
+    jne     .bad_syntax
+    lea     ARG1, [rbp - 160]
+    mov     ARG2, [rbp - 8]
+    mov     ARG3, [rbp - 24]
+    mov     ARG4, [rbp - 40]
+    mov     rax, 1
+    PASS_ARG5 rax
+    call    parse_expr_prec
+    test    rax, rax
+    jz      .fail
+    mov     r10, [rbp - 48]
+    mov     [r10 + UPDATE_WHERE_EXPR], rax
     jmp     .check_eof
 
 ; --- SELECT ------------------------------------------------------------------

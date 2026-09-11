@@ -2,6 +2,7 @@
 """Portable SQL regression suite. Run: python tests/sql_tests.py [binary]."""
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -39,6 +40,13 @@ def check(name, sql, rc=0, message=None, rows=None):
     else:
         passed += 1
         print(f"ok   {name}")
+
+
+def generation():
+    result = invoke("info", database)
+    match = re.search(r"Generation:\s+(\d+)", result.stdout)
+    assert result.returncode == 0 and match, result.stdout + result.stderr
+    return int(match.group(1))
 
 
 def run():
@@ -82,6 +90,54 @@ def run():
     check('insert_type_mismatch_float', 'INSERT INTO users VALUES (5, 3.14, TRUE, 0.0)', rc=2, message='type mismatch')
     check('insert_int32_overflow', 'INSERT INTO users VALUES (6, 3000000000, TRUE, 0.0)', rc=2, message='type mismatch')
     check('verify_rollback_after_failed_inserts', 'SELECT id FROM users', rc=0, rows=[(1,), (2,), (3,), (4,)])
+    # UPDATE V1 atomically rewrites one fixed-width leaf (at most 64 rows).
+    check('update_single_column',
+          'UPDATE users SET age = 31 WHERE id = 1', rc=0, message='UPDATE 1')
+    check('update_nullable_to_null',
+          'UPDATE users SET age = NULL WHERE id = 4', rc=0, message='UPDATE 1')
+    check('update_bool',
+          'UPDATE users SET active = FALSE WHERE id = 1', rc=0, message='UPDATE 1')
+    check('update_bool_restore',
+          'UPDATE users SET active = TRUE WHERE id = 1', rc=0, message='UPDATE 1')
+    check('update_float32',
+          'UPDATE users SET score = 12.25 WHERE id = 1', rc=0, message='UPDATE 1')
+    check('update_float32_restore',
+          'UPDATE users SET score = 10.5 WHERE id = 1', rc=0, message='UPDATE 1')
+    check('update_int64',
+          'UPDATE users SET id = 10 WHERE id = 1', rc=0, message='UPDATE 1')
+    check('update_int64_restore',
+          'UPDATE users SET id = 1 WHERE id = 10', rc=0, message='UPDATE 1')
+    generation_before_noop = generation()
+    check('update_no_matches',
+          'UPDATE users SET age = 99 WHERE id = 999', rc=0, message='UPDATE 0')
+    if generation() != generation_before_noop:
+        raise AssertionError('UPDATE 0 must not publish a new generation')
+    check('update_restore_fixture_rows',
+          'UPDATE users SET age = 25 WHERE id = 1', rc=0, message='UPDATE 1')
+    check('update_restore_null_fixture',
+          'UPDATE users SET age = -15 WHERE id = 4', rc=0, message='UPDATE 1')
+    check('update_missing_table',
+          'UPDATE missing_tbl SET age = 31 WHERE id = 1', rc=2,
+          message='table not found in catalog')
+    check('update_missing_target_column',
+          'UPDATE users SET missing = 31 WHERE id = 1', rc=2,
+          message='column not found in schema')
+    check('update_missing_where_column',
+          'UPDATE users SET age = 31 WHERE missing = 1', rc=2,
+          message='column not found in schema')
+    check('update_type_mismatch',
+          'UPDATE users SET age = 3.14 WHERE id = 1', rc=2,
+          message='type mismatch')
+    check('update_null_into_not_null',
+          'UPDATE users SET id = NULL WHERE id = 1', rc=2,
+          message='cannot insert NULL into non-nullable column')
+    check('update_requires_where',
+          'UPDATE users SET age = 31', rc=2, message='syntax error')
+    check('update_rejects_multiple_assignments',
+          'UPDATE users SET age = 31, score = 4.0 WHERE id = 1', rc=2,
+          message='syntax error')
+    check('update_failures_are_atomic', 'SELECT id,age FROM users', rc=0,
+          rows=[(1, 25), (2, 'NULL'), (3, 40), (4, -15)])
     check('select_all', 'SELECT * FROM users', rc=0, rows=[(1, 25, 'TRUE', '10.50'), (2, 'NULL', 'FALSE', '99.50'), (3, 40, 'TRUE', '75.00'), (4, -15, 'TRUE', '-5.25')])
     check('select_columns', 'SELECT id, age FROM users', rc=0, rows=[(1, 25), (2, 'NULL'), (3, 40), (4, -15)])
     check('select_case_insensitive', 'SELECT ID, AGE FROM USERS', rc=0, rows=[(1, 25), (2, 'NULL'), (3, 40), (4, -15)])
@@ -303,15 +359,45 @@ def run():
     check('select_b63_filter', 'SELECT id FROM b63 WHERE id > 30', rc=0, rows=[(i,) for i in range(31, 64)])
     check('create_b64', 'CREATE TABLE b64 ( id INT64 NOT NULL, val INT32 )', rc=0, message='Table created')
     check('insert_b64', 'INSERT INTO b64 VALUES ' + ','.join(f'({i}, {i})' for i in range(1, 65)), rc=0, message='INSERT 64')
+    check('update_exact_64_rows', 'UPDATE b64 SET val = 640 WHERE id = 64',
+          rc=0, message='UPDATE 1')
+    check('update_exact_64_rows_visible', 'SELECT val FROM b64 WHERE id = 64',
+          rc=0, rows=[(640,)])
+    check('update_exact_64_rows_restore', 'UPDATE b64 SET val = 64 WHERE id = 64',
+          rc=0, message='UPDATE 1')
     check('select_b64_all', 'SELECT id FROM b64', rc=0, rows=[(i,) for i in range(1, 65)])
     check('select_b64_filter', 'SELECT id FROM b64 WHERE id <= 32', rc=0, rows=[(i,) for i in range(1, 33)])
     check('create_b65', 'CREATE TABLE b65 ( id INT64 NOT NULL, val INT32 )', rc=0, message='Table created')
     check('insert_b65', 'INSERT INTO b65 VALUES ' + ','.join(f'({i}, {i})' for i in range(1, 66)), rc=0, message='INSERT 65')
+    check('update_b65_second_batch',
+          'UPDATE b65 SET val = 999 WHERE id = 65', rc=0, message='UPDATE 1')
+    check('update_b65_second_batch_visible',
+          'SELECT id,val FROM b65 WHERE id = 65', rc=0, rows=[(65, 999)])
+    check('update_b65_cross_batch_masks',
+          'UPDATE b65 SET val = 500 WHERE id = 1 OR id = 65', rc=0,
+          message='UPDATE 2')
+    check('update_b65_cross_batch_visible',
+          'SELECT id,val FROM b65 WHERE id = 1 OR id = 65', rc=0,
+          rows=[(1, 500), (65, 500)])
+    check('update_b65_restore_first', 'UPDATE b65 SET val = 1 WHERE id = 1',
+          rc=0, message='UPDATE 1')
+    check('update_b65_restore_last', 'UPDATE b65 SET val = 65 WHERE id = 65',
+          rc=0, message='UPDATE 1')
     check('select_b65_all', 'SELECT id FROM b65', rc=0, rows=[(i,) for i in range(1, 66)])
     check('select_b65_filter_cross', 'SELECT id FROM b65 WHERE id > 64', rc=0, rows=[(65,)])
     check('create_bmulti', 'CREATE TABLE bmulti ( id INT64 NOT NULL, val INT32 )', rc=0, message='Table created')
     check('insert_bmulti_part1', 'INSERT INTO bmulti VALUES ' + ','.join(f'({i}, {i})' for i in range(1, 201)), rc=0, message='INSERT 200')
     check('insert_bmulti_part2', 'INSERT INTO bmulti VALUES ' + ','.join(f'({i}, {i})' for i in range(201, 401)), rc=0, message='INSERT 200')
+    check('update_flat_multi_leaf',
+          'UPDATE bmulti SET val = 777 WHERE id = 1 OR id = 320 OR id = 321 OR id = 400',
+          rc=0, message='UPDATE 4')
+    check('update_flat_multi_leaf_visible',
+          'SELECT id,val FROM bmulti WHERE id = 1 OR id = 320 OR id = 321 OR id = 400',
+          rc=0, rows=[(1, 777), (320, 777), (321, 777), (400, 777)])
+    for update_id in (1, 320, 321, 400):
+        check(f'update_flat_restore_{update_id}',
+              f'UPDATE bmulti SET val = {update_id} WHERE id = {update_id}',
+              rc=0, message='UPDATE 1')
     check('select_bmulti_all', 'SELECT id FROM bmulti', rc=0, rows=[(i,) for i in range(1, 401)])
     check('select_bmulti_cross_page', 'SELECT id FROM bmulti WHERE id > 350', rc=0, rows=[(i,) for i in range(351, 401)])
     check('select_bmulti_single_row', 'SELECT id FROM bmulti WHERE id = 399', rc=0, rows=[(399,)])

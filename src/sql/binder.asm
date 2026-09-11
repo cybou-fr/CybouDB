@@ -849,6 +849,8 @@ sql_bind:
     je      .bind_insert
     cmp     rax, STMT_SELECT
     je      .bind_select
+    cmp     rax, STMT_UPDATE
+    je      .bind_update
 
     mov     eax, SQL_ERR_SYNTAX
     jmp     .binder_exit
@@ -1259,6 +1261,152 @@ sql_bind:
     mov     rax, [rbp - 104]
     mov     [r10 + PLAN_DATA1], rax     ; batch_ptr
 
+    xor     eax, eax
+    jmp     .binder_exit
+
+; --- BIND UPDATE -------------------------------------------------------------
+; Lower a complete typed mutation contract; execution remains gated until the
+; COW writer can publish the rewritten table atomically.
+.bind_update:
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + PLAN_TYPE], STMT_UPDATE
+    mov     qword [r10 + PLAN_DATA1], 0
+    mov     qword [r10 + PLAN_DATA2], 0
+    mov     qword [r10 + PLAN_DATA3], 0
+
+    mov     r10, [rbp - 16]
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + UPDATE_TABLE_NAME_PTR]
+    mov     ARG3, [r10 + UPDATE_TABLE_NAME_LEN]
+    lea     ARG4, [rbp - 56]
+    call    catalog_find_table
+    test    rax, rax
+    jz      .tbl_not_found
+    mov     [rbp - 64], rax
+    mov     r10, [rbp - 48]
+    mov     rdx, [rbp - 56]
+    mov     [r10 + PLAN_TABLE_ID], rdx
+    mov     [r10 + PLAN_SCHEMA_PAGE], rax
+    mov     r11, [rbp - 8]
+    mov     rax, [r11 + DB_GENERATION]
+    mov     [r10 + PLAN_GENERATION], rax
+    mov     rax, [r11 + DB_BASE]
+    mov     [r10 + PLAN_DB_BASE], rax
+    mov     rax, [r11 + DB_ROOT]
+    mov     [r10 + PLAN_DB_ROOT], rax
+    mov     [r10 + PLAN_CTX], r11
+    mov     qword [r10 + PLAN_FLAGS], 0
+
+    mov     r11, [rbp - 16]
+    mov     ARG1, [rbp - 64]
+    mov     ARG2, [r11 + UPDATE_COLUMN_NAME_PTR]
+    mov     ARG3, [r11 + UPDATE_COLUMN_NAME_LEN]
+    lea     ARG4, [rbp - 88]
+    call    schema_find_col
+    test    rax, rax
+    jz      .col_not_found
+    mov     [rbp - 80], rax
+    mov     r10, [rbp - 48]
+    mov     rdx, [rbp - 88]
+    mov     [r10 + PLAN_UPDATE_COL_IDX], rdx
+    mov     edx, [rax]
+    mov     [r10 + PLAN_UPDATE_COL_TYPE], rdx
+    mov     qword [r10 + PLAN_UPDATE_LENGTH], 0
+    mov     qword [r10 + PLAN_UPDATE_IS_NULL], 0
+
+    mov     r11, [rbp - 16]
+    mov     r9, [r11 + UPDATE_VALUE_EXPR]
+    mov     [rbp - 72], r9
+    cmp     qword [r9 + EXPR_KIND], EXPR_LITERAL
+    jne     .type_mismatch
+    mov     rdx, [rbp - 80]
+    mov     r10d, [rdx]
+    mov     r11d, [rdx + 4]
+    cmp     dword [r9 + EXPR_LIT_TYPE], 0
+    jne     .upd_not_null
+    test    r11d, CAT_NULLABLE
+    jz      .not_nullable
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + PLAN_UPDATE_VALUE], 0
+    mov     qword [r10 + PLAN_UPDATE_IS_NULL], 1
+    jmp     .upd_bind_where
+
+.upd_not_null:
+    mov     eax, [r9 + EXPR_LIT_TYPE]
+    cmp     r10d, CAT_TEXT
+    je      .upd_varlen
+    cmp     r10d, CAT_BLOB
+    je      .upd_varlen
+    cmp     eax, CAT_BOOL
+    ja      .type_mismatch
+    mov     rax, [r9 + EXPR_LIT_VAL]
+    cmp     r10d, CAT_INT32
+    je      .upd_int32
+    cmp     r10d, CAT_FLOAT32
+    je      .upd_float32
+    cmp     r10d, CAT_BOOL
+    je      .upd_bool
+    cmp     dword [r9 + EXPR_LIT_TYPE], CAT_FLOAT32
+    je      .type_mismatch
+    cmp     dword [r9 + EXPR_LIT_TYPE], CAT_BOOL
+    je      .type_mismatch
+    jmp     .upd_store_value
+.upd_int32:
+    cmp     dword [r9 + EXPR_LIT_TYPE], CAT_FLOAT32
+    je      .type_mismatch
+    cmp     dword [r9 + EXPR_LIT_TYPE], CAT_BOOL
+    je      .type_mismatch
+    movsxd  rdx, eax
+    cmp     rax, rdx
+    jne     .type_mismatch
+    jmp     .upd_store_value
+.upd_float32:
+    cmp     dword [r9 + EXPR_LIT_TYPE], CAT_BOOL
+    je      .type_mismatch
+    cmp     dword [r9 + EXPR_LIT_TYPE], CAT_FLOAT32
+    je      .upd_store_value
+    cvtsi2ss xmm0, rax
+    movd    eax, xmm0
+    jmp     .upd_store_value
+.upd_bool:
+    cmp     dword [r9 + EXPR_LIT_TYPE], CAT_BOOL
+    je      .upd_bool_ok
+    cmp     rax, 0
+    je      .upd_bool_ok
+    cmp     rax, 1
+    jne     .type_mismatch
+.upd_bool_ok:
+    movzx   eax, al
+.upd_store_value:
+    mov     r10, [rbp - 48]
+    mov     [r10 + PLAN_UPDATE_VALUE], rax
+    jmp     .upd_bind_where
+
+.upd_varlen:
+    cmp     eax, r10d
+    jne     .type_mismatch
+    mov     r10, [rbp - 48]
+    mov     rax, [r9 + EXPR_LIT_PTR]
+    mov     [r10 + PLAN_UPDATE_VALUE], rax
+    mov     rax, [r9 + EXPR_LIT_LEN]
+    mov     [r10 + PLAN_UPDATE_LENGTH], rax
+
+.upd_bind_where:
+    mov     r11, [rbp - 16]
+    mov     ARG1, [r11 + UPDATE_WHERE_EXPR]
+    mov     ARG2, [rbp - 64]
+    mov     ARG3, [rbp - 24]
+    mov     ARG4, [rbp - 40]
+    call    bind_expr
+    test    rax, rax
+    jz      .fail
+    mov     r10, [rbp - 48]
+    mov     [r10 + PLAN_DATA4], rax
+    mov     ARG1, rax
+    call    required_expr_columns
+    mov     r10, [rbp - 48]
+    mov     [r10 + PLAN_REQUIRED_COLS], rax
+    mov     [r10 + PLAN_REQUIRED_VALUES], rdx
     xor     eax, eax
     jmp     .binder_exit
 

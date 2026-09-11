@@ -178,6 +178,10 @@ cyboudb query demo.cyboudb "SELECT id, score FROM runs WHERE score > 90"
 * [x] expression parser with correct operator precedence
 * [x] statement parser: `CREATE TABLE`, `INSERT`, `SELECT ... FROM ... WHERE`
 * [ ] statement parser: `DROP TABLE`
+* [x] statement parser contract: single-column `UPDATE ... SET literal WHERE ...`
+* [x] binder contract for typed single-column `UPDATE`
+* [x] COW executor for flat multi-leaf, fixed-width `UPDATE`
+* [ ] tree-directory and TEXT/BLOB `UPDATE`
 * [x] a type system, and a decision on NULL semantics written down before it
       is implemented
 * [x] binder: resolve names against the catalog, report unknown ones by

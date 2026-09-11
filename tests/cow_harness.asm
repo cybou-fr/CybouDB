@@ -9,7 +9,7 @@ extern db_create_cow
 extern db_alloc_page, db_free_page, db_cow_alloc_page, db_cow_copy_page
 extern db_cow_write_page, db_cow_set_root, vfs_sync
 extern db_catalog_put, db_catalog_get
-extern db_pax_insert, db_pax_read, os_write
+extern db_pax_insert, db_pax_read, db_pax_update_one, os_write
 extern db_zone_lookup, db_zone_stride
 extern db_pax_scan_open, db_pax_scan_next
 extern vfs_open_ro, vfs_size, vfs_map_ro
@@ -45,6 +45,7 @@ column_count: resq 1
 cursor: resb CybouDB_SCAN_SIZE
 scan_out: resq 3
 scan_rows: resq 1
+update_span: resq 2
 ; Batch fixture geometry, matching tests/pax_support.py: a row count, then
 ; FIXTURE_SLOTS u64 value slots, then one NULL byte per slot.
 %define FIXTURE_SLOTS 16384
@@ -373,6 +374,22 @@ cyboudb_main:
     call db_pax_insert
     REQUIRE CybouDB_OK
 .pax_inserted:
+    cmp qword [mode], 54
+    jne .pax_not_update
+    CTX
+    mov ARG2, [table_id]
+    mov ARG3, [column_type]
+    mov ARG4, 99
+    xor rax, rax
+    PASS_ARG5 rax
+    mov qword [update_span + UPDATE_SPAN_START], 0
+    mov qword [update_span + UPDATE_SPAN_MASK], 6
+    lea rax, [update_span]
+    PASS_ARG6 rax
+    call db_pax_update_one
+    test eax, eax
+    jnz .return
+.pax_not_update:
     cmp qword [mode], 42
     je .abrupt
     cmp qword [mode], 49

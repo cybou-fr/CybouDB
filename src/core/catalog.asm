@@ -10,7 +10,7 @@ extern db_cow_alloc_page, db_cow_copy_page, db_cow_set_root
 extern db_pax_validate, db_pax_check_new
 extern db_zone_validate
 global db_catalog_validate, db_catalog_put, db_catalog_get
-global db_catalog_set_data, db_catalog_set_data_stats
+global db_catalog_set_data, db_catalog_set_data_stats, db_catalog_replace_data
 section .text
 
 ; name_valid(pointer, width): nonempty ASCII identifier, NUL and zero padding.
@@ -669,7 +669,31 @@ db_catalog_set_data:
 ; Both roots land in one copied schema page, so a generation can never hold
 ; data and statistics that disagree.
 db_catalog_set_data_stats:
+    FRAME_BEGIN 0, 1
+    xor rax, rax                    ; append publication requires row growth
+    PASS_ARG5 rax
+    call catalog_publish_data
+    FRAME_END
+    ret
+
+; db_catalog_replace_data(ctx, owner, data_root): UPDATE publication. Unlike
+; append, replacement must preserve the exact row count. Statistics are reset
+; atomically with the new schema page: retaining stats for the old values would
+; make deep validation reject the generation (and could mis-prune predicates).
+db_catalog_replace_data:
+    FRAME_BEGIN 0, 1
+    xor ARG4, ARG4                  ; no zone-map describes the rewritten leaf
+    mov rax, 1
+    PASS_ARG5 rax
+    call catalog_publish_data
+    FRAME_END
+    ret
+
+; catalog_publish_data(ctx, owner, data_root, stats_root, replace_mode)
+catalog_publish_data:
     FRAME_BEGIN 96, 0
+    mov rax, IN_ARG5
+    mov [rbp - 88], rax
     mov [rbp - 80], ARG4
     mov [rbp - 8], ARG1
     mov [rbp - 16], ARG2
@@ -707,8 +731,15 @@ db_catalog_set_data_stats:
     mov eax, [rax + PAX_ROWS]
     mov [rbp - 40], rax
     mov r11, [rbp - 72]
+    cmp qword [rbp - 88], 0
+    jne .replacement_rows
     cmp rax, [r11 + CAT_TABLE_ROWS]
     jbe .rows
+    jmp .rows_ok
+.replacement_rows:
+    cmp rax, [r11 + CAT_TABLE_ROWS]
+    jne .rows
+.rows_ok:
     mov r10, [rbp - 8]
     mov ARG1, [rbp - 8]
     call db_bitmap_headroom

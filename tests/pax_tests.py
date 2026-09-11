@@ -35,6 +35,7 @@ with tempfile.TemporaryDirectory() as directory:
     assert good[3 * P:high * P] == empty[3 * P:high * P]
     assert u64(good, latest(good) + 24) == high + 4
     check("insert copies PAX, schema, directory and allocation map")
+
     run(harness, path, 20, 1, 2, rc=22)
     assert path.read_bytes() == good
     check("schema replacement cannot discard table data")
@@ -207,5 +208,19 @@ with tempfile.TemporaryDirectory() as directory:
     assert after[3 * P:high * P] == broken[3 * P:high * P]
     run(harness, path, 41, 1, 0, rc=30)
     check("rejected PAX range stays protected before publication")
+
+    update_path = directory / "pax-update-one.cyboudb"
+    seed(update_path, [2, 1], [0, 1], command="create-large")
+    update_values = [[1, 10], [2, 20], [3, 30]]
+    update_nulls = [[0, 0], [0, 0], [0, 1]]
+    fixture(batch, update_values, update_nulls)
+    run(harness, update_path, 54, 1, 1, batch)
+    update_values[1][1] = 99
+    update_values[2][1] = 99
+    update_nulls[2][1] = 0
+    for i in range(3):
+        read(update_path, i, update_values[i], update_nulls[i])
+    run(binary, "check", update_path)
+    check("single-leaf COW update rewrites selected values and NULL metadata")
 
 print(f"PAX passed: {check_count()}")

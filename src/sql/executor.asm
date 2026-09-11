@@ -1,14 +1,15 @@
 ; =============================================================================
-;  src/sql/executor.asm - Batch SQL Plan Executor (CREATE, INSERT, SELECT)
+;  src/sql/executor.asm - Batch SQL Plan Executor (CREATE, INSERT, SELECT; UPDATE gated)
 ; =============================================================================
 
 %include "sql.inc"
 %include "order_executor.inc"
+%include "select_cursor.inc"
 
 BITS 64
 default rel
 
-extern db_catalog_put, db_pax_insert, db_commit
+extern db_catalog_put, db_pax_insert, db_pax_update_one, db_commit
 extern sql_select_open, sql_select_next
 extern sql_arena_alloc
 extern sql_join_execute
@@ -490,7 +491,7 @@ eval_predicate_encoded:
 ;  nonzero answer means the sink itself failed and the statement fails with it.
 ; -----------------------------------------------------------------------------
 sql_execute_batch:
-    FRAME_BEGIN 1440, 1
+    FRAME_BEGIN 1728, 1
     mov     [rbp - 8], ARG1
     mov     [rbp - 16], ARG2
     mov     [rbp - 24], ARG3
@@ -509,6 +510,8 @@ sql_execute_batch:
     je      .exec_insert
     cmp     rax, STMT_SELECT
     je      .exec_select
+    cmp     rax, STMT_UPDATE
+    je      .exec_update
     mov     eax, SQL_ERR_SYNTAX
     jmp     .exec_exit
 .exec_create:
@@ -523,6 +526,102 @@ sql_execute_batch:
     mov     ARG3, [r10 + PLAN_DATA1]
     call    db_pax_insert
     jmp     .storage_done
+.exec_update:
+    mov r10, [rbp - 16]
+    mov r11, [r10 + PLAN_SCHEMA_PAGE]
+    mov eax, [r11 + CAT_TABLE_ROWS]
+    add rax, 63
+    shr rax, 6
+    shl rax, 4
+    mov ARG1, [rbp - 24]
+    mov ARG2, rax
+    call sql_arena_alloc
+    test rax, rax
+    jz .oom
+    mov [rbp - 168], rax            ; UPDATE_SPAN array
+    mov qword [rbp - 176], 0        ; recorded nonempty spans
+    mov qword [rbp - 184], 0        ; affected rows
+    mov ARG1, [rbp - 24]
+    mov ARG2, CybouDB_BATCH_VIEW_SIZE
+    call sql_arena_alloc
+    test rax, rax
+    jz .oom
+    mov [rbp - 120], rax
+    mov qword [rbp - 56], 0
+    mov r11, [rbp - 8]
+    test qword [r11 + DB_FEATURES], CybouDB_FEATURE_COMPRESSION
+    jz .update_open
+    mov ARG1, [rbp - 24]
+    mov ARG2, PAX_DECODE_MAX_BYTES
+    call sql_arena_alloc
+    test rax, rax
+    jz .oom
+    mov [rbp - 56], rax
+.update_open:
+    mov rax, [rbp - 56]
+    PASS_ARG5 rax
+    lea ARG1, [rbp - 1728]
+    mov ARG2, [rbp - 8]
+    mov ARG3, [rbp - 16]
+    mov ARG4, [rbp - 120]
+    call sql_select_open
+    test eax, eax
+    jnz .storage_done
+.update_scan:
+    lea ARG1, [rbp - 1728]
+    call sql_select_next
+    test eax, eax
+    jnz .storage_done
+    test rdx, rdx
+    jz .update_scanned
+    mov [rbp - 192], rdx
+    mov rax, [rbp - 176]
+    shl rax, 4
+    add rax, [rbp - 168]
+    mov r10, [rbp - 120]
+    mov rcx, [rbp - 1728 + SEL_SCAN + SCAN_NEXT]
+    sub rcx, [r10 + BATCH_VIEW_ROWS]
+    mov [rax + UPDATE_SPAN_START], rcx
+    mov [rax + UPDATE_SPAN_MASK], rdx
+    xor ecx, ecx
+    mov rax, rdx
+.update_count:
+    test rax, rax
+    jz .update_counted
+    lea rdx, [rax - 1]
+    and rax, rdx
+    inc rcx
+    jmp .update_count
+.update_counted:
+    add [rbp - 184], rcx
+    inc qword [rbp - 176]
+    jmp .update_scan
+.update_scanned:
+    mov r10, [rbp - 16]
+    mov rax, [rbp - 184]
+    mov [r10 + PLAN_DATA1], rax
+    mov qword [rbp - 200], 0
+.update_apply:
+    mov rax, [rbp - 200]
+    cmp rax, [rbp - 176]
+    jae .success
+    shl rax, 4
+    add rax, [rbp - 168]
+    mov [rbp - 208], rax
+    mov ARG1, [rbp - 8]
+    mov ARG2, [r10 + PLAN_TABLE_ID]
+    mov ARG3, [r10 + PLAN_UPDATE_COL_IDX]
+    mov ARG4, [r10 + PLAN_UPDATE_VALUE]
+    mov rax, [r10 + PLAN_UPDATE_IS_NULL]
+    PASS_ARG5 rax
+    mov rax, [rbp - 208]
+    PASS_ARG6 rax
+    call db_pax_update_one
+    test eax, eax
+    jnz .storage_done
+    inc qword [rbp - 200]
+    mov r10, [rbp - 16]
+    jmp .update_apply
 .exec_select:
     cmp qword [rbp - 32], 0
     je .missing_sink
@@ -562,7 +661,7 @@ sql_execute_batch:
 .open_select:
     mov rax, [rbp - 56]
     PASS_ARG5 rax
-    lea ARG1, [rbp - 1440]
+    lea ARG1, [rbp - 1728]
     mov ARG2, [rbp - 8]
     mov ARG3, [rbp - 16]
     mov ARG4, [rbp - 120]
@@ -570,7 +669,7 @@ sql_execute_batch:
     test eax, eax
     jnz .storage_done
 .next_select:
-    lea ARG1, [rbp - 1440]
+    lea ARG1, [rbp - 1728]
     call sql_select_next
     test eax, eax
     jnz .storage_done

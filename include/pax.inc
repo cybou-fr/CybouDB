@@ -44,6 +44,10 @@
 %define BATCH_NULLS 16
 %define BATCH_VAR_LENGTHS 24             ; optional u64 length per row-major cell
 %define CybouDB_BATCH_SIZE 32
+; One UPDATE predicate batch. START is the global first row represented by MASK.
+%define UPDATE_SPAN_START 0
+%define UPDATE_SPAN_MASK  8
+%define UPDATE_SPAN_SIZE  16
 ; Row read output: arrays with schema column-count slots/bytes.
 %define ROW_VALUES 0
 %define ROW_NULLS 8

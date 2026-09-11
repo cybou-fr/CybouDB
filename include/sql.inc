@@ -102,6 +102,7 @@
 %define STMT_CREATE_TABLE   1
 %define STMT_INSERT         2
 %define STMT_SELECT         3
+%define STMT_UPDATE         4
 
 ; --- AST Statement header and statement-specific payload --------------------
 %define AST_STMT_TYPE       0           ; qword: STMT_*
@@ -130,6 +131,15 @@
 %define INSERT_ROW_COUNT       32
 %define INSERT_ROWS_PTR        40
 %define INSERT_PAYLOAD_SIZE    48
+
+; Correctness-first UPDATE: one literal assignment plus a mandatory WHERE.
+%define UPDATE_TABLE_NAME_PTR  0
+%define UPDATE_TABLE_NAME_LEN  8
+%define UPDATE_COLUMN_NAME_PTR 16
+%define UPDATE_COLUMN_NAME_LEN 24
+%define UPDATE_VALUE_EXPR      32       ; AST_EXPR*; parser requires literal
+%define UPDATE_WHERE_EXPR      40       ; AST_EXPR*; mandatory in V1
+%define UPDATE_PAYLOAD_SIZE    48
 
 %define SELECT_TABLE_NAME_PTR   0
 %define SELECT_TABLE_NAME_LEN   8
@@ -265,8 +275,8 @@
 %%done:
 %endmacro
 
-; --- Bound Plan Structure (128 bytes) ----------------------------------------
-%define PLAN_TYPE           0           ; qword: STMT_CREATE_TABLE / STMT_INSERT / STMT_SELECT
+; --- Bound Plan Structure (272 bytes) ----------------------------------------
+%define PLAN_TYPE           0           ; qword: STMT_CREATE_TABLE / STMT_INSERT / STMT_SELECT / STMT_UPDATE
 %define PLAN_TABLE_ID       8           ; qword: resolved table ID
 %define PLAN_SCHEMA_PAGE    16          ; qword: pointer to mapped schema page
 %define PLAN_DATA1          24          ; qword: CREATE: schema image | INSERT: batch ptr | SELECT: proj_count
@@ -296,7 +306,12 @@
 %define PLAN_ORDER_ORDINAL  208         ; qword compact result-column ordinal
 %define PLAN_ORDER_TYPE     216         ; qword CAT_* scalar type
 %define PLAN_ORDER_DESC     224         ; qword boolean
-%define BOUND_PLAN_SIZE     232
+%define PLAN_UPDATE_COL_IDX 232         ; qword physical target column index
+%define PLAN_UPDATE_COL_TYPE 240        ; qword CAT_* target type
+%define PLAN_UPDATE_VALUE   248         ; qword normalized scalar or varlen pointer
+%define PLAN_UPDATE_LENGTH  256         ; qword TEXT/BLOB byte length, otherwise zero
+%define PLAN_UPDATE_IS_NULL 264         ; qword boolean
+%define BOUND_PLAN_SIZE     272
 %define PLAN_PROJ_RIGHT_BIT 0x80000000  ; u32 projection index belongs to RHS
 %define PLAN_FLAG_LIMIT     2           ; bit 1: LIMIT clause is present
 %define PLAN_FLAG_ORDER     4           ; bit 2: ORDER BY is present

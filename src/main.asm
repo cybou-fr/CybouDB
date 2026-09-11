@@ -183,6 +183,7 @@ err_table:
 err_no_pax_cli:  db "error: database does not support PAX tables (create with create-pax-multi)", 10, 0
 msg_sql_table_created: db "Table created.", 10, 0
 msg_sql_insert_prefix: db "INSERT ", 0
+msg_sql_update_prefix: db "UPDATE ", 0
 msg_sql_rows_prefix:   db "(", 0
 msg_sql_rows_suffix:   db " rows)", 10, 0
 msg_sql_row_suffix:    db " row)", 10, 0
@@ -1056,21 +1057,40 @@ cyboudb_exec_query:
     test    rax, rax
     jnz     .exec_fail
 
+    ; A predicate that matched no UPDATE rows staged no pages. Preserve the
+    ; generation as well as the data instead of publishing an empty commit.
+    mov     r10, [rbp - 40]
+    cmp     qword [r10 + PLAN_TYPE], STMT_UPDATE
+    jne     .commit_mutation
+    cmp     qword [r10 + PLAN_DATA1], 0
+    je      .mutation_done
+.commit_mutation:
     ; Autocommit mutating statements
     mov     ARG1, [rbp - 8]             ; db_ctx
     call    db_commit
     test    rax, rax
     jnz     .storage_fail
 
+.mutation_done:
     mov     r10, [rbp - 40]
     cmp     qword [r10 + PLAN_TYPE], STMT_CREATE_TABLE
     je      .create_done
+    cmp     qword [r10 + PLAN_TYPE], STMT_UPDATE
+    je      .update_done
 
     ; Insert completed: print "INSERT <rows>\n"
     PUTS    msg_sql_insert_prefix
     mov     r10, [rbp - 40]
     mov     r11, [r10 + PLAN_DATA1]     ; batch
     mov     ARG1, [r11 + BATCH_ROWS]
+    call    put_u64
+    PUTS    str_nl
+    jmp     .exec_success
+
+.update_done:
+    PUTS    msg_sql_update_prefix
+    mov     r10, [rbp - 40]
+    mov     ARG1, [r10 + PLAN_DATA1]
     call    put_u64
     PUTS    str_nl
     jmp     .exec_success
@@ -1440,9 +1460,10 @@ query_row_callback:
     jmp     .next_p
 
 .cell_text:
+    mov     r11, rdx                    ; ARG3 is RDX under SysV: preserve root
     mov     rsi, [rbp - 96]
     mov     ARG3, [rsi + rbx * 8]
-    mov     ARG2, rdx
+    mov     ARG2, r11
     mov     r10, [row_cb_plan]
     mov     r10, [r10 + PLAN_CTX]
     mov     ARG1, [r10 + DB_BASE]
@@ -1451,9 +1472,10 @@ query_row_callback:
     jmp     .next_p
 
 .cell_blob:
+    mov     r11, rdx                    ; ARG3 is RDX under SysV: preserve root
     mov     rsi, [rbp - 96]
     mov     ARG3, [rsi + rbx * 8]
-    mov     ARG2, rdx
+    mov     ARG2, r11
     mov     r10, [row_cb_plan]
     mov     r10, [r10 + PLAN_CTX]
     mov     ARG1, [r10 + DB_BASE]

@@ -3,6 +3,7 @@
 BITS 64
 default rel
 extern crc32c, db_catalog_get, db_catalog_set_data, db_catalog_set_data_stats
+extern db_catalog_replace_data
 extern db_zone_update, db_zone_reserve
 extern db_bitmap_candidate_payload, db_bitmap_headroom, db_bitmap_deep
 extern db_cow_alloc_page, db_cow_copy_page
@@ -10,6 +11,7 @@ extern db_cow_alloc_run, db_cow_copy_run
 extern db_var_validate_chain, db_var_materialize_batch
 extern pax_compress_leaf, pax_decompress_leaf_old, decompress_column
 global db_pax_validate, db_pax_check_new, db_pax_insert, db_pax_read
+global db_pax_update_one
 global db_pax_capacity
 global db_pax_scan_open, db_pax_scan_open_bound, db_pax_scan_next, db_pax_scan_batch
 global db_pax_scan_batch_ex
@@ -2216,6 +2218,309 @@ pax_append_page:
     mov rdx, [rbp - 88]
     xor eax, eax
 .done:
+    FRAME_END
+    ret
+
+; db_pax_update_one(ctx, table_id, col_idx, value, is_null, update_span)
+; rewrites one 64-row predicate span in a fixed-width, single-leaf table.
+; Every unsupported shape is rejected before the first allocation. This is the
+; deliberately narrow UPDATE-V1 primitive; later versions can copy several
+; changed paths while retaining this publication contract.
+db_pax_update_one:
+    FRAME_BEGIN 224, 1
+    mov [rbp - 8], ARG1             ; ctx
+    mov [rbp - 16], ARG2            ; table id
+    mov [rbp - 24], ARG3            ; column index
+    mov [rbp - 32], ARG4            ; normalized value bits
+    mov rax, IN_ARG5
+    mov [rbp - 40], rax             ; is_null
+    mov rax, IN_ARG6
+    test rax, rax
+    jz .upd_rows
+    mov rdx, [rax + UPDATE_SPAN_START]
+    mov [rbp - 184], rdx            ; global first row of this mask
+    mov rax, [rax + UPDATE_SPAN_MASK]
+    mov [rbp - 48], rax             ; selection mask
+    test rax, rax
+    jz .upd_success                 ; no matching rows, no publication
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    lea ARG3, [rbp - 56]
+    call db_catalog_get
+    test eax, eax
+    jnz .upd_done
+    mov r10, [rbp - 8]
+    mov rax, [rbp - 56]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
+    mov [rbp - 64], rax             ; current schema
+    mov ecx, [rax + CAT_COUNT]
+    cmp [rbp - 24], rcx
+    jae .upd_value
+    mov rcx, [rax + CAT_TABLE_ROWS]
+    test rcx, rcx
+    jz .upd_rows
+    cmp [rbp - 184], rcx
+    jae .upd_rows
+    sub rcx, [rbp - 184]
+    cmp rcx, 64
+    jbe .upd_lanes_ready
+    mov rcx, 64
+.upd_lanes_ready:
+    mov [rbp - 192], rcx
+    mov rax, [rbp - 24]
+    shl rax, 5
+    add rax, [rbp - 64]
+    mov ecx, [rax + CAT_COLUMNS]
+    cmp ecx, CAT_TEXT
+    je .upd_value
+    cmp ecx, CAT_BLOB
+    je .upd_value
+    cmp qword [rbp - 40], 0
+    je .upd_shape
+    test dword [rax + CAT_COLUMNS + 4], CAT_NULLABLE
+    jz .upd_value
+
+.upd_shape:
+    PAX_CAPACITY_OF [rbp - 64], [rbp - 8]
+    mov [rbp - 200], rax            ; rows per leaf
+    mov rcx, rax
+    mov rax, [rbp - 184]
+    xor edx, edx
+    div rcx
+    mov [rbp - 208], rax            ; logical leaf index
+    mov [rbp - 216], rdx            ; first row inside that leaf
+    mov rax, [rbp - 200]
+    sub rax, rdx
+    cmp [rbp - 192], rax
+    jbe .upd_span_in_leaf
+    mov [rbp - 192], rax
+.upd_span_in_leaf:
+    mov rcx, [rbp - 192]
+    cmp rcx, 64
+    je .upd_mask_ok
+    mov rax, [rbp - 48]
+    shr rax, cl
+    test rax, rax
+    jnz .upd_rows
+.upd_mask_ok:
+    mov r10, [rbp - 64]
+    mov rax, [r10 + CAT_DATA_ROOT]
+    test rax, rax
+    jz .upd_rows
+    mov [rbp - 72], rax             ; old data root
+    mov r11, [rbp - 8]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r11 + DB_BASE]
+    mov [rbp - 80], rax             ; old root address
+    mov qword [rbp - 88], 0         ; old directory id (zero = direct leaf)
+    cmp dword [rax], PAX_DIR_MAGIC
+    jne .upd_direct_leaf
+    cmp dword [rax + PAX_DIR_LEVEL], PAX_DIR_LEAF
+    jne .upd_rows
+    mov rdx, [rbp - 208]
+    cmp edx, [rax + PAX_COLUMNS]
+    jae .upd_rows
+    mov rdx, [rbp - 72]
+    mov [rbp - 88], rdx
+    mov rdx, [rbp - 208]
+    shl rdx, 4
+    mov rax, [rax + PAX_DIRECTORY + rdx]
+    jmp .upd_leaf_known
+.upd_direct_leaf:
+    cmp qword [rbp - 208], 0
+    jne .upd_rows
+    mov [rbp - 96], rax             ; old leaf id
+.upd_leaf_known:
+    mov [rbp - 96], rax             ; old leaf id
+
+    ; A flat directory records cumulative row ends. Derive the exact row count
+    ; of this leaf; the final leaf is commonly partial.
+    mov r10, [rbp - 64]
+    mov rax, [r10 + CAT_TABLE_ROWS]
+    mov [rbp - 224], rax
+    cmp qword [rbp - 88], 0
+    je .upd_leaf_rows_ready
+    mov r10, [rbp - 80]
+    mov rax, [rbp - 208]
+    mov rcx, rax
+    shl rax, 4
+    mov rdx, [r10 + PAX_DIRECTORY + rax + 8]
+    test rcx, rcx
+    jz .upd_first_leaf_rows
+    dec rcx
+    shl rcx, 4
+    sub rdx, [r10 + PAX_DIRECTORY + rcx + 8]
+.upd_first_leaf_rows:
+    mov [rbp - 224], rdx
+.upd_leaf_rows_ready:
+
+    PAX_RUN_OF [rbp - 64], [rbp - 8]
+    mov [rbp - 104], rax
+    add rax, 2                      ; replacement schema + catalog root
+    cmp qword [rbp - 88], 0
+    je .upd_need_ready
+    inc rax                         ; copied flat directory
+.upd_need_ready:
+    mov [rbp - 112], rax
+    mov ARG1, [rbp - 8]
+    call db_bitmap_headroom
+    cmp rax, [rbp - 112]
+    jb .upd_full
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 96]
+    mov ARG3, [rbp - 104]
+    lea ARG4, [rbp - 120]
+    call db_cow_copy_run
+    test eax, eax
+    jnz .upd_done
+    mov r10, [rbp - 8]
+    mov rax, [rbp - 120]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
+    mov [rbp - 128], rax            ; writable leaf copy
+    mov ARG1, rax
+    mov ARG2, [rbp - 64]
+    mov ARG3, [rbp - 224]
+    call pax_decompress_leaf_old
+
+    mov rax, [rbp - 24]
+    shl rax, 4
+    add rax, [rbp - 128]
+    add rax, PAX_DIRECTORY
+    mov [rbp - 136], rax            ; target leaf column descriptor
+    mov edx, [rax + 8]
+    add rdx, [rbp - 128]
+    mov [rbp - 160], rdx            ; complete leaf NULL-mask array
+    mov r10, [rbp - 136]
+    mov eax, [r10]
+    call type_width
+    mov [rbp - 144], rax
+    mov r10, [rbp - 136]
+    mov edx, [r10 + 12]
+    add rdx, [rbp - 128]
+    mov [rbp - 152], rdx
+    mov r11, [rbp - 48]
+    xor ecx, ecx
+.upd_row:
+    bt r11, rcx
+    jnc .upd_next_row
+    mov rax, [rbp - 216]
+    add rax, rcx                    ; absolute row inside the only leaf
+    mov rdx, [rbp - 160]
+    cmp qword [rbp - 40], 0
+    je .upd_clear_row_null
+    bts qword [rdx], rax
+    jmp .upd_row_null_done
+.upd_clear_row_null:
+    btr qword [rdx], rax
+.upd_row_null_done:
+    mov rdx, [rbp - 152]
+    mov rax, [rbp - 216]
+    add rax, rcx
+    imul rax, [rbp - 144]
+    add rdx, rax
+    cmp qword [rbp - 40], 0
+    jne .upd_zero_value
+    mov rax, [rbp - 32]
+    cmp qword [rbp - 144], 8
+    je .upd_store8
+    cmp qword [rbp - 144], 4
+    je .upd_store4
+    mov [rdx], al
+    jmp .upd_next_row
+.upd_store4:
+    mov [rdx], eax
+    jmp .upd_next_row
+.upd_store8:
+    mov [rdx], rax
+    jmp .upd_next_row
+.upd_zero_value:
+    cmp qword [rbp - 144], 8
+    je .upd_zero8
+    cmp qword [rbp - 144], 4
+    je .upd_zero4
+    mov byte [rdx], 0
+    jmp .upd_next_row
+.upd_zero4:
+    mov dword [rdx], 0
+    jmp .upd_next_row
+.upd_zero8:
+    mov qword [rdx], 0
+.upd_next_row:
+    inc ecx
+    cmp rcx, [rbp - 192]
+    jb .upd_row
+
+    mov r10, [rbp - 128]
+    mov rax, [rbp - 120]
+    mov [r10 + PAX_PAGE_ID], rax
+    mov r11, [rbp - 8]
+    mov rax, [r11 + DB_GENERATION]
+    inc rax
+    mov [r10 + PAX_GENERATION], rax
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 64]
+    mov ARG3, r10
+    call pax_compress_leaf
+    mov ARG1, [rbp - 128]
+    mov ARG2, [rbp - 104]
+    call pax_seal_leaf
+
+    cmp qword [rbp - 88], 0
+    je .upd_publish_leaf
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 88]
+    lea ARG3, [rbp - 160]
+    call db_cow_copy_page
+    test eax, eax
+    jnz .upd_done
+    mov r10, [rbp - 8]
+    mov rax, [rbp - 160]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
+    mov [rbp - 168], rax
+    mov rdx, [rbp - 160]
+    mov [rax + PAX_PAGE_ID], rdx
+    mov rdx, [r10 + DB_GENERATION]
+    inc rdx
+    mov [rax + PAX_GENERATION], rdx
+    mov rdx, [rbp - 208]
+    shl rdx, 4
+    add rax, rdx
+    mov rdx, [rbp - 120]
+    mov [rax + PAX_DIRECTORY], rdx
+    mov ARG1, [rbp - 168]
+    mov ARG2, PAX_CRC
+    call crc32c
+    mov r10, [rbp - 168]
+    mov [r10 + PAX_CRC], eax
+    mov rdx, [rbp - 160]
+    mov [rbp - 176], rdx
+    jmp .upd_publish
+.upd_publish_leaf:
+    mov rdx, [rbp - 120]
+    mov [rbp - 176], rdx
+.upd_publish:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 176]
+    call db_catalog_replace_data
+    jmp .upd_done
+.upd_success:
+    xor eax, eax
+    jmp .upd_done
+.upd_rows:
+    mov eax, CybouDB_E_ROWS
+    jmp .upd_done
+.upd_value:
+    mov eax, CybouDB_E_VALUE
+    jmp .upd_done
+.upd_full:
+    mov eax, CybouDB_E_FULL
+.upd_done:
     FRAME_END
     ret
 
