@@ -387,15 +387,71 @@ vfs_create_new:
 
 ; -----------------------------------------------------------------------------
 ;  vfs_create_truncate - DESTRUCTIVE: an existing file is emptied. Only for an
-;  explicit --force.
+;  explicit --force. Open without O_TRUNC, lock writer first, then ftruncate.
 ; -----------------------------------------------------------------------------
 vfs_create_truncate:
-    mov     r10, ARG2                   ; not R11: SYSCALL clobbers it
+    FRAME_BEGIN 32, 0
+    mov     [rbp - 8], ARG2             ; reason slot
     mov     rdi, ARG1
-    mov     esi, O_RDWR | O_CREAT | O_TRUNC
+    mov     esi, O_RDWR | O_CREAT
     mov     edx, MODE_0644
     mov     eax, SYS_open
     syscall
+    cmp     rax, -4096
+    jae     .create_trunc_err
+    mov     [rbp - 16], rax             ; fd
+
+    ; Try locking writer (byte 0)
+    mov     rdi, rax
+    mov     esi, F_WRLCK
+    xor     edx, edx
+    call    ofd_lock
+    cmp     rax, -1
+    je      .create_trunc_locked
+
+    ; Truncate file to 0 bytes
+    mov     rdi, [rbp - 16]
+    xor     esi, esi                    ; length = 0
+    mov     eax, SYS_ftruncate
+    syscall
+    cmp     rax, -4096
+    jae     .create_trunc_fterr
+
+    mov     rax, [rbp - 16]
+    mov     r10, [rbp - 8]
+    test    r10, r10
+    jz      .create_trunc_out
+    mov     qword [r10], CybouDB_OSERR_NONE
+.create_trunc_out:
+    FRAME_END
+    ret
+
+.create_trunc_locked:
+    mov     rdi, [rbp - 16]
+    mov     eax, SYS_close
+    syscall
+    mov     r10, [rbp - 8]
+    test    r10, r10
+    jz      .create_trunc_fail
+    mov     qword [r10], CybouDB_OSERR_ACCESS
+.create_trunc_fail:
+    mov     rax, -1
+    FRAME_END
+    ret
+
+.create_trunc_fterr:
+    mov     rdi, [rbp - 16]
+    mov     eax, SYS_close
+    syscall
+    mov     r10, [rbp - 8]
+    test    r10, r10
+    jz      .create_trunc_fail
+    mov     qword [r10], CybouDB_OSERR_OTHER
+    jmp     .create_trunc_fail
+
+.create_trunc_err:
+    mov     r10, [rbp - 8]
+    FRAME_END
     jmp     classify_open
 
 ; -----------------------------------------------------------------------------
