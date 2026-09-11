@@ -76,6 +76,10 @@ str_type_int32:         db "INT32", 0
 str_type_int64:         db "INT64", 0
 str_type_float32:       db "FLOAT32", 0
 str_type_bool:          db "BOOL", 0
+str_type_text:          db "TEXT", 0
+str_type_blob:          db "BLOB", 0
+str_type_vector_pfx:    db "VECTOR(FLOAT32, ", 0
+str_type_vector_sfx:    db ")", 0
 str_type_unknown:       db "UNKNOWN", 0
 
 str_repl_nl:            db 10, 0
@@ -1073,6 +1077,12 @@ print_table_create_stmt:
     je      .print_float32
     cmp     eax, CAT_BOOL
     je      .print_bool
+    cmp     eax, CAT_TEXT
+    je      .print_text
+    cmp     eax, CAT_BLOB
+    je      .print_blob
+    cmp     eax, CAT_VECTOR
+    je      .print_vector
     PUTS    str_type_unknown
     jmp     .print_nullability
 
@@ -1087,6 +1097,22 @@ print_table_create_stmt:
     jmp     .print_nullability
 .print_bool:
     PUTS    str_type_bool
+    jmp     .print_nullability
+.print_text:
+    PUTS    str_type_text
+    jmp     .print_nullability
+.print_blob:
+    PUTS    str_type_blob
+    jmp     .print_nullability
+.print_vector:
+    PUTS    str_type_vector_pfx
+    mov     r9, [rbp - 24]
+    mov     eax, [r9 + 4]
+    shr     eax, 16
+    mov     ARG1, rax
+    call    put_u64
+    PUTS    str_type_vector_sfx
+    jmp     .print_nullability
 
 .print_nullability:
     mov     r9, [rbp - 24]

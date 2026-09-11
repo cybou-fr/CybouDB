@@ -31,6 +31,7 @@ extern "C" {
 #define CybouDB_TYPE_BOOL       4       /* 1-byte boolean (0 = FALSE, 1 = TRUE) */
 #define CybouDB_TYPE_TEXT       5       /* UTF-8 byte string; storage does not transcode */
 #define CybouDB_TYPE_BLOB       6       /* Arbitrary byte string */
+#define CybouDB_TYPE_VECTOR     7       /* Fixed-dimension float vector */
 
 /* --- Codecs (Per-Column Compression) -------------------------------------- */
 #define CybouDB_CODEC_RAW       0       /* Uncompressed raw values */
@@ -39,6 +40,7 @@ extern "C" {
 
 /* --- Feature Flags -------------------------------------------------------- */
 #define CybouDB_FEATURE_COMPRESSION 0x0200 /* Per-column compression capability */
+#define CybouDB_FEATURE_VECTOR      0x0800 /* Persistent vector storage capability */
 
 /* --- Open Flags ----------------------------------------------------------- */
 #define CybouDB_OPEN_READONLY   0x0001  /* Open database in read-only mode */

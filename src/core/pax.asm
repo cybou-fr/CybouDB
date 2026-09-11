@@ -1105,6 +1105,8 @@ schema_has_varlen:
     je .yes
     cmp eax, CAT_BLOB
     je .yes
+    cmp eax, CAT_VECTOR
+    je .yes
     inc edx
     jmp .column
 .yes:
@@ -1119,6 +1121,8 @@ type_width:
     cmp eax, CAT_TEXT
     je .sixteen
     cmp eax, CAT_BLOB
+    je .sixteen
+    cmp eax, CAT_VECTOR
     je .sixteen
     cmp eax, CAT_INT64
     je .eight
@@ -1349,6 +1353,7 @@ pax_init:
     mov eax, [r10 + CAT_COLUMNS]
     mov [r11], eax
     mov edx, [r10 + CAT_COLUMNS + 4]
+    and edx, 0x00FF
     mov [r11 + 4], edx
     mov rdx, [rbp - 40]
     mov [r11 + 8], edx
@@ -1475,6 +1480,7 @@ page_valid:
     cmp [r10], eax
     jne .bad
     mov edx, [r11 + CAT_COLUMNS + 4]
+    and edx, 0x00FF
     mov ecx, [r10 + 4]
     test ecx, 0xFFFF0000
     jnz .bad
@@ -1523,6 +1529,8 @@ page_valid:
     je .varlen_dispatch
     cmp eax, CAT_BLOB
     je .varlen_dispatch
+    cmp eax, CAT_VECTOR
+    je .varlen_dispatch
     cmp qword [rbp - 136], 0
     je .shallow_column
 .deep_masks:
@@ -1560,6 +1568,8 @@ page_valid:
     cmp eax, CAT_TEXT
     je .varlen_values
     cmp eax, CAT_BLOB
+    je .varlen_values
+    cmp eax, CAT_VECTOR
     je .varlen_values
 
     mov r10, [rbp - 64]
@@ -1960,6 +1970,8 @@ db_pax_insert:
     je .checked_cell
     cmp ecx, CAT_BLOB
     je .checked_cell
+    cmp ecx, CAT_VECTOR
+    je .checked_cell
     cmp ecx, CAT_INT64
     je .checked_cell
     cmp ecx, CAT_INT32
@@ -2083,6 +2095,8 @@ pax_append_page:
     cmp ecx, CAT_TEXT
     je .append_load_lengths
     cmp ecx, CAT_BLOB
+    je .append_load_lengths
+    cmp ecx, CAT_VECTOR
     je .append_load_lengths
     inc qword [rbp - 144]
     jmp .append_find_varlen
@@ -2289,6 +2303,13 @@ db_pax_update_one:
     je .upd_check_varlen
     cmp ecx, CAT_BLOB
     je .upd_check_varlen
+    cmp ecx, CAT_VECTOR
+    je .upd_check_vector
+    jmp .upd_check_null
+.upd_check_vector:
+    mov r11, [rbp - 8]
+    test qword [r11 + DB_FEATURES], CybouDB_FEATURE_VECTOR
+    jz .upd_value
     jmp .upd_check_null
 .upd_check_varlen:
     mov r11, [rbp - 8]              ; ctx

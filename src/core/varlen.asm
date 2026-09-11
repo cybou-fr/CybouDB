@@ -106,6 +106,8 @@ db_var_materialize_batch:
     je .mat_has_varlen
     cmp eax, CAT_BLOB
     je .mat_has_varlen
+    cmp eax, CAT_VECTOR
+    je .mat_has_varlen
     inc qword [rbp - 104]
     jmp .mat_find_varlen
 .mat_noop:
@@ -137,6 +139,8 @@ db_var_materialize_batch:
     cmp ecx, CAT_TEXT
     je .mat_pre_var
     cmp ecx, CAT_BLOB
+    je .mat_pre_var
+    cmp ecx, CAT_VECTOR
     jne .mat_pre_next
 .mat_pre_var:
     cmp qword [rbp - 64], 0
@@ -202,6 +206,8 @@ db_var_materialize_batch:
     cmp ecx, CAT_TEXT
     je .mat_write_var
     cmp ecx, CAT_BLOB
+    je .mat_write_var
+    cmp ecx, CAT_VECTOR
     jne .mat_write_next
 .mat_write_var:
     mov rax, [rbp - 96]

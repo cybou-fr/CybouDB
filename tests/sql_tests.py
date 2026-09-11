@@ -91,7 +91,8 @@ def run():
           'INSERT INTO aliases VALUES (25,10,2.5,FALSE),(40,11,3.5,TRUE),(40,12,4.5,FALSE)',
           rc=0, message='INSERT 3')
     check('reserved_update_keyword', 'CREATE TABLE reserved_kw (update INT32)', rc=2, message='expected column name')
-    check('vector_type_reserved_not_stored', 'CREATE TABLE vector_decl (embedding VECTOR(FLOAT32, 3))', rc=2, message='expected column data type')
+    check('vector_type_reserved_not_stored', 'CREATE TABLE vector_decl (embedding VECTOR(FLOAT32, 3))', rc=2,
+          message='VECTOR storage extents are not implemented yet')
     check('text_type_reserved_not_stored', 'CREATE TABLE text_decl (body TEXT)', rc=2,
           message='TEXT/BLOB storage extents are not implemented yet')
     check('blob_type_reserved_not_stored', 'CREATE TABLE blob_decl (payload BLOB NOT NULL)', rc=2,

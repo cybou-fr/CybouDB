@@ -101,7 +101,7 @@ db_create_pax:
     mov     eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX
     jmp     create_common
 db_create_large:
-    mov eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_VARLEN
+    mov eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR
     jmp create_common
 db_create_compressed:
     mov eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_COMPRESSION
@@ -536,7 +536,7 @@ db_open:
     ; A feature bit we do not know about may change the meaning of anything
     ; below, so refuse rather than guess.
     mov     rax, [r10 + HDR_FLAGS_INCOMPAT]
-    test    rax, ~(CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_COMPRESSION | CybouDB_FEATURE_VARLEN)
+    test    rax, ~(CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_COMPRESSION | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR)
     jne     .e_features
 
     ; Leaf runs are a choice about the multi-page PAX layout, so the bit means
@@ -580,6 +580,13 @@ db_open:
     jz      .e_features
     and     rax, ~CybouDB_FEATURE_VARLEN
 .varlen_checked:
+    ; Vector extents require PAX storage and full graph traversal.
+    test    rax, CybouDB_FEATURE_VECTOR
+    jz      .vector_checked
+    test    rax, CybouDB_FEATURE_PAX
+    jz      .e_features
+    and     rax, ~CybouDB_FEATURE_VECTOR
+.vector_checked:
     test    rax, CybouDB_FEATURE_MAP_SPAN
     jz      .flat_map_flags
     cmp     rax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN

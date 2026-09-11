@@ -85,6 +85,8 @@ zone_stat_valid:
     je .varlen
     cmp r8d, CAT_BLOB
     je .varlen
+    cmp r8d, CAT_VECTOR
+    je .varlen
     test rcx, ~(ZSTAT_HAS_COMPARABLE | ZSTAT_HAS_NULLS)
     jnz .bad
     test rcx, ZSTAT_HAS_COMPARABLE
@@ -506,6 +508,8 @@ db_zone_check_leaf:
     cmp eax, CAT_TEXT
     je .width16
     cmp eax, CAT_BLOB
+    je .width16
+    cmp eax, CAT_VECTOR
     jne .width_ready
 .width16:
     mov ecx, VAR_CELL_SIZE
@@ -765,6 +769,8 @@ zone_merge:
     cmp ARG3, CAT_TEXT
     je .varlen
     cmp ARG3, CAT_BLOB
+    je .varlen
+    cmp ARG3, CAT_VECTOR
     je .varlen
     cmp ARG3, CAT_BOOL
     je .bool
@@ -1518,6 +1524,8 @@ zone_recompute_column:
     cmp qword [rbp - 48], CAT_TEXT
     je .recompute_varlen_width
     cmp qword [rbp - 48], CAT_BLOB
+    je .recompute_varlen_width
+    cmp qword [rbp - 48], CAT_VECTOR
     jne .recompute_width_ready
 .recompute_varlen_width:
     mov rcx, VAR_CELL_SIZE
@@ -1540,6 +1548,8 @@ zone_recompute_column:
     cmp qword [rbp - 48], CAT_TEXT
     je .recompute_merge
     cmp qword [rbp - 48], CAT_BLOB
+    je .recompute_merge
+    cmp qword [rbp - 48], CAT_VECTOR
     je .recompute_merge
     mov rdx, [rbp - 56]
     test rdx, rdx

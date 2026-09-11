@@ -7,7 +7,7 @@
 BITS 64
 default rel
 
-extern sql_arena_alloc, sql_kernel_resolve
+extern sql_arena_alloc, sql_kernel_resolve, vector_l2sq_f32_resolve, vector_cosine_normalized_f32_resolve
 global sql_bind, catalog_find_table, schema_find_col
 
 section .data
@@ -29,6 +29,7 @@ err_join_projection: db "JOIN projections must be explicitly qualified", 0
 err_join_key_type: db "JOIN keys currently require INT32 or INT64", 0
 err_order_pending: db "ORDER BY execution is not implemented yet", 0
 err_varlen_pending: db "TEXT/BLOB storage extents are not implemented yet", 0
+err_vector_pending: db "VECTOR storage extents are not implemented yet", 0
 err_oom:             db "memory arena capacity exceeded", 0
 
 section .text
@@ -555,6 +556,12 @@ bind_expr:
     cmp     rax, OP_OR
     je      .logical_or
 
+    ; Distance functions
+    cmp     rax, OP_L2_DISTANCE
+    je      .bind_distance
+    cmp     rax, OP_COSINE_DISTANCE
+    je      .bind_distance
+
     ; Comparison operators
     jmp     .bind_comparison
 
@@ -563,6 +570,74 @@ bind_expr:
     jmp     .logical_common
 .logical_or:
     mov     qword [rbp - 40], BEXPR_OR
+    jmp     .logical_common
+
+.bind_distance:
+    mov     r10, [rbp - 8]
+    mov     r11, [r10 + EXPR_LEFT]
+    mov     r12, [r10 + EXPR_RIGHT]
+
+    cmp     qword [r11 + EXPR_KIND], EXPR_COLUMN
+    je      .dist_col_left
+    cmp     qword [r12 + EXPR_KIND], EXPR_COLUMN
+    jne     .unsupported
+    xchg    r11, r12
+
+.dist_col_left:
+    cmp     qword [r12 + EXPR_KIND], EXPR_LITERAL
+    jne     .unsupported
+    cmp     dword [r12 + EXPR_LIT_TYPE], CAT_VECTOR
+    jne     .type_mismatch
+
+    ; Resolve column against schema
+    mov     ARG1, [rbp - 16]            ; schema_ptr
+    mov     ARG2, [r11 + EXPR_NAME_PTR]
+    mov     ARG3, [r11 + EXPR_NAME_LEN]
+    lea     ARG4, [rbp - 48]            ; col_idx
+    call    schema_find_col
+    test    rax, rax
+    jz      .col_not_found
+
+    cmp     dword [rax + 0], CAT_VECTOR
+    jne     .type_mismatch
+
+    ; Declared dimension is in [rax + 4] >> 16
+    mov     edx, [rax + 4]
+    shr     edx, 16
+    cmp     rdx, [r12 + EXPR_LIT_VAL]
+    jne     .type_mismatch
+
+    ; Allocate BOUND_EXPR
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, BOUND_EXPR_SIZE
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .fail
+
+    mov     [rbp - 56], rax             ; save BOUND_EXPR
+    mov     r10, [rbp - 8]
+    mov     rdx, [r10 + EXPR_OP]
+    mov     [rax + BEXPR_OP], rdx
+    mov     rdx, [rbp - 48]
+    mov     [rax + BEXPR_COL_IDX], rdx
+    mov     qword [rax + BEXPR_COL_TYPE], CAT_VECTOR
+    mov     rdx, [r12 + EXPR_LIT_PTR]
+    mov     [rax + BEXPR_LIT_VAL], rdx   ; query vector ptr
+    mov     rdx, [r12 + EXPR_LIT_VAL]
+    mov     [rax + BEXPR_RIGHT], rdx     ; dimension
+
+    cmp     qword [r10 + EXPR_OP], OP_L2_DISTANCE
+    je      .dist_resolve_l2
+    call    vector_cosine_normalized_f32_resolve
+    jmp     .dist_kernel_ready
+.dist_resolve_l2:
+    call    vector_l2sq_f32_resolve
+.dist_kernel_ready:
+    mov     r11, [rbp - 56]
+    mov     [r11 + BEXPR_KERNEL], rax
+    mov     rax, r11
+    FRAME_END
+    ret
 
 .logical_common:
     ; Bind left
@@ -888,11 +963,19 @@ sql_bind:
     cmp     dword [rax + COLDEF_TYPE], CAT_TEXT
     je      .varlen_schema
     cmp     dword [rax + COLDEF_TYPE], CAT_BLOB
-    jne     .fixed_schema
+    je      .varlen_schema
+    cmp     dword [rax + COLDEF_TYPE], CAT_VECTOR
+    je      .vector_schema
+    jmp     .fixed_schema
 .varlen_schema:
     mov     rdx, [rbp - 8]
     test    qword [rdx + DB_FEATURES], CybouDB_FEATURE_VARLEN
     jz      .varlen_pending
+    jmp     .fixed_schema
+.vector_schema:
+    mov     rdx, [rbp - 8]
+    test    qword [rdx + DB_FEATURES], CybouDB_FEATURE_VECTOR
+    jz      .vector_pending
 .fixed_schema:
     mov     r12, [rax + COLDEF_NAME_PTR]
     mov     r13, [rax + COLDEF_NAME_LEN]
@@ -1165,6 +1248,8 @@ sql_bind:
     je      .store_varlen
     cmp     r10d, CAT_BLOB
     je      .store_varlen
+    cmp     r10d, CAT_VECTOR
+    je      .store_vector
     ; No variable-width literal may enter a fixed-width conversion branch.
     cmp     eax, CAT_BOOL
     ja      .type_mismatch
@@ -1237,6 +1322,25 @@ sql_bind:
 
 .store_varlen:
     cmp     eax, r10d
+    jne     .type_mismatch
+    mov     rdi, [rbp - 96]
+    mov     rdx, [rbp - 120]
+    mov     byte [rdi + rdx], 0
+    mov     rdi, [rbp - 88]
+    mov     rax, [r9 + EXPR_LIT_PTR]
+    mov     [rdi + rdx * 8], rax
+    mov     rdi, [rbp - 128]
+    mov     rax, [r9 + EXPR_LIT_LEN]
+    mov     [rdi + rdx * 8], rax
+    jmp     .ins_cell_done
+
+.store_vector:
+    cmp     eax, r10d
+    jne     .type_mismatch
+    ; Verify dimension matches declared column flags >> 16
+    mov     eax, r11d
+    shr     eax, 16
+    cmp     rax, [r9 + EXPR_LIT_VAL]
     jne     .type_mismatch
     mov     rdi, [rbp - 96]
     mov     rdx, [rbp - 120]
@@ -2055,6 +2159,15 @@ sql_bind:
     mov     ARG2, SQL_ERR_SYNTAX
     xor     ARG3, ARG3
     lea     ARG4, [err_varlen_pending]
+    call    set_binder_error
+    mov     eax, SQL_ERR_SYNTAX
+    jmp     .binder_exit
+
+.vector_pending:
+    mov     ARG1, [rbp - 40]
+    mov     ARG2, SQL_ERR_SYNTAX
+    xor     ARG3, ARG3
+    lea     ARG4, [err_vector_pending]
     call    set_binder_error
     mov     eax, SQL_ERR_SYNTAX
     jmp     .binder_exit

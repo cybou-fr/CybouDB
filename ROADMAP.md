@@ -455,8 +455,8 @@ sorting. JOIN ordering and pull-style C stepping remain explicitly gated.
 
 * [x] runtime-native raw and normalized `FLOAT32` vectors
 * [x] caller-owned contiguous vector arena with raw and normalized appends
-* [ ] persistent vector extents
-* [ ] SQL surface for vector columns and distance expressions
+* [x] persistent vector extents
+* [x] SQL surface for vector columns and distance expressions
 * [x] scalar and AVX2 dot products and squared L2 distances with runtime dispatch
 * [x] normalized cosine similarity and raw/normalized L2 Top-K
 * [x] deterministic filtered streaming Top-K with batch feed API

@@ -127,13 +127,32 @@ schema_valid:
     cmp eax, CAT_BOOL
     jbe .type_ok
     cmp eax, CAT_BLOB
-    ja .bad
+    jbe .check_varlen
+    cmp eax, CAT_VECTOR
+    je .check_vector
+    jmp .bad
+.check_varlen:
     mov r11, [rbp - 48]
     test qword [r11 + DB_FEATURES], CybouDB_FEATURE_VARLEN
     jz .bad
+    jmp .type_ok
+.check_vector:
+    mov r11, [rbp - 48]
+    test qword [r11 + DB_FEATURES], CybouDB_FEATURE_VECTOR
+    jz .bad
+    mov eax, [r10 + 4]
+    test ax, ~CAT_NULLABLE
+    jnz .bad
+    shr eax, 16
+    test eax, eax
+    jz .bad
+    cmp eax, 4096
+    ja .bad
+    jmp .name_check
 .type_ok:
     test dword [r10 + 4], ~CAT_NULLABLE
     jnz .bad
+.name_check:
     lea rax, [r10 + 8]
     mov [rbp - 40], rax
     mov ARG1, rax

@@ -114,6 +114,8 @@
 ; create-large databases emit this bit; narrower legacy creators remain stable.
 ; See docs/VARLEN.md.
 %define CybouDB_FEATURE_VARLEN 1024
+; Persistent vector extents in PAX storage. New create-large databases emit this bit.
+%define CybouDB_FEATURE_VECTOR 2048
 
 ; Column compression codecs (stored in bits 8..15 of leaf column flags):
 %define PAX_CODEC_RAW       0

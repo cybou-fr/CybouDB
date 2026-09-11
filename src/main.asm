@@ -206,6 +206,9 @@ str_dot:               db ".", 0
 str_zero:              db "0", 0
 str_blob_open:         db "X'", 0
 str_quote:             db "'", 0
+str_lbracket:          db "[", 0
+str_rbracket:          db "]", 0
+str_comma_sp:          db ", ", 0
 hex_digits:            db "0123456789ABCDEF"
 
     align 4
@@ -1434,6 +1437,8 @@ query_row_callback:
     je      .cell_text
     cmp     eax, CAT_BLOB
     je      .cell_blob
+    cmp     eax, CAT_VECTOR
+    je      .cell_vector
 
     mov     ARG1, rdx
     call    put_u64
@@ -1489,6 +1494,18 @@ query_row_callback:
     mov     ARG1, [r10 + DB_BASE]
     mov     ARG4, 1
     call    print_varlen
+    jmp     .next_p
+
+.cell_vector:
+    mov     r11, rdx                    ; ARG3 is RDX under SysV: preserve root
+    mov     rsi, [rbp - 96]
+    mov     ARG3, [rsi + rbx * 8]
+    mov     ARG2, r11
+    mov     r10, [row_cb_plan]
+    mov     r10, [r10 + PLAN_CTX]
+    mov     ARG1, [r10 + DB_BASE]
+    call    print_vector
+    jmp     .next_p
 
 .next_p:
     inc     rbx
@@ -1574,4 +1591,62 @@ print_varlen:
 .var_return:
     FRAME_END
     ret
+
+; print_vector(base, root, length).
+print_vector:
+    FRAME_BEGIN 80, 0
+    mov     [rbp - 8], ARG1             ; base
+    mov     [rbp - 16], ARG2            ; root
+    mov     [rbp - 24], ARG3            ; length
+    mov     qword [rbp - 64], 0         ; first_flag = 0
+
+    PUTS    str_lbracket
+
+.vec_page:
+    cmp     qword [rbp - 24], 0
+    je      .vec_done
+    cmp     qword [rbp - 16], 0
+    je      .vec_done
+
+    mov     r10, [rbp - 16]
+    shl     r10, CybouDB_PAGE_SHIFT
+    add     r10, [rbp - 8]
+    mov     rax, [r10 + VAR_NEXT]
+    mov     [rbp - 32], rax
+    mov     eax, [r10 + VAR_USED]
+    mov     [rbp - 40], rax
+    lea     r10, [r10 + VAR_DATA]
+    mov     [rbp - 48], r10
+
+.vec_elem:
+    cmp     qword [rbp - 40], 4
+    jb      .vec_next_page
+    cmp     qword [rbp - 24], 4
+    jb      .vec_next_page
+
+    cmp     qword [rbp - 64], 0
+    je      .vec_elem_val
+    PUTS    str_comma_sp
+
+.vec_elem_val:
+    mov     qword [rbp - 64], 1
+    mov     r10, [rbp - 48]
+    mov     ARG1d, [r10]
+    call    put_f32
+
+    add     qword [rbp - 48], 4
+    sub     qword [rbp - 40], 4
+    sub     qword [rbp - 24], 4
+    jmp     .vec_elem
+
+.vec_next_page:
+    mov     rax, [rbp - 32]
+    mov     [rbp - 16], rax
+    jmp     .vec_page
+
+.vec_done:
+    PUTS    str_rbracket
+    FRAME_END
+    ret
+
 

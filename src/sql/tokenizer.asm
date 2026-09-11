@@ -55,6 +55,8 @@ kw_vector:   db "vector", 0
 kw_asc:      db "asc", 0
 kw_desc:     db "desc", 0
 kw_drop:     db "drop", 0
+kw_l2_distance:     db "l2_distance", 0
+kw_cosine_distance: db "cosine_distance", 0
 
     align 8
 kw_table_entries:
@@ -100,6 +102,8 @@ kw_table_entries:
     dq kw_asc,      3, TOK_ASC
     dq kw_desc,     4, TOK_DESC
     dq kw_drop,     4, TOK_DROP
+    dq kw_l2_distance, 11, TOK_L2_DISTANCE
+    dq kw_cosine_distance, 15, TOK_COSINE_DISTANCE
     dq 0,          0, 0                 ; terminator
 
 section .text
@@ -279,6 +283,10 @@ sql_tok_next:
     je      .tok_comma
     cmp     al, ';'
     je      .tok_semicolon
+    cmp     al, '['
+    je      .tok_lbracket
+    cmp     al, ']'
+    je      .tok_rbracket
     cmp     al, '('
     je      .tok_lparen
     cmp     al, ')'
@@ -376,6 +384,18 @@ sql_tok_next:
     inc     rsi
     inc     ecx
     mov     rdi, TOK_RPAREN
+    jmp     .finish_token
+
+.tok_lbracket:
+    inc     rsi
+    inc     ecx
+    mov     rdi, TOK_LBRACKET
+    jmp     .finish_token
+
+.tok_rbracket:
+    inc     rsi
+    inc     ecx
+    mov     rdi, TOK_RBRACKET
     jmp     .finish_token
 
 .tok_star:

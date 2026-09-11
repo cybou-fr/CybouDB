@@ -26,5 +26,6 @@
 %define CAT_BOOL 4
 %define CAT_TEXT 5
 %define CAT_BLOB 6
+%define CAT_VECTOR 7
 %define CAT_NULLABLE 1
 %endif

@@ -49,6 +49,10 @@
 %define TOK_ASC             73
 %define TOK_DESC            74
 %define TOK_DROP            75
+%define TOK_LBRACKET        76          ; [
+%define TOK_RBRACKET        77          ; ]
+%define TOK_L2_DISTANCE     78
+%define TOK_COSINE_DISTANCE 79
 
 ; Types
 %define TOK_TYPE_INT32      30
@@ -57,6 +61,7 @@
 %define TOK_TYPE_BOOL       33
 %define TOK_TYPE_TEXT       34
 %define TOK_TYPE_BLOB       35
+%define TOK_TYPE_VECTOR     36
 
 ; Operators and Punctuation
 %define TOK_COMMA           40          ; ,
@@ -204,6 +209,8 @@
 %define OP_IS_NULL          9
 %define OP_IS_NOT_NULL      10
 %define OP_NOT              11
+%define OP_L2_DISTANCE      12
+%define OP_COSINE_DISTANCE  13
 
 ; --- AST Expression Structure (64 bytes) -------------------------------------
 %define EXPR_KIND           0           ; qword: EXPR_*

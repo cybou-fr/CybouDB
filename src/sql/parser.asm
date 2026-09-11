@@ -471,7 +471,7 @@ hex_nibble:
 ;  parse_primary(tok_ctx, sql_src, arena, out_err) -> RAX: AST_EXPR* or 0
 ; -----------------------------------------------------------------------------
 parse_primary:
-    FRAME_BEGIN 112, 1
+    FRAME_BEGIN 160, 1
     mov     [rbp - 8], ARG1             ; tok_ctx
     mov     [rbp - 16], ARG2            ; sql_src
     mov     [rbp - 24], ARG3            ; arena
@@ -527,6 +527,16 @@ parse_primary:
     ; Check NOT
     cmp     rax, TOK_NOT
     je      .is_not
+
+    ; Check vector literal '['
+    cmp     rax, TOK_LBRACKET
+    je      .is_vector_lit
+
+    ; Check distance functions
+    cmp     rax, TOK_L2_DISTANCE
+    je      .is_distance_fn
+    cmp     rax, TOK_COSINE_DISTANCE
+    je      .is_distance_fn
 
     ; Unexpected token
     mov     ARG1, [rbp - 32]
@@ -880,6 +890,252 @@ parse_primary:
     mov     dword [rax + EXPR_LIT_TYPE], CAT_BOOL
     mov     edx, [rbp - 64 + TOK_OFFSET]
     mov     [rax + EXPR_TOK_OFFSET], edx
+    FRAME_END
+    ret
+
+.is_vector_lit:
+    ; Consume '['
+    mov     ARG1, [rbp - 8]
+    lea     ARG2, [rbp - 64]
+    call    sql_tok_next
+
+    ; Allocate float buffer in arena (up to 4096 floats = 16384 bytes)
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, 4096 * 4
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+    mov     [rbp - 112], rax            ; float buffer ptr
+    mov     qword [rbp - 120], 0         ; count = 0
+
+.vec_lit_loop:
+    cmp     qword [rbp - 120], 4096
+    jae     .bad_syntax
+
+    ; Check if next token is unary '-' or '+'
+    mov     qword [rbp - 144], 0        ; elem_neg = 0
+    mov     ARG1, [rbp - 8]
+    lea     ARG2, [rbp - 64]
+    call    sql_tok_peek
+    test    eax, eax
+    jnz     .fail
+
+    cmp     qword [rbp - 64 + TOK_TYPE], TOK_MINUS
+    jne     .vec_check_plus
+    mov     qword [rbp - 144], 1
+    mov     ARG1, [rbp - 8]
+    lea     ARG2, [rbp - 64]
+    call    sql_tok_next                ; consume '-'
+    jmp     .vec_read_num
+
+.vec_check_plus:
+    cmp     qword [rbp - 64 + TOK_TYPE], TOK_PLUS
+    jne     .vec_read_num
+    mov     ARG1, [rbp - 8]
+    lea     ARG2, [rbp - 64]
+    call    sql_tok_next                ; consume '+'
+
+.vec_read_num:
+    ; Consume number token
+    mov     ARG1, [rbp - 8]
+    lea     ARG2, [rbp - 64]
+    call    sql_tok_next
+    test    eax, eax
+    jnz     .fail
+
+    mov     rax, [rbp - 64 + TOK_TYPE]
+    cmp     rax, TOK_INT_LIT
+    je      .vec_num_valid
+    cmp     rax, TOK_FLOAT_LIT
+    je      .vec_num_valid
+    jmp     .bad_syntax
+
+.vec_num_valid:
+    lea     ARG1, [rbp - 64]
+    mov     ARG2, [rbp - 16]            ; sql_src
+    lea     ARG3, [rbp - 128]           ; out_val
+    lea     ARG4, [rbp - 136]           ; out_type
+    mov     rax, [rbp - 144]            ; is_negative
+    PASS_ARG5 rax
+    call    parse_number
+    cmp     eax, 1
+    jne     .bad_syntax
+
+    ; Convert parsed number to float32 bits in EAX
+    cmp     dword [rbp - 136], CAT_FLOAT32
+    je      .vec_val_f32
+    ; Integer literal -> convert to float32
+    cvtsi2ss xmm0, qword [rbp - 128]
+    movd    eax, xmm0
+    jmp     .vec_val_check_finite
+
+.vec_val_f32:
+    mov     eax, dword [rbp - 128]
+
+.vec_val_check_finite:
+    ; Check exponent is not 0xFF
+    mov     edx, eax
+    and     edx, 0x7F800000
+    cmp     edx, 0x7F800000
+    je      .bad_syntax
+
+    ; Store into float buffer
+    mov     rcx, [rbp - 120]
+    mov     r11, [rbp - 112]
+    mov     [r11 + rcx * 4], eax
+    inc     qword [rbp - 120]
+
+    ; Check next token: comma or ']'
+    mov     ARG1, [rbp - 8]
+    lea     ARG2, [rbp - 64]
+    call    sql_tok_next
+    test    eax, eax
+    jnz     .fail
+
+    cmp     qword [rbp - 64 + TOK_TYPE], TOK_COMMA
+    je      .vec_lit_loop
+    cmp     qword [rbp - 64 + TOK_TYPE], TOK_RBRACKET
+    je      .vec_lit_done
+    jmp     .bad_syntax
+
+.vec_lit_done:
+    ; Vectors must not be empty
+    cmp     qword [rbp - 120], 0
+    jbe     .bad_syntax
+
+    ; Allocate AST_EXPR
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, AST_EXPR_SIZE
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+
+    mov     qword [rax + EXPR_KIND], EXPR_LITERAL
+    mov     dword [rax + EXPR_LIT_TYPE], CAT_VECTOR
+    mov     rdx, [rbp - 112]
+    mov     [rax + EXPR_LIT_PTR], rdx   ; pointer to floats
+    mov     rdx, [rbp - 120]
+    mov     [rax + EXPR_LIT_VAL], rdx   ; dimension
+    shl     rdx, 2
+    mov     [rax + EXPR_LIT_LEN], rdx   ; byte length = dim * 4
+    FRAME_END
+    ret
+
+.is_distance_fn:
+    mov     qword [rbp - 104], OP_L2_DISTANCE
+    cmp     rax, TOK_L2_DISTANCE
+    je      .dist_consume
+    mov     qword [rbp - 104], OP_COSINE_DISTANCE
+
+.dist_consume:
+    ; Consume function token
+    mov     ARG1, [rbp - 8]
+    lea     ARG2, [rbp - 64]
+    call    sql_tok_next
+
+    ; Expect '('
+    mov     ARG1, [rbp - 8]
+    lea     ARG2, [rbp - 64]
+    call    sql_tok_next
+    cmp     qword [rbp - 64 + TOK_TYPE], TOK_LPAREN
+    jne     .bad_lparen
+
+    ; Parse first argument
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [rbp - 16]
+    mov     ARG3, [rbp - 24]
+    mov     ARG4, [rbp - 32]
+    mov     rax, 1
+    PASS_ARG5 rax
+    EXPR_DEPTH_ENTER .too_deep
+    call    parse_expr_prec
+    EXPR_DEPTH_LEAVE
+    test    rax, rax
+    jz      .fail
+    mov     [rbp - 72], rax             ; arg1
+
+    ; Expect ','
+    mov     ARG1, [rbp - 8]
+    lea     ARG2, [rbp - 64]
+    call    sql_tok_next
+    cmp     qword [rbp - 64 + TOK_TYPE], TOK_COMMA
+    jne     .bad_comma
+
+    ; Parse second argument
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [rbp - 16]
+    mov     ARG3, [rbp - 24]
+    mov     ARG4, [rbp - 32]
+    mov     rax, 1
+    PASS_ARG5 rax
+    EXPR_DEPTH_ENTER .too_deep
+    call    parse_expr_prec
+    EXPR_DEPTH_LEAVE
+    test    rax, rax
+    jz      .fail
+    mov     [rbp - 88], rax             ; arg2
+
+    ; Expect ')'
+    mov     ARG1, [rbp - 8]
+    lea     ARG2, [rbp - 64]
+    call    sql_tok_next
+    cmp     qword [rbp - 64 + TOK_TYPE], TOK_RPAREN
+    jne     .bad_rparen
+
+    ; Allocate AST_EXPR
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, AST_EXPR_SIZE
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+
+    mov     qword [rax + EXPR_KIND], EXPR_BINARY
+    mov     rdx, [rbp - 104]
+    mov     [rax + EXPR_OP], rdx
+    mov     rdx, [rbp - 72]
+    mov     [rax + EXPR_LEFT], rdx
+    mov     rdx, [rbp - 88]
+    mov     [rax + EXPR_RIGHT], rdx
+    FRAME_END
+    ret
+
+.bad_syntax:
+    mov     ARG1, [rbp - 32]
+    mov     ARG2, SQL_ERR_SYNTAX
+    lea     ARG3, [rbp - 64]
+    lea     ARG4, [err_syntax_msg]
+    call    set_error
+    xor     eax, eax
+    FRAME_END
+    ret
+
+.bad_lparen:
+    mov     ARG1, [rbp - 32]
+    mov     ARG2, SQL_ERR_SYNTAX
+    lea     ARG3, [rbp - 64]
+    lea     ARG4, [err_expected_lparen]
+    call    set_error
+    xor     eax, eax
+    FRAME_END
+    ret
+
+.bad_rparen:
+    mov     ARG1, [rbp - 32]
+    mov     ARG2, SQL_ERR_SYNTAX
+    lea     ARG3, [rbp - 64]
+    lea     ARG4, [err_expected_rparen]
+    call    set_error
+    xor     eax, eax
+    FRAME_END
+    ret
+
+.bad_comma:
+    mov     ARG1, [rbp - 32]
+    mov     ARG2, SQL_ERR_SYNTAX
+    lea     ARG3, [rbp - 64]
+    lea     ARG4, [err_expected_comma]
+    call    set_error
+    xor     eax, eax
     FRAME_END
     ret
 
@@ -1272,7 +1528,94 @@ parse_expr_prec:
 ;  sql_parse(sql_src, sql_len, arena, out_stmt, out_err) -> RAX: SQL_OK / err
 ; -----------------------------------------------------------------------------
 ; -----------------------------------------------------------------------------
-;  sql_parse(sql_src, sql_len, arena, out_stmt, out_err) -> RAX: SQL_OK / err
+;  parse_vector_type_def(tok_ctx, tok_buf, sql_src) -> RAX: dimension (1..4096) or 0
+; -----------------------------------------------------------------------------
+parse_vector_type_def:
+    FRAME_BEGIN 48, 0
+    mov     [rbp - 8], ARG1             ; tok_ctx
+    mov     [rbp - 16], ARG2            ; tok_buf
+    mov     [rbp - 24], ARG3            ; sql_src
+
+    ; Expect '('
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [rbp - 16]
+    call    sql_tok_next
+    mov     r10, [rbp - 16]
+    cmp     qword [r10 + TOK_TYPE], TOK_LPAREN
+    jne     .err
+
+    ; Check if FLOAT32 keyword is present
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [rbp - 16]
+    call    sql_tok_peek
+    mov     r10, [rbp - 16]
+    cmp     qword [r10 + TOK_TYPE], TOK_TYPE_FLOAT32
+    jne     .dim
+    ; Consume FLOAT32
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [rbp - 16]
+    call    sql_tok_next
+    ; Expect ','
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [rbp - 16]
+    call    sql_tok_next
+    mov     r10, [rbp - 16]
+    cmp     qword [r10 + TOK_TYPE], TOK_COMMA
+    jne     .err
+
+.dim:
+    ; Expect integer literal dimension
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [rbp - 16]
+    call    sql_tok_next
+    mov     r10, [rbp - 16]
+    cmp     qword [r10 + TOK_TYPE], TOK_INT_LIT
+    jne     .err
+
+    ; Convert decimal digits to integer in RAX
+    mov     rsi, [r10 + TOK_OFFSET]
+    add     rsi, [rbp - 24]             ; sql_src
+    mov     rcx, [r10 + TOK_LEN]
+    xor     eax, eax
+.loop:
+    test    rcx, rcx
+    jz      .dim_done
+    movzx   edx, byte [rsi]
+    sub     edx, '0'
+    cmp     edx, 9
+    ja      .err
+    imul    eax, 10
+    add     eax, edx
+    inc     rsi
+    dec     rcx
+    jmp     .loop
+
+.dim_done:
+    test    eax, eax
+    jz      .err
+    cmp     eax, 4096
+    ja      .err
+    mov     [rbp - 32], rax             ; save dim
+
+    ; Expect ')'
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [rbp - 16]
+    call    sql_tok_next
+    mov     r10, [rbp - 16]
+    cmp     qword [r10 + TOK_TYPE], TOK_RPAREN
+    jne     .err
+
+    mov     rax, [rbp - 32]
+    FRAME_END
+    ret
+
+.err:
+    xor     eax, eax
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  sql_parse(sql_src, sql_len, arena, out_ast, out_err) -> RAX: 0 on success
 ; -----------------------------------------------------------------------------
 sql_parse:
     FRAME_BEGIN 256, 1
@@ -1433,6 +1776,8 @@ sql_parse:
     mov     r8d, CAT_BLOB
     cmp     rax, TOK_TYPE_BLOB
     je      .type_ok
+    cmp     rax, TOK_VECTOR
+    je      .parse_vector_col
     jmp     .bad_type
 
 .type_ok:
@@ -1442,7 +1787,14 @@ sql_parse:
     imul    rdx, rcx, AST_COLDEF_SIZE
     add     rdx, r11
     mov     [rdx + COLDEF_TYPE], r8d
-    mov     dword [rdx + COLDEF_FLAGS], CAT_NULLABLE ; default nullable (SQL standard)
+    mov     eax, CAT_NULLABLE
+    cmp     r8d, CAT_VECTOR
+    jne     .col_flags_set
+    mov     rax, [rbp - 80]
+    shl     rax, 16
+    or      eax, CAT_NULLABLE
+.col_flags_set:
+    mov     dword [rdx + COLDEF_FLAGS], eax ; default nullable (SQL standard)
 
     ; Check optional NULL / NOT NULL
     lea     ARG1, [rbp - 160]
@@ -1473,7 +1825,7 @@ sql_parse:
     mov     r11, [r10 + STMT_EXTRA2]
     imul    rdx, rcx, AST_COLDEF_SIZE
     add     rdx, r11
-    mov     dword [rdx + COLDEF_FLAGS], 0 ; not nullable
+    and     dword [rdx + COLDEF_FLAGS], ~CAT_NULLABLE ; not nullable
 
 .col_sep:
     inc     qword [rbp - 56]
@@ -1493,6 +1845,17 @@ sql_parse:
     mov     rax, [rbp - 56]
     mov     [r10 + STMT_EXTRA1], rax    ; col_count
     jmp     .check_eof
+
+.parse_vector_col:
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    mov     ARG3, [rbp - 8]
+    call    parse_vector_type_def
+    test    rax, rax
+    jz      .bad_syntax
+    mov     [rbp - 80], rax             ; dimension
+    mov     r8d, CAT_VECTOR
+    jmp     .type_ok
 
 ; --- INSERT INTO -------------------------------------------------------------
 .parse_insert:
