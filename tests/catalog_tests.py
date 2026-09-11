@@ -1,4 +1,4 @@
-﻿"""Typed catalog, path-copy and recovery tests with independent disk decoding."""
+"""Typed catalog, path-copy and recovery tests with independent disk decoding."""
 import pathlib
 import struct
 import subprocess

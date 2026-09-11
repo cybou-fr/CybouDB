@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Interactive REPL and pipe regression suite for CybouDB.
 Run: python tests/repl_tests.py [binary]
 """

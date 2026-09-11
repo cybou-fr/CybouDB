@@ -1,4 +1,4 @@
-﻿"""SQL results with zones ON/OFF, independent 3VL oracle and leaf-path counters.
+"""SQL results with zones ON/OFF, independent 3VL oracle and leaf-path counters.
 
 Usage: zone_sql_tests.py <cyboudb> <cow_harness> <sql_harness>
 """

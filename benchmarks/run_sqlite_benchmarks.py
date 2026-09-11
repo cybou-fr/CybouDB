@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """CybouDB vs. SQLite Out-of-Cache Benchmarks (Phase 3.5).
 
 Compares CybouDB's columnar zero-copy batch executor against SQLite's

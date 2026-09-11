@@ -1,4 +1,4 @@
-﻿# The paired multi-page allocation map
+# The paired multi-page allocation map
 
 Status: implemented, and the only format that reclaims pages. `create-large`
 produces it; the CLI and every internal API work on it. The flat map keeps its

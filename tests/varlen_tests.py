@@ -1,4 +1,4 @@
-﻿"""Focused integration test for validate-before-copy varlen reads."""
+"""Focused integration test for validate-before-copy varlen reads."""
 import pathlib
 import subprocess
 import sys

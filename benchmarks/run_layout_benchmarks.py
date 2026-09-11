@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Repeat the historical alone/shared comparison using its original fixtures.
 
 Build fixtures with run_benchmarks.py once if build/benchrun/{events,wide,shared}.cdb

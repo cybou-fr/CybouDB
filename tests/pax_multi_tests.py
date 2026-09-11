@@ -1,4 +1,4 @@
-﻿"""Multi-page PAX path copying, boundary reads and graph recovery."""
+"""Multi-page PAX path copying, boundary reads and graph recovery."""
 from pax_support import *
 
 

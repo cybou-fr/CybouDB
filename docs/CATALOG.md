@@ -1,4 +1,4 @@
-﻿# Typed COW catalog
+# Typed COW catalog
 
 Status: a fixed-height catalog is implemented. It stores table definitions and
 fixed-width column declarations. The separate [PAX capability](PAX.md) adds

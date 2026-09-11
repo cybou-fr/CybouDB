@@ -1,4 +1,4 @@
-﻿"""IEEE edge cases using exact raw bits seeded through the storage API."""
+"""IEEE edge cases using exact raw bits seeded through the storage API."""
 from pax_support import *
 
 with tempfile.TemporaryDirectory() as directory:

@@ -1,4 +1,4 @@
-﻿"""Allocation-map format, recovery and CLI tests, independent of ASM encoding."""
+"""Allocation-map format, recovery and CLI tests, independent of ASM encoding."""
 import pathlib
 import struct
 import subprocess

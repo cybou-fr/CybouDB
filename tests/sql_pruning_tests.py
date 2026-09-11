@@ -1,4 +1,4 @@
-﻿"""Required-column plans, zero-copy sparse views, and wide multi-leaf SELECTs."""
+"""Required-column plans, zero-copy sparse views, and wide multi-leaf SELECTs."""
 from pathlib import Path
 import struct
 import subprocess

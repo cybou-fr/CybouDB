@@ -1,4 +1,4 @@
-﻿"""Public and callback execution parity, including actual zone pruning paths."""
+"""Public and callback execution parity, including actual zone pruning paths."""
 from pathlib import Path
 import sys
 import tempfile

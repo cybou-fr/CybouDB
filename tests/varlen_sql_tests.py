@@ -1,4 +1,4 @@
-﻿"""End-to-end SQL/CLI coverage for persisted TEXT and BLOB values."""
+"""End-to-end SQL/CLI coverage for persisted TEXT and BLOB values."""
 import pathlib
 import subprocess
 import sys

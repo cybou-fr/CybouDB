@@ -1,4 +1,4 @@
-﻿"""Regression: allocator commits preserve a nonzero catalog root."""
+"""Regression: allocator commits preserve a nonzero catalog root."""
 import pathlib
 import struct
 import subprocess

@@ -1,4 +1,4 @@
-﻿"""Paired multi-page allocation map: layout, growth past 16112 pages, recovery."""
+"""Paired multi-page allocation map: layout, growth past 16112 pages, recovery."""
 from pax_support import *
 
 LEAF = 16112

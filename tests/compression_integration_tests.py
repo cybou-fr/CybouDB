@@ -1,4 +1,4 @@
-﻿"""Compressed storage: partial-leaf COW, boundary reads and corruption recovery."""
+"""Compressed storage: partial-leaf COW, boundary reads and corruption recovery."""
 from pax_support import *
 
 with tempfile.TemporaryDirectory() as temporary:

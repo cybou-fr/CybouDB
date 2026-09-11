@@ -1,4 +1,4 @@
-﻿# Compression V1
+# Compression V1
 
 Compression V1 supports RAW (0), CONST (1) and FOR (2). RLE and dictionary
 encoding are not implemented or advertised by this format.

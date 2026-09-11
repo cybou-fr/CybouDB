@@ -1,4 +1,4 @@
-﻿# CybouDB Zone Maps 3-Way Benchmark, 10,000,000 Rows - 2026-09-09
+# CybouDB Zone Maps 3-Way Benchmark, 10,000,000 Rows - 2026-09-09
 
 Host: Intel Core Ultra 7 258V (12 MB L3), Windows 11.
 Runner: benchmarks/run_3way_benchmark.py --rows 10000000 --repeats 5.

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Cross-engine benchmark: SQLite, DuckDB (1 and 8 threads), CybouDB scalar, CybouDB AVX2.
 
 Two comparisons are measured, and they are deliberately kept apart because they

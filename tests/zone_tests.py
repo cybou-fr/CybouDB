@@ -1,4 +1,4 @@
-﻿"""Per-leaf zone statistics: what an insert records, and what it must not.
+"""Per-leaf zone statistics: what an insert records, and what it must not.
 
 The statistics are read back through the harness rather than decoded out of
 the file, because what matters to a scan is exactly what db_zone_lookup

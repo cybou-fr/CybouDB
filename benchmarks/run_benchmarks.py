@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Legacy single-level scan and layout benchmarks for the batch executor.
 
 Run: python benchmarks/run_benchmarks.py [cyboudb] [bench_harness]

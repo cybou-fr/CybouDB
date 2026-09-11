@@ -1,4 +1,4 @@
-﻿"""COW core tests with independent disk inspection and injected sync failures.
+"""COW core tests with independent disk inspection and injected sync failures.
 
 Usage: python tests/cow_tests.py <cyboudb> <cow_harness>
 These exercise process exits and explicit corruption, not physical power loss.

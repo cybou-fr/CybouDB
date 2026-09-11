@@ -1,4 +1,4 @@
-﻿"""Single-page PAX batches, scalar reads and recovery boundaries."""
+"""Single-page PAX batches, scalar reads and recovery boundaries."""
 from pax_support import *
 
 with tempfile.TemporaryDirectory() as directory:

@@ -1,4 +1,4 @@
-﻿"""SQL error domains and exact FLOAT32 parsing under nondefault MXCSR."""
+"""SQL error domains and exact FLOAT32 parsing under nondefault MXCSR."""
 from fractions import Fraction
 from pathlib import Path
 import random

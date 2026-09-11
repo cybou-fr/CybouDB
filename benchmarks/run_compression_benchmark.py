@@ -1,4 +1,4 @@
-﻿"""RAW/CONST/FOR gate: separate fixtures, rotated processes and parity checks."""
+"""RAW/CONST/FOR gate: separate fixtures, rotated processes and parity checks."""
 import argparse
 import collections
 import json

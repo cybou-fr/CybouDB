@@ -1,4 +1,4 @@
-﻿#!/bin/sh
+#!/bin/sh
 # ===========================================================================
 #  tests/run_tests.sh - CybouDB storage and CLI test suite
 #

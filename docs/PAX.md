@@ -1,4 +1,4 @@
-﻿# Single-page PAX storage
+# Single-page PAX storage
 
 Status: fixed-width row batches and scalar row reads are implemented as internal
 assembly APIs. The base capability described here has one data page per table.

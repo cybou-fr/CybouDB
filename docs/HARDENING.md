@@ -1,4 +1,4 @@
-﻿# Hardening work from the September 2026 review
+# Hardening work from the September 2026 review
 
 Baseline: `ef293296831850fe20db22a6cddb1b3fcf88812c`.
 Complete contract and lifetime fixes before adding SQL features or freezing

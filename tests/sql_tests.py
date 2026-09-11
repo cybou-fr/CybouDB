@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Portable SQL regression suite. Run: python tests/sql_tests.py [binary]."""
 import os
 from pathlib import Path

@@ -1,4 +1,4 @@
-﻿[CybouDB]   reusing events_high_entropy_10000000.cdb (10,000,000 rows)
+[CybouDB]   reusing events_high_entropy_10000000.cdb (10,000,000 rows)
 [SQLite] reusing events_high_entropy_10000000.sqlite (10,000,000 rows)
 [DuckDB] seeding events_high_entropy_10000000.duckdb with 10,000,000 high_entropy rows
 [DuckDB] 10,000,000 rows in 71.2s (140,362 rows/s)

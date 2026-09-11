@@ -1,4 +1,4 @@
-﻿# CybouDB
+# CybouDB
 
 **CybouDB** is an experimental embedded database engine written in assembly, close
 to the hardware, with a portable on-disk format and architecture-specific

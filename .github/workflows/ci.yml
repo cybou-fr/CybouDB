@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 # The engine writes files that outlive the process, so the thing worth
 # protecting is behaviour on damaged input, not just whether it assembles.

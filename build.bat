@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 rem ===========================================================================
 rem  build.bat - build CybouDB for Windows x64
 rem

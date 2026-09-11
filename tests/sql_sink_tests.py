@@ -1,4 +1,4 @@
-﻿"""Batch delivery and row adapter equivalence, stop semantics and arena bounds."""
+"""Batch delivery and row adapter equivalence, stop semantics and arena bounds."""
 from pathlib import Path
 import struct
 import subprocess

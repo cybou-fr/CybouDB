@@ -1,4 +1,4 @@
-﻿"""Zone graph corruption, candidate recovery and exhaustive data agreement."""
+"""Zone graph corruption, candidate recovery and exhaustive data agreement."""
 from pax_support import *
 
 

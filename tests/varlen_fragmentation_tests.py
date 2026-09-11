@@ -1,4 +1,4 @@
-﻿"""Regression test for non-contiguous variable-width extent allocation."""
+"""Regression test for non-contiguous variable-width extent allocation."""
 import pathlib
 import subprocess
 import tempfile

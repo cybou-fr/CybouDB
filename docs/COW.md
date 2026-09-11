@@ -1,4 +1,4 @@
-﻿# Decision: COW before PAX
+# Decision: COW before PAX
 
 Status: persisted COW capability, append-only page operations and an allocation
 map are implemented and tested. A separate capability now enables the typed

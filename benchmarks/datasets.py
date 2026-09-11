@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Deterministic benchmark datasets, and the seeding of one per engine.
 
 Two datasets are defined, because a single one answers only half the question:

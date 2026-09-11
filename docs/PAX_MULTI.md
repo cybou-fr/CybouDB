@@ -1,4 +1,4 @@
-﻿# Multi-page PAX tables
+# Multi-page PAX tables
 
 Status: a bounded data-page directory, cross-page batch insertion, scalar row
 lookup and a scan cursor are implemented. `cyboudb query` drives all of it
