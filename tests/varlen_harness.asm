@@ -5,6 +5,7 @@ default rel
 extern os_argv, os_exit
 extern db_open_cow, db_close
 extern db_var_write_chain, db_var_read_chain
+extern crc32c
 global cyboudb_main
 
 %define TEST_LENGTH (VAR_PAYLOAD_SIZE + 37)
@@ -126,6 +127,105 @@ cyboudb_main:
     jne failure_close
     cmp byte [output], 0x5A
     jne failure_close
+
+    ; Restore the header, then verify payload CRC corruption is rejected.
+    mov rax, [descriptor + VAR_CELL_ROOT]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [ctx + DB_BASE]
+    mov dword [rax + VAR_MAGIC], VAR_MAGIC_VALUE
+    mov ARG1, rax
+    mov ARG2, VAR_CRC
+    call crc32c
+    mov r10, [descriptor + VAR_CELL_ROOT]
+    shl r10, CybouDB_PAGE_SHIFT
+    add r10, [ctx + DB_BASE]
+    mov [r10 + VAR_CRC], eax
+    xor byte [r10 + VAR_DATA], 1
+    mov byte [output], 0x5A
+    lea ARG1, [ctx]
+    lea ARG2, [candidate]
+    lea ARG3, [descriptor]
+    mov ARG4, TEST_OWNER
+    lea rax, [output]
+    PASS_ARG5 rax
+    mov rax, TEST_LENGTH
+    PASS_ARG6 rax
+    call db_var_read_chain
+    cmp eax, CybouDB_E_PAX
+    jne failure_close
+    cmp byte [output], 0x5A
+    jne failure_close
+    xor byte [r10 + VAR_DATA], 1
+    mov ARG1, r10
+    mov ARG2, VAR_CRC
+    call crc32c
+    mov r10, [descriptor + VAR_CELL_ROOT]
+    shl r10, CybouDB_PAGE_SHIFT
+    add r10, [ctx + DB_BASE]
+    mov [r10 + VAR_CRC], eax
+
+    ; Early termination and cycles must fail before copying any bytes.
+    mov rax, [r10 + VAR_NEXT]
+    mov [rbp - 8], rax
+    mov qword [r10 + VAR_NEXT], 0
+    mov ARG1, r10
+    mov ARG2, VAR_CRC
+    call crc32c
+    mov r10, [descriptor + VAR_CELL_ROOT]
+    shl r10, CybouDB_PAGE_SHIFT
+    add r10, [ctx + DB_BASE]
+    mov [r10 + VAR_CRC], eax
+    mov byte [output], 0x5A
+    lea ARG1, [ctx]
+    lea ARG2, [candidate]
+    lea ARG3, [descriptor]
+    mov ARG4, TEST_OWNER
+    lea rax, [output]
+    PASS_ARG5 rax
+    mov rax, TEST_LENGTH
+    PASS_ARG6 rax
+    call db_var_read_chain
+    cmp eax, CybouDB_E_PAX
+    jne failure_close
+    cmp byte [output], 0x5A
+    jne failure_close
+    mov rax, [rbp - 8]
+    mov [r10 + VAR_NEXT], rax
+    mov ARG1, r10
+    mov ARG2, VAR_CRC
+    call crc32c
+    mov [r10 + VAR_CRC], eax
+
+    mov rax, [r10 + VAR_NEXT]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [ctx + DB_BASE]
+    mov [rbp - 8], rax
+    mov rdx, [descriptor + VAR_CELL_ROOT]
+    mov [rax + VAR_NEXT], rdx
+    mov ARG1, rax
+    mov ARG2, VAR_CRC
+    call crc32c
+    mov r10, [rbp - 8]
+    mov [r10 + VAR_CRC], eax
+    mov byte [output], 0x5A
+    lea ARG1, [ctx]
+    lea ARG2, [candidate]
+    lea ARG3, [descriptor]
+    mov ARG4, TEST_OWNER
+    lea rax, [output]
+    PASS_ARG5 rax
+    mov rax, TEST_LENGTH
+    PASS_ARG6 rax
+    call db_var_read_chain
+    cmp eax, CybouDB_E_PAX
+    jne failure_close
+    cmp byte [output], 0x5A
+    jne failure_close
+    mov qword [r10 + VAR_NEXT], 0
+    mov ARG1, r10
+    mov ARG2, VAR_CRC
+    call crc32c
+    mov [r10 + VAR_CRC], eax
 
     lea ARG1, [ctx]
     call db_close
