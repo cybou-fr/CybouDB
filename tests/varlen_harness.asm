@@ -4,7 +4,7 @@ BITS 64
 default rel
 extern os_argv, os_exit
 extern db_open_cow, db_close
-extern db_var_write_chain, db_var_read_chain
+extern db_var_validate_chain, db_var_write_chain, db_var_read_chain
 extern crc32c
 global cyboudb_main
 
@@ -222,6 +222,38 @@ cyboudb_main:
     cmp byte [output], 0x5A
     jne failure_close
     mov qword [r10 + VAR_NEXT], 0
+    mov ARG1, r10
+    mov ARG2, VAR_CRC
+    call crc32c
+    mov [r10 + VAR_CRC], eax
+
+    ; Header identity, ownership and reserved bytes are part of validation.
+    mov rax, [descriptor + VAR_CELL_ROOT]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [ctx + DB_BASE]
+    xor qword [rax + VAR_PAGE_ID], 1
+    xor qword [rax + VAR_OWNER], 1
+    mov qword [rax + VAR_RESERVED], 1
+    mov ARG1, rax
+    mov ARG2, VAR_CRC
+    call crc32c
+    mov r10, [descriptor + VAR_CELL_ROOT]
+    shl r10, CybouDB_PAGE_SHIFT
+    add r10, [ctx + DB_BASE]
+    mov [r10 + VAR_CRC], eax
+    lea ARG1, [ctx]
+    lea ARG2, [candidate]
+    mov ARG3, [descriptor + VAR_CELL_ROOT]
+    mov ARG4, TEST_LENGTH
+    mov rax, TEST_OWNER
+    PASS_ARG5 rax
+    call db_var_validate_chain
+    test eax, eax
+    jnz failure_close
+    mov rax, [descriptor + VAR_CELL_ROOT]
+    mov [r10 + VAR_PAGE_ID], rax
+    mov qword [r10 + VAR_OWNER], TEST_OWNER
+    mov qword [r10 + VAR_RESERVED], 0
     mov ARG1, r10
     mov ARG2, VAR_CRC
     call crc32c
