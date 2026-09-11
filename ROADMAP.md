@@ -44,9 +44,9 @@ conditions are recorded in [benchmarks/README.md](benchmarks/README.md);
 performance depends on the query, execution mode and hardware.
 
 Persistent vector storage and SQL vector types, SQL transactions, `DROP TABLE`, `DELETE`, and an ARM64 backend remain
-unimplemented. `UPDATE` currently supports one fixed-width assignment with a
-mandatory predicate on flat PAX directories; tree and TEXT/BLOB mutation remain
-listed under Phase 3.
+unimplemented. `UPDATE` supports single-column assignments with a mandatory
+predicate across flat and tree-directory PAX tables, including fixed-width and
+persisted variable-width TEXT/BLOB columns.
 
 ## How the phases are ordered
 
@@ -186,7 +186,7 @@ cyboudb query demo.cdb "SELECT id, score FROM runs WHERE score > 90"
 * [x] coalesce all 64-row predicate spans per leaf into one COW rewrite
 * [x] UPDATE recovery tests for ENOSPC, both commit barriers and torn publication
 * [x] COW-copy and exactly recompute the affected zone-map column/leaf on UPDATE
-* [ ] tree-directory and TEXT/BLOB `UPDATE`
+* [x] tree-directory and TEXT/BLOB `UPDATE`
 * [x] process-level single-writer lock with concurrent read-only opens
 * [x] lifetime reader pins and a reclamation barrier for retired pages
 * [x] concurrent snapshot/reclamation stress test across repeated generations

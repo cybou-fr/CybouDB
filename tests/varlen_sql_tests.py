@@ -58,4 +58,35 @@ with tempfile.TemporaryDirectory() as tmp:
     assert "\n1\n" in output and "\n2\n" in output and "\n4\n" in output
     check("varlen NULL predicates use presence metadata")
 
+    # UPDATE tests for TEXT and BLOB
+    run("query", path, "UPDATE docs SET body = 'updated hello' WHERE id = 1")
+    output = run("query", path, "SELECT body FROM docs WHERE id = 1")
+    assert "updated hello\n(1 row)\n" in output
+    check("UPDATE single-row TEXT column")
+
+    run("query", path, "UPDATE docs SET raw = X'DEADBEEF' WHERE id = 1")
+    output = run("query", path, "SELECT raw FROM docs WHERE id = 1")
+    assert "X'DEADBEEF'\n(1 row)\n" in output
+    check("UPDATE single-row BLOB column")
+
+    run("query", path, "UPDATE docs SET body = NULL WHERE id = 2")
+    output = run("query", path, "SELECT body FROM docs WHERE id = 2")
+    assert "NULL\n(1 row)\n" in output
+    check("UPDATE TEXT column to NULL")
+
+    run("query", path, "UPDATE docs SET body = '' WHERE id = 3")
+    output = run("query", path, "SELECT body FROM docs WHERE id = 3")
+    assert " \n(1 row)\n" in output or "\n\n(1 row)\n" in output
+    check("UPDATE TEXT column to empty string")
+
+    # Multi-extent TEXT update
+    updated_long = "u" * 2500 + "\n" + "w" * 2500
+    console(path, f"UPDATE docs SET body = '{updated_long}' WHERE id = 4")
+    output = run("query", path, "SELECT body FROM docs WHERE id = 4")
+    assert f"\n{updated_long}\n(1 row)\n" in output
+    check("UPDATE multi-extent TEXT value")
+
+    run("check", path)
+    check("complete graph check passes after TEXT/BLOB updates")
+
 print(f"Varlen SQL suite: {passed} passed")

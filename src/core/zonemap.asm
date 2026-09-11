@@ -1512,8 +1512,15 @@ zone_recompute_column:
     mov rcx, 8
 .recompute_not_i64:
     cmp qword [rbp - 48], CAT_BOOL
-    jne .recompute_width_ready
+    jne .recompute_not_bool
     mov rcx, 1
+.recompute_not_bool:
+    cmp qword [rbp - 48], CAT_TEXT
+    je .recompute_varlen_width
+    cmp qword [rbp - 48], CAT_BLOB
+    jne .recompute_width_ready
+.recompute_varlen_width:
+    mov rcx, VAR_CELL_SIZE
 .recompute_width_ready:
     mov [rbp - 80], rcx
     mov qword [rbp - 88], 0
@@ -1530,6 +1537,10 @@ zone_recompute_column:
     xor eax, eax
     cmp qword [rbp - 96], 0
     jne .recompute_merge
+    cmp qword [rbp - 48], CAT_TEXT
+    je .recompute_merge
+    cmp qword [rbp - 48], CAT_BLOB
+    je .recompute_merge
     mov rdx, [rbp - 56]
     test rdx, rdx
     jz .recompute_raw

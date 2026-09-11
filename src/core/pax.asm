@@ -2286,9 +2286,15 @@ db_pax_update_one:
     add rax, [rbp - 64]
     mov ecx, [rax + CAT_COLUMNS]
     cmp ecx, CAT_TEXT
-    je .upd_value
+    je .upd_check_varlen
     cmp ecx, CAT_BLOB
-    je .upd_value
+    je .upd_check_varlen
+    jmp .upd_check_null
+.upd_check_varlen:
+    mov r11, [rbp - 8]              ; ctx
+    test qword [r11 + DB_FEATURES], CybouDB_FEATURE_VARLEN
+    jz .upd_value
+.upd_check_null:
     cmp qword [rbp - 40], 0
     je .upd_shape
     test dword [rax + CAT_COLUMNS + 4], CAT_NULLABLE
@@ -2540,6 +2546,8 @@ db_pax_update_one:
     cmp qword [rbp - 40], 0
     jne .upd_zero_value
     mov rax, [rbp - 32]
+    cmp qword [rbp - 144], 16
+    je .upd_store16
     cmp qword [rbp - 144], 8
     je .upd_store8
     cmp qword [rbp - 144], 4
@@ -2552,7 +2560,15 @@ db_pax_update_one:
 .upd_store8:
     mov [rdx], rax
     jmp .upd_next_row
+.upd_store16:
+    mov r8, [rax]
+    mov [rdx], r8
+    mov r8, [rax + 8]
+    mov [rdx + 8], r8
+    jmp .upd_next_row
 .upd_zero_value:
+    cmp qword [rbp - 144], 16
+    je .upd_zero16
     cmp qword [rbp - 144], 8
     je .upd_zero8
     cmp qword [rbp - 144], 4
@@ -2564,6 +2580,10 @@ db_pax_update_one:
     jmp .upd_next_row
 .upd_zero8:
     mov qword [rdx], 0
+    jmp .upd_next_row
+.upd_zero16:
+    mov qword [rdx], 0
+    mov qword [rdx + 8], 0
 .upd_next_row:
     inc ecx
     cmp rcx, [rbp - 192]

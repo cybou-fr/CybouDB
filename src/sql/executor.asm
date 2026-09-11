@@ -10,6 +10,7 @@ BITS 64
 default rel
 
 extern db_catalog_put, db_pax_insert, db_pax_update_one, db_pax_capacity, db_commit
+extern db_var_write_chain
 extern sql_select_open, sql_select_next
 extern sql_arena_alloc
 extern sql_join_execute
@@ -601,7 +602,47 @@ sql_execute_batch:
     mov rax, [rbp - 184]
     mov [r10 + PLAN_DATA1], rax
     mov qword [rbp - 200], 0
+    test rax, rax
+    jz .success
+
+    ; If varlen (TEXT or BLOB), allocate extent chain once before leaf rewrites
+    mov rax, [r10 + PLAN_UPDATE_COL_TYPE]
+    cmp rax, CAT_TEXT
+    je .update_prep_varlen
+    cmp rax, CAT_BLOB
+    je .update_prep_varlen
+    jmp .update_prep_done
+
+.update_prep_varlen:
+    cmp qword [r10 + PLAN_UPDATE_IS_NULL], 0
+    jne .update_varlen_empty
+    cmp qword [r10 + PLAN_UPDATE_LENGTH], 0
+    je .update_varlen_empty
+
+    mov ARG1, [rbp - 8]             ; ctx
+    mov ARG2, [r10 + PLAN_UPDATE_VALUE] ; bytes
+    mov ARG3, [r10 + PLAN_UPDATE_LENGTH] ; length
+    mov ARG4, [r10 + PLAN_TABLE_ID] ; owner table id
+    lea rax, [rbp - 264]
+    PASS_ARG5 rax
+    call db_var_write_chain
+    test eax, eax
+    jnz .storage_done
+    lea rax, [rbp - 264]
+    mov r10, [rbp - 16]
+    mov [r10 + PLAN_UPDATE_VALUE], rax
+    jmp .update_prep_done
+
+.update_varlen_empty:
+    mov qword [rbp - 264], 0
+    mov qword [rbp - 256], 0
+    lea rax, [rbp - 264]
+    mov r10, [rbp - 16]
+    mov [r10 + PLAN_UPDATE_VALUE], rax
+
+.update_prep_done:
     mov ARG1, [rbp - 8]
+    mov r10, [rbp - 16]
     mov ARG2, [r10 + PLAN_SCHEMA_PAGE]
     call db_pax_capacity
     mov [rbp - 216], rax            ; physical rows per leaf
