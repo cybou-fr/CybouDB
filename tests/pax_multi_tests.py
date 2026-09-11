@@ -491,6 +491,13 @@ with tempfile.TemporaryDirectory() as temporary:
     assert output[2:-1] == ["999"] * sum(row[0] == 999 for row in tall_v)
     check("SQL column batches scan across all three child directories")
 
+    # SQL UPDATE on two-level tree table rewrites and publishes across child directories
+    run(binary, "query", path, f"UPDATE {table} SET c0 = 77777 WHERE c0 = 0")
+    read(path, 0, [77777], [0])
+    read(path, flat_rows, [77777 if tall_v[flat_rows][0] == 0 else tall_v[flat_rows][0]], [0])
+    run(binary, "check", path)
+    check("SQL UPDATE rewrites and publishes leaves across tree directories")
+
     # The feature flag is required only when the root actually has two levels.
     legacy = bytearray(flat)
     q(legacy, 16, u64(legacy, 16) & ~128)

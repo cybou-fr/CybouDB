@@ -2228,11 +2228,12 @@ pax_append_page:
 ; deliberately narrow UPDATE-V1 primitive; later versions can copy several
 ; changed paths while retaining this publication contract.
 db_pax_update_one:
-    FRAME_BEGIN 272, 1
+    FRAME_BEGIN 336, 1
     mov [rbp - 8], ARG1             ; ctx
     mov [rbp - 16], ARG2            ; table id
     mov [rbp - 24], ARG3            ; column index
     mov [rbp - 32], ARG4            ; normalized value bits
+    mov qword [rbp - 296], 0        ; is_tree = 0
     mov rax, IN_ARG5
     mov [rbp - 40], rax             ; is_null
     mov rax, IN_ARG6
@@ -2374,7 +2375,46 @@ db_pax_update_one:
     cmp dword [rax], PAX_DIR_MAGIC
     jne .upd_direct_leaf
     cmp dword [rax + PAX_DIR_LEVEL], PAX_DIR_LEAF
+    je .upd_flat_dir
+    cmp dword [rax + PAX_DIR_LEVEL], PAX_DIR_ROOT
     jne .upd_rows
+
+    ; --- Tree directory (level 1) ---
+    mov qword [rbp - 296], 1        ; is_tree = 1
+    mov rdx, [rbp - 72]
+    mov [rbp - 88], rdx             ; old root id (non-zero directory)
+    mov rax, [rbp - 208]            ; logical leaf index
+    xor edx, edx
+    mov rcx, PAX_DIR_MAX
+    div rcx
+    mov [rbp - 272], rax            ; child_dir_idx
+    mov [rbp - 280], rdx            ; slot_idx in child dir
+    mov r10, [rbp - 80]             ; root addr
+    cmp eax, [r10 + PAX_COLUMNS]
+    jae .upd_rows
+    shl rax, 4
+    mov rax, [r10 + PAX_DIRECTORY + rax]
+    test rax, rax
+    jz .upd_rows
+    mov [rbp - 264], rax            ; old child dir id
+    mov r11, [rbp - 8]              ; ctx
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r11 + DB_BASE]
+    mov [rbp - 288], rax            ; old child dir addr
+    cmp dword [rax], PAX_DIR_MAGIC
+    jne .upd_rows
+    cmp dword [rax + PAX_DIR_LEVEL], PAX_DIR_LEAF
+    jne .upd_rows
+    mov rdx, [rbp - 280]            ; slot_idx
+    cmp edx, [rax + PAX_COLUMNS]
+    jae .upd_rows
+    shl rdx, 4
+    mov rax, [rax + PAX_DIRECTORY + rdx]
+    test rax, rax
+    jz .upd_rows
+    jmp .upd_leaf_known
+
+.upd_flat_dir:
     mov rdx, [rbp - 208]
     cmp edx, [rax + PAX_COLUMNS]
     jae .upd_rows
@@ -2391,13 +2431,14 @@ db_pax_update_one:
 .upd_leaf_known:
     mov [rbp - 96], rax             ; old leaf id
 
-    ; A flat directory records cumulative row ends. Derive the exact row count
-    ; of this leaf; the final leaf is commonly partial.
+    ; Derive the exact row count of this leaf.
     mov r10, [rbp - 64]
     mov rax, [r10 + CAT_TABLE_ROWS]
     mov [rbp - 224], rax
     cmp qword [rbp - 88], 0
     je .upd_leaf_rows_ready
+    cmp qword [rbp - 296], 0
+    jne .upd_tree_leaf_rows
     mov r10, [rbp - 80]
     mov rax, [rbp - 208]
     mov rcx, rax
@@ -2410,6 +2451,21 @@ db_pax_update_one:
     sub rdx, [r10 + PAX_DIRECTORY + rcx + 8]
 .upd_first_leaf_rows:
     mov [rbp - 224], rdx
+    jmp .upd_leaf_rows_ready
+
+.upd_tree_leaf_rows:
+    mov r10, [rbp - 288]            ; old child dir addr
+    mov rax, [rbp - 280]            ; slot_idx in child dir
+    mov rcx, rax
+    shl rax, 4
+    mov rdx, [r10 + PAX_DIRECTORY + rax + 8]
+    test rcx, rcx
+    jz .upd_tree_first_leaf_rows
+    dec rcx
+    shl rcx, 4
+    sub rdx, [r10 + PAX_DIRECTORY + rcx + 8]
+.upd_tree_first_leaf_rows:
+    mov [rbp - 224], rdx
 .upd_leaf_rows_ready:
 
     PAX_RUN_OF [rbp - 64], [rbp - 8]
@@ -2417,7 +2473,10 @@ db_pax_update_one:
     add rax, 2                      ; replacement schema + catalog root
     cmp qword [rbp - 88], 0
     je .upd_need_ready
-    inc rax                         ; copied flat directory
+    inc rax                         ; copied flat directory (or child dir in tree)
+    cmp qword [rbp - 296], 0
+    je .upd_need_ready
+    inc rax                         ; copied root directory in tree mode
 .upd_need_ready:
     mov [rbp - 112], rax
     mov ARG1, [rbp - 8]
@@ -2586,6 +2645,9 @@ db_pax_update_one:
 
     cmp qword [rbp - 88], 0
     je .upd_publish_leaf
+    cmp qword [rbp - 296], 0
+    jne .upd_publish_tree
+
     mov ARG1, [rbp - 8]
     mov ARG2, [rbp - 88]
     lea ARG3, [rbp - 160]
@@ -2615,6 +2677,65 @@ db_pax_update_one:
     mov rdx, [rbp - 160]
     mov [rbp - 176], rdx
     jmp .upd_publish
+
+.upd_publish_tree:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 264]           ; old child dir id
+    lea ARG3, [rbp - 160]
+    call db_cow_copy_page
+    test eax, eax
+    jnz .upd_done
+    mov r10, [rbp - 8]
+    mov rax, [rbp - 160]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
+    mov [rbp - 168], rax            ; new child dir addr
+    mov rdx, [rbp - 160]
+    mov [rax + PAX_PAGE_ID], rdx
+    mov rdx, [r10 + DB_GENERATION]
+    inc rdx
+    mov [rax + PAX_GENERATION], rdx
+    mov rdx, [rbp - 280]            ; slot_idx in child dir
+    shl rdx, 4
+    add rax, rdx
+    mov rdx, [rbp - 120]            ; new leaf id
+    mov [rax + PAX_DIRECTORY], rdx
+    mov ARG1, [rbp - 168]
+    mov ARG2, PAX_CRC
+    call crc32c
+    mov r10, [rbp - 168]
+    mov [r10 + PAX_CRC], eax
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 72]            ; old root id
+    lea ARG3, [rbp - 304]
+    call db_cow_copy_page
+    test eax, eax
+    jnz .upd_done
+    mov r10, [rbp - 8]
+    mov rax, [rbp - 304]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
+    mov [rbp - 312], rax            ; new root addr
+    mov rdx, [rbp - 304]
+    mov [rax + PAX_PAGE_ID], rdx
+    mov rdx, [r10 + DB_GENERATION]
+    inc rdx
+    mov [rax + PAX_GENERATION], rdx
+    mov rdx, [rbp - 272]            ; child_dir_idx
+    shl rdx, 4
+    add rax, rdx
+    mov rdx, [rbp - 160]            ; new child dir id
+    mov [rax + PAX_DIRECTORY], rdx
+    mov ARG1, [rbp - 312]
+    mov ARG2, PAX_CRC
+    call crc32c
+    mov r10, [rbp - 312]
+    mov [r10 + PAX_CRC], eax
+    mov rdx, [rbp - 304]
+    mov [rbp - 176], rdx
+    jmp .upd_publish
+
 .upd_publish_leaf:
     mov rdx, [rbp - 120]
     mov [rbp - 176], rdx
