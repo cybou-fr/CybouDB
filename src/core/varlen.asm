@@ -2,8 +2,8 @@
 %include "cyboudb.inc"
 BITS 64
 default rel
-extern db_bitmap_candidate_payload, db_bitmap_deep, db_bitmap_headroom
-extern db_cow_alloc_run, crc32c
+extern db_bitmap_alloc, db_bitmap_candidate_payload, db_bitmap_deep, db_bitmap_headroom
+extern crc32c
 global db_var_validate_chain, db_var_write_chain, db_var_materialize_batch
 global db_var_read_chain
 section .text
@@ -251,10 +251,10 @@ db_var_materialize_batch:
     ret
 
 ; db_var_write_chain(ctx, bytes, length, owner, out_descriptor) -> error code
-; Allocates one contiguous COW run, fills and seals every page, and publishes
+; Allocates individual COW pages, fills and seals every page, and publishes
 ; the descriptor to caller memory only after the complete chain exists.
 db_var_write_chain:
-    FRAME_BEGIN 112, 1
+    FRAME_BEGIN 144, 1
     mov [rbp - 8], ARG1
     mov [rbp - 16], ARG2
     mov [rbp - 24], ARG3
@@ -288,26 +288,38 @@ db_var_write_chain:
     call db_bitmap_headroom
     cmp rax, [rbp - 48]
     jb .write_full
-    mov ARG1, [rbp - 8]
-    mov ARG2, [rbp - 48]
-    lea ARG3, [rbp - 56]
-    call db_cow_alloc_run
-    test eax, eax
-    jnz .write_done
+    mov qword [rbp - 112], 0        ; previous extent address
     mov qword [rbp - 64], 0         ; page index
     mov rax, [rbp - 24]
     mov [rbp - 72], rax             ; remaining bytes
     mov rax, [rbp - 16]
     mov [rbp - 80], rax             ; source cursor
 .write_page:
-    mov rax, [rbp - 56]
-    add rax, [rbp - 64]
-    mov [rbp - 88], rax             ; current page id
-    mov r10, rax
+    mov ARG1, [rbp - 8]
+    lea ARG2, [rbp - 88]
+    call db_bitmap_alloc
+    test eax, eax
+    jnz .write_done
+    mov rax, [rbp - 88]             ; current page id
+    mov r10, [rbp - 112]
+    test r10, r10
+    jz .write_first
+    mov [r10 + VAR_NEXT], rax
+    mov ARG1, r10
+    mov ARG2, VAR_CRC
+    call crc32c
+    mov r10, [rbp - 112]
+    mov [r10 + VAR_CRC], eax
+    jmp .write_linked
+.write_first:
+    mov [rbp - 56], rax             ; first page id
+.write_linked:
+    mov r10, [rbp - 88]
     shl r10, CybouDB_PAGE_SHIFT
     mov r11, [rbp - 8]
     add r10, [r11 + DB_BASE]
     mov [rbp - 96], r10
+    mov rax, [rbp - 88]
     mov dword [r10 + VAR_MAGIC], VAR_MAGIC_VALUE
     mov dword [r10 + VAR_VERSION], VAR_VERSION_VALUE
     mov [r10 + VAR_PAGE_ID], rax
@@ -323,15 +335,6 @@ db_var_write_chain:
 .write_used_ready:
     mov [rbp - 104], rax
     mov [r10 + VAR_USED], eax
-    mov rax, [rbp - 64]
-    inc rax
-    cmp rax, [rbp - 48]
-    jae .write_final_link
-    mov rax, [rbp - 88]
-    inc rax
-    mov [r10 + VAR_NEXT], rax
-    jmp .write_copy
-.write_final_link:
     mov qword [r10 + VAR_NEXT], 0
 .write_copy:
     mov rcx, [rbp - 104]
@@ -354,6 +357,7 @@ db_var_write_chain:
     call crc32c
     mov r10, [rbp - 96]
     mov [r10 + VAR_CRC], eax
+    mov [rbp - 112], r10          ; last extent; linked when the next page arrives
     mov rax, [rbp - 104]
     sub [rbp - 72], rax
     inc qword [rbp - 64]

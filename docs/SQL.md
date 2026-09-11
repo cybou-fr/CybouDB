@@ -24,8 +24,8 @@ CREATE TABLE table_name (
   - FLOAT32: 32-bit IEEE 754 single-precision float.
   - BOOL: 1-byte boolean (TRUE / FALSE, stored as 1 / 0).
   - TEXT and BLOB have stable internal type IDs and are recognized by the
-    grammar, but CREATE TABLE rejects them until persistent variable-width
-    extents and their COW ownership rules are implemented.
+    grammar. They persist through validated extent chains for databases made
+    with `create-large`; fixed-width creators reject them.
   - SQL aliases map to the same physical types: INTEGER -> INT32,
     BIGINT -> INT64, REAL -> FLOAT32, and BOOLEAN -> BOOL.
   - VECTOR is reserved for Phase 8 syntax but is rejected in CREATE TABLE
@@ -44,11 +44,12 @@ INSERT INTO table_name VALUES (val1, val2, ...), (val1, val2, ...);
 - **Literals**:
   - Integer literals: Decimal numbers with optional unary + or -. Checked for 64-bit signed integer overflow.
   - Single-quoted TEXT literals are decoded into arena-owned byte slices;
-    doubled quotes (`''`) become one quote byte.
+    doubled quotes (`''`) become one quote byte and persist on `create-large`
+    databases.
   - Binary literals use `X'00ff'` syntax (case-insensitive `X`) and require an
     even number of hexadecimal digits. They decode into arena-owned BLOB bytes.
-    Both literal kinds currently fail fixed-width INSERT binding with a type
-    mismatch; persistence becomes active with variable-width storage.
+    Both literal kinds fail fixed-width INSERT binding with a type mismatch;
+    persistence is active with variable-width storage.
   - Float literals: `digits.digits` with optional unary `+` or `-`. At most 128
     decimal digits, counting leading/trailing zeros but excluding the dot and sign.
     Scientific notation, `.5`, `1.`, NaN and Inf literals are unsupported.

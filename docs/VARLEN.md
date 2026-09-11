@@ -2,9 +2,9 @@
 
 Status: the SQL type IDs, decoded literals, incompatible capability bit, disk
 structures, bounded chain validator, unpublished COW chain writer, descriptor
-width arithmetic, and PAX graph traversal are implemented. Database creation
-does not enable the capability yet. Publication stays gated until SQL/PAX
-insertion can atomically create descriptors and their extent chains.
+width arithmetic, PAX graph traversal, and persistent SQL/PAX insertion are
+implemented. `create-large` enables the capability; other creators retain
+their fixed-width feature set.
 
 ## Compatibility
 
@@ -86,9 +86,10 @@ capability by itself: the PAX graph walker invokes it for every live descriptor,
 including descriptors in older immutable leaves, so candidate allocation-map
 membership is never inferred from an earlier generation's validation.
 
-`db_var_write_chain` preflights the exact page count, allocates a contiguous
-COW run, writes canonical headers/payload/tails, seals every page, and only
-then returns its root/length descriptor. It does not publish a catalog edge;
+`db_var_write_chain` preflights the exact page count, allocates individual COW
+pages, links them through `VAR_NEXT`, writes canonical headers/payload/tails,
+seals every page, and only then returns its root/length descriptor. Physical
+contiguity is not required. It does not publish a catalog edge;
 that remains the responsibility of the future PAX varlen insertion path.
 
 The internal INSERT batch keeps its existing row-major u64 value slots. For a

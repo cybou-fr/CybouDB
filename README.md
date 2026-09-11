@@ -40,7 +40,7 @@ underlying CPU.
 | Paired multi-page allocation map | working; `create-large`, 63 GiB ceiling, page reclamation |
 | SQL engine: parser, binder, executor | working; pure x86-64 scalar and batch execution |
 | SQL statements | working; `CREATE TABLE`, `INSERT INTO` (multi-row), `SELECT ... WHERE`, stable single-key `ORDER BY`, `LIMIT [OFFSET]`, correctness-first `INNER JOIN`/`LEFT JOIN` on qualified INT32/INT64 equi-keys |
-| SQL types and semantics | fixed-width storage working for `INT32`, `INT64`, `FLOAT32`, `BOOL`; `TEXT`/`BLOB` type IDs and grammar reserved behind an explicit storage gate |
+| SQL types and semantics | fixed-width storage working for `INT32`, `INT64`, `FLOAT32`, `BOOL`; persistent `TEXT`/`BLOB` storage working for `create-large` databases |
 | CLI: `query` | working; executes statements, autocommits mutations, tabular output |
 | CLI: `create`, `info`, `check`, `alloc`, `free` | working |
 | Open proportional to the change, not the file | working; `cyboudb check` still reads everything |
@@ -113,10 +113,12 @@ cyboudb query demo.cyboudb "INSERT INTO users VALUES (1, 98.5, true), (2, null, 
 cyboudb query demo.cyboudb "SELECT id, score FROM users WHERE active = true AND score > 0.0"
 ```
 
-`TEXT` and `BLOB` are recognized type names, but `CREATE TABLE` rejects them
-until persistent variable-width extents are implemented. This prevents an
-unsupported schema from being published into the fixed-width PAX format.
-The versioned on-disk contract is documented in [docs/VARLEN.md](docs/VARLEN.md).
+`TEXT` and `BLOB` are persistently supported for databases created with
+`create-large`, which enables the incompatible variable-width extent
+capability. Fixed-width creators continue to reject them rather than publish
+an unsupported schema. Fixed-width scans can expose borrowed/zero-copy views;
+variable-width values are validated and copied into caller-owned buffers. The
+versioned on-disk contract is documented in [docs/VARLEN.md](docs/VARLEN.md).
 
 Output:
 
