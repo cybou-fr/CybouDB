@@ -31,6 +31,7 @@ global os_stdin_isatty, os_read_stdin
 global vfs_create_new, vfs_create_truncate, vfs_open_rw, vfs_open_ro
 global vfs_size, vfs_resize, vfs_map_rw, vfs_map_ro, vfs_unmap
 global vfs_sync, vfs_close
+global vfs_lock_writer, vfs_lock_reader, vfs_reclaim_safe
 global os_mem_alloc, os_mem_free
 
 ; --- System call numbers -----------------------------------------------------
@@ -44,6 +45,7 @@ global os_mem_alloc, os_mem_free
 %define SYS_ioctl       16
 %define SYS_msync       26
 %define SYS_fsync       74
+%define SYS_fcntl       72
 %define SYS_ftruncate   77
 %define SYS_clock_gettime 228
 %define SYS_exit_group  231
@@ -67,6 +69,10 @@ global os_mem_alloc, os_mem_free
 %define PROT_WRITE      0x2
 %define MAP_SHARED      0x1
 %define MS_SYNC         0x4
+%define F_OFD_SETLK     37
+%define F_RDLCK         0
+%define F_WRLCK         1
+%define F_UNLCK         2
 
 %define STDIN_FILENO    0
 %define STDOUT_FILENO   1
@@ -417,6 +423,63 @@ vfs_open_ro:
     syscall
     jmp     classify_open
 
+; OFD byte-range locks: byte 0 owns the single writer, byte 1 pins readers.
+; OFD locks attach to this open file description, so closing an unrelated
+; connection in the same process cannot accidentally release another's pin.
+vfs_lock_writer:
+    mov     ARG2, F_WRLCK
+    xor     ARG3, ARG3
+    jmp     ofd_lock
+
+vfs_lock_reader:
+    mov     ARG2, F_RDLCK
+    mov     ARG3, 1
+    jmp     ofd_lock
+
+; Return 1 only when byte 1 can be exclusively locked and immediately
+; released. A future reader sees the current generation, which does not reach
+; pages already retired by that generation, so only existing pins matter.
+vfs_reclaim_safe:
+    FRAME_BEGIN 16, 0
+    mov     [rbp - 8], ARG1
+    mov     ARG2, F_WRLCK
+    mov     ARG3, 1
+    call    ofd_lock
+    cmp     rax, -1
+    je      .reclaim_blocked
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, F_UNLCK
+    mov     ARG3, 1
+    call    ofd_lock
+    mov     eax, 1
+    FRAME_END
+    ret
+.reclaim_blocked:
+    xor     eax, eax
+    FRAME_END
+    ret
+
+; ofd_lock(fd, type, byte) -> 0 or -1
+ofd_lock:
+    FRAME_BEGIN 32, 0
+    mov     rax, ARG2
+    mov     word [rbp - 32], ax
+    mov     word [rbp - 30], 0          ; SEEK_SET
+    mov     [rbp - 24], ARG3            ; l_start
+    mov     qword [rbp - 16], 1         ; l_len
+    mov     dword [rbp - 8], 0          ; l_pid + padding
+    mov     rdi, ARG1
+    mov     esi, F_OFD_SETLK
+    lea     rdx, [rbp - 32]
+    mov     eax, SYS_fcntl
+    syscall
+    cmp     rax, -4096
+    jb      .ofd_done
+    mov     rax, -1
+.ofd_done:
+    FRAME_END
+    ret
+
 ; -----------------------------------------------------------------------------
 ;  classify_open - shared tail of the four calls above. RAX holds a raw
 ;  syscall result and R10 the address for the reason, or 0.
@@ -631,4 +694,3 @@ os_mem_free:
 
 ; The stack is not executable - mark the section so ld stays quiet.
 section .note.GNU-stack noalloc noexec nowrite progbits
-

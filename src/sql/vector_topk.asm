@@ -6,7 +6,8 @@ BITS 64
 default rel
 
 extern vector_cosine_normalized_f32_resolve
-global vector_topk_cosine_f32
+extern vector_l2sq_f32_resolve
+global vector_topk_cosine_f32, vector_topk_l2sq_f32
 
 section .text
 vector_topk_cosine_f32:
@@ -111,6 +112,117 @@ vector_topk_cosine_f32:
 .nonfinite:
     mov eax, VECTOR_NONFINITE
 .done:
+    mov rbx, [rbp - 8]
+    mov r12, [rbp - 16]
+    mov r13, [rbp - 24]
+    mov r14, [rbp - 32]
+    mov r15, [rbp - 40]
+    FRAME_END
+    ret
+
+; Exact streaming Top-K squared L2. Smaller distance sorts first; equal
+; distances retain ascending vector id. State and validation match cosine.
+vector_topk_l2sq_f32:
+    FRAME_BEGIN 64, 0
+    mov [rbp - 8], rbx
+    mov [rbp - 16], r12
+    mov [rbp - 24], r13
+    mov [rbp - 32], r14
+    mov [rbp - 40], r15
+    mov r12, ARG1
+    test r12, r12
+    jz .l2_invalid
+    mov qword [r12 + VTOPK_OUT_COUNT], 0
+    mov qword [r12 + VTOPK_EVAL_COUNT], 0
+    cmp qword [r12 + VTOPK_DIM], 0
+    je .l2_invalid
+    cmp qword [r12 + VTOPK_K], 0
+    je .l2_invalid
+    cmp qword [r12 + VTOPK_QUERY], 0
+    je .l2_invalid
+    cmp qword [r12 + VTOPK_VECTORS], 0
+    je .l2_invalid
+    cmp qword [r12 + VTOPK_OUT_IDS], 0
+    je .l2_invalid
+    cmp qword [r12 + VTOPK_OUT_SCORES], 0
+    je .l2_invalid
+    mov rax, [r12 + VTOPK_DIM]
+    shl rax, 2
+    cmp [r12 + VTOPK_STRIDE], rax
+    jb .l2_invalid
+    call vector_l2sq_f32_resolve
+    mov r13, rax
+    xor r14d, r14d
+    xor r15d, r15d
+.l2_candidate:
+    cmp r14, [r12 + VTOPK_COUNT]
+    jae .l2_success
+    mov rax, [r12 + VTOPK_CANDIDATES]
+    test rax, rax
+    jz .l2_evaluate
+    bt [rax], r14
+    jnc .l2_next
+.l2_evaluate:
+    mov rbx, r14
+    imul rbx, [r12 + VTOPK_STRIDE]
+    add rbx, [r12 + VTOPK_VECTORS]
+    mov ARG1, [r12 + VTOPK_QUERY]
+    mov ARG2, rbx
+    mov ARG3, [r12 + VTOPK_DIM]
+    call r13
+    inc qword [r12 + VTOPK_EVAL_COUNT]
+    ucomiss xmm0, xmm0
+    jp .l2_nonfinite
+    movss [rbp - 48], xmm0
+    xor r11d, r11d
+.l2_find:
+    cmp r11, r15
+    jae .l2_position
+    mov rax, [r12 + VTOPK_OUT_SCORES]
+    ucomiss xmm0, [rax + r11 * 4]
+    jb .l2_position
+    inc r11
+    jmp .l2_find
+.l2_position:
+    cmp r11, [r12 + VTOPK_K]
+    jae .l2_next
+    mov r10, r15
+    cmp r10, [r12 + VTOPK_K]
+    jb .l2_grow
+    dec r10
+    jmp .l2_shift
+.l2_grow:
+    inc r15
+.l2_shift:
+    cmp r10, r11
+    jbe .l2_store
+    mov rcx, [r12 + VTOPK_OUT_IDS]
+    mov rax, [rcx + r10 * 8 - 8]
+    mov [rcx + r10 * 8], rax
+    mov rcx, [r12 + VTOPK_OUT_SCORES]
+    mov eax, [rcx + r10 * 4 - 4]
+    mov [rcx + r10 * 4], eax
+    dec r10
+    jmp .l2_shift
+.l2_store:
+    mov rax, [r12 + VTOPK_OUT_IDS]
+    mov [rax + r11 * 8], r14
+    mov rax, [r12 + VTOPK_OUT_SCORES]
+    mov ecx, [rbp - 48]
+    mov [rax + r11 * 4], ecx
+.l2_next:
+    inc r14
+    jmp .l2_candidate
+.l2_success:
+    mov [r12 + VTOPK_OUT_COUNT], r15
+    xor eax, eax
+    jmp .l2_done
+.l2_invalid:
+    mov eax, VECTOR_INVALID
+    jmp .l2_done
+.l2_nonfinite:
+    mov eax, VECTOR_NONFINITE
+.l2_done:
     mov rbx, [rbp - 8]
     mov r12, [rbp - 16]
     mov r13, [rbp - 24]

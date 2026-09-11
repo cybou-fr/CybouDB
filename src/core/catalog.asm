@@ -11,6 +11,7 @@ extern db_pax_validate, db_pax_check_new
 extern db_zone_validate
 global db_catalog_validate, db_catalog_put, db_catalog_get
 global db_catalog_set_data, db_catalog_set_data_stats, db_catalog_replace_data
+global db_catalog_replace_data_stats
 section .text
 
 ; name_valid(pointer, width): nonempty ASCII identifier, NUL and zero padding.
@@ -683,6 +684,16 @@ db_catalog_set_data_stats:
 db_catalog_replace_data:
     FRAME_BEGIN 0, 1
     xor ARG4, ARG4                  ; no zone-map describes the rewritten leaf
+    mov rax, 1
+    PASS_ARG5 rax
+    call catalog_publish_data
+    FRAME_END
+    ret
+
+; db_catalog_replace_data_stats(ctx, owner, data_root, stats_root): publish an
+; exact-row replacement together with freshly recomputed zone metadata.
+db_catalog_replace_data_stats:
+    FRAME_BEGIN 0, 1
     mov rax, 1
     PASS_ARG5 rax
     call catalog_publish_data

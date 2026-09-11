@@ -1,7 +1,7 @@
 %ifndef CybouDB_VECTOR_INC
 %define CybouDB_VECTOR_INC
 
-; Input/output state for exact normalized-cosine streaming top-K.
+; Input/output state shared by exact cosine and squared-L2 streaming top-K.
 %define VTOPK_QUERY       0   ; const float *
 %define VTOPK_VECTORS     8   ; first vector byte
 %define VTOPK_COUNT      16   ; number of candidate vectors

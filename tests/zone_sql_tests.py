@@ -234,6 +234,26 @@ with tempfile.TemporaryDirectory() as temporary:
         parity(path, f"SELECT COUNT(*) FROM {TABLE} WHERE c1 = 7", [(count,)])
         check(f"{count} rows: tails, COUNT and projection-only views")
 
+    # UPDATE COW-copies the affected zone path and recomputes the target
+    # column exactly; the untouched leaf remains independently prunable.
+    seed(path, [2, 1], [0, 0], 1024,
+         command=os.environ.get("CybouDB_TEST_CREATE", "create-large"))
+    cap = capacity_of([2, 1])
+    fixture(batch, [[r, 7] for r in range(cap + 1)])
+    run(harness, path, 40, 1, 0, batch)
+    before_root = u64(path.read_bytes(), graph(path.read_bytes())[2] * P + 56)
+    assert before_root != 0
+    out = run(binary, "query", path,
+              f"UPDATE {TABLE} SET c1 = 99 WHERE c0 = 0")
+    assert b"UPDATE 1" in out, out
+    updated = path.read_bytes()
+    after_root = u64(updated, graph(updated)[2] * P + 56)
+    assert after_root != 0 and after_root != before_root
+    trace = parity(path, f"SELECT c0 FROM {TABLE} WHERE c1 > 7", [(0,)])
+    assert trace[:4] == (2, 1, 0, 1) and trace[4] > 0, trace
+    run(binary, "check", path)
+    check("UPDATE preserves zones and recomputes only the affected leaf path")
+
     # Small legacy PAX leaves let 503 leaves promote both trees with only
     # 2012 rows, covering high column bits and masks shorter than batch64.
     import pax_support

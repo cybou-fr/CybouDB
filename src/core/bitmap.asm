@@ -36,6 +36,7 @@
 %include "cyboudb.inc"
 BITS 64
 default rel
+extern vfs_reclaim_safe
 extern crc32c
 extern db_catalog_validate
 global db_bitmap_init, db_bitmap_validate, db_bitmap_seal
@@ -863,6 +864,11 @@ db_bitmap_alloc_run:
     mov     r10, [rbp - 8]
     test    qword [r10 + DB_FEATURES], CybouDB_FEATURE_MAP_SPAN
     jz      .run_full
+    mov     ARG1, [r10 + DB_HANDLE]
+    call    vfs_reclaim_safe
+    test    eax, eax
+    jz      .run_full
+    mov     r10, [rbp - 8]
     mov     ARG1, r10
     call    span_stage                  ; the map costs no page of its own
     mov     ARG1, [rbp - 8]
@@ -987,6 +993,11 @@ db_bitmap_alloc:
     jb      .span_room
     cmp     qword [r10 + DB_REUSABLE], 0
     je      .full
+    mov     ARG1, [r10 + DB_HANDLE]
+    call    vfs_reclaim_safe
+    test    eax, eax
+    jz      .full
+    mov     r10, [rbp - 8]
 .span_room:
     mov     ARG1, r10
     call    span_stage                  ; the map costs no page of its own

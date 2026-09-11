@@ -146,10 +146,18 @@ cyboudb_open:
     ret
 
 .open_fail_free:
+    mov     [rbp - 48], rax
     mov     ARG1, [rbp - 32]
     mov     ARG2, CybouDB_DB_H_SIZE
     call    os_mem_free
+    cmp     qword [rbp - 48], CybouDB_E_BUSY
+    je      .open_busy
     mov     eax, CybouDB_C_ERROR
+    FRAME_END
+    ret
+
+.open_busy:
+    mov     eax, CybouDB_C_BUSY
     FRAME_END
     ret
 

@@ -134,6 +134,7 @@ for dimensions in range(65):
     vector_case(34, vector_values[:dimensions], vector_other[:dimensions])
     vector_case(35, vector_values[:dimensions], vector_other[:dimensions])
     vector_case(33, vector_values[:dimensions], vector_other[:dimensions])
+    vector_case(36, vector_values[:dimensions], vector_other[:dimensions])
 for _ in range(256):
     dimensions = rng.randrange(65)
     left = [f32(rng.uniform(-100.0, 100.0)) for _ in range(dimensions)]
@@ -142,6 +143,7 @@ for _ in range(256):
     vector_case(34, left, right)
     vector_case(35, left, right)
     vector_case(33, left, right)
+    vector_case(36, left, right)
 
 with tempfile.TemporaryDirectory() as directory:
     fixture = Path(directory) / 'kernels.bin'

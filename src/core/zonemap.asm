@@ -18,6 +18,7 @@ global db_zone_validate
 global db_zone_check_leaf
 global db_zone_update, db_zone_lookup, db_zone_stride, db_zone_slots
 global db_zone_reserve
+global db_zone_replace_one
 
 ; The working state of one update, built on the caller's frame and passed to
 ; the helpers by address. An update touches a range of pages and at most one
@@ -1470,6 +1471,249 @@ zone_reset_leaf:
     add rdx, 8
     jmp .clear
 .done:
+    ret
+
+; zone_recompute_column(ctx, schema, leaf, column, out_stat)
+; Rebuild one exact ZSTAT from a validated, possibly compressed PAX leaf.
+zone_recompute_column:
+    FRAME_BEGIN 112, 2
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov [rbp - 32], ARG4
+    mov rax, IN_ARG5
+    mov [rbp - 40], rax
+    mov qword [rax + ZSTAT_FLAGS], 0
+    mov qword [rax + ZSTAT_MIN], 0
+    mov qword [rax + ZSTAT_MAX], 0
+    mov rax, [rbp - 32]
+    shl rax, 4
+    add rax, [rbp - 24]
+    add rax, PAX_DIRECTORY
+    mov eax, [rax]
+    mov [rbp - 48], rax            ; type
+    mov rax, [rbp - 32]
+    shl rax, 4
+    add rax, [rbp - 24]
+    add rax, PAX_DIRECTORY
+    mov edx, [rax + 4]
+    shr edx, 8
+    and edx, 0xFF
+    mov [rbp - 56], rdx            ; codec
+    mov edx, [rax + 8]
+    add rdx, [rbp - 24]
+    mov [rbp - 64], rdx            ; NULL masks
+    mov edx, [rax + 12]
+    add rdx, [rbp - 24]
+    mov [rbp - 72], rdx            ; values
+    mov rcx, 4
+    cmp qword [rbp - 48], CAT_INT64
+    jne .recompute_not_i64
+    mov rcx, 8
+.recompute_not_i64:
+    cmp qword [rbp - 48], CAT_BOOL
+    jne .recompute_width_ready
+    mov rcx, 1
+.recompute_width_ready:
+    mov [rbp - 80], rcx
+    mov qword [rbp - 88], 0
+.recompute_row:
+    mov rcx, [rbp - 88]
+    mov r10, [rbp - 24]
+    cmp ecx, [r10 + PAX_ROWS]
+    jae .recompute_done
+    mov r11, [rbp - 64]
+    bt qword [r11], rcx
+    setc al
+    movzx eax, al
+    mov [rbp - 96], rax
+    xor eax, eax
+    cmp qword [rbp - 96], 0
+    jne .recompute_merge
+    mov rdx, [rbp - 56]
+    test rdx, rdx
+    jz .recompute_raw
+    mov rax, [rbp - 48]
+    PASS_ARG5 rax
+    PASS_ARG6 rdx
+    mov ARG1, [rbp - 72]
+    mov ARG2, [rbp - 88]
+    mov ARG3, 1
+    lea ARG4, [rbp - 104]
+    call decompress_column
+    cmp qword [rbp - 48], CAT_INT64
+    je .recompute_dec8
+    cmp qword [rbp - 48], CAT_BOOL
+    je .recompute_dec1
+    mov eax, [rbp - 104]
+    cmp qword [rbp - 48], CAT_INT32
+    jne .recompute_merge
+    movsxd rax, eax
+    jmp .recompute_merge
+.recompute_dec8:
+    mov rax, [rbp - 104]
+    jmp .recompute_merge
+.recompute_dec1:
+    movzx eax, byte [rbp - 104]
+    jmp .recompute_merge
+.recompute_raw:
+    mov rax, [rbp - 88]
+    imul rax, [rbp - 80]
+    add rax, [rbp - 72]
+    cmp qword [rbp - 80], 8
+    je .recompute_read8
+    cmp qword [rbp - 80], 1
+    je .recompute_read1
+    mov eax, [rax]
+    cmp qword [rbp - 48], CAT_INT32
+    jne .recompute_merge
+    movsxd rax, eax
+    jmp .recompute_merge
+.recompute_read8:
+    mov rax, [rax]
+    jmp .recompute_merge
+.recompute_read1:
+    movzx eax, byte [rax]
+.recompute_merge:
+    mov ARG2, rax
+    mov ARG1, [rbp - 40]
+    mov ARG3, [rbp - 48]
+    mov ARG4, [rbp - 96]
+    call zone_merge
+    inc qword [rbp - 88]
+    jmp .recompute_row
+.recompute_done:
+    xor eax, eax
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+; db_zone_replace_one(ctx, schema, logical_leaf, new_leaf, column)
+;     -> EAX error, RDX replacement statistics root (zero when unavailable).
+; Copies only the zone path that owns logical_leaf and recomputes the changed
+; column exactly; every other leaf/column statistic remains byte-identical.
+db_zone_replace_one:
+    FRAME_BEGIN ZU_SIZE + 64, 1
+    lea r10, [rbp - ZU_SIZE]
+    mov [r10 + ZU_CTX], ARG1
+    mov [r10 + ZU_SCHEMA], ARG2
+    mov [r10 + ZU_LEAF_INDEX], ARG3
+    mov [rbp - ZU_SIZE - 8], ARG4
+    mov rax, IN_ARG5
+    mov [rbp - ZU_SIZE - 16], rax
+    mov r11, ARG1
+    test qword [r11 + DB_FEATURES], CybouDB_FEATURE_ZONE_MAPS
+    jz .replace_disabled
+    mov r11, ARG2
+    mov rax, [r11 + CAT_STATS_ROOT]
+    mov [r10 + ZU_OLD_ROOT], rax
+    test rax, rax
+    jz .replace_disabled
+    mov eax, [r11 + CAT_COUNT]
+    mov [r10 + ZU_COLUMNS], rax
+    mov rax, [r11 + CAT_OWNER]
+    mov [r10 + ZU_OWNER], rax
+    mov ARG1, [r10 + ZU_SCHEMA]
+    call db_zone_stride
+    lea r10, [rbp - ZU_SIZE]
+    mov [r10 + ZU_STRIDE], rax
+    mov ARG1, [r10 + ZU_SCHEMA]
+    call db_zone_slots
+    lea r10, [rbp - ZU_SIZE]
+    mov [r10 + ZU_SLOTS], rax
+    mov rcx, rax
+    mov rax, [r10 + ZU_LEAF_INDEX]
+    xor edx, edx
+    div rcx
+    mov [r10 + ZU_PAGE_INDEX], rax
+    mov [r10 + ZU_FIRST_PAGE], rax
+    mov [r10 + ZU_LAST_PAGE], rax
+    mov ARG1, [r10 + ZU_CTX]
+    mov ARG2, [r10 + ZU_SCHEMA]
+    call db_pax_capacity
+    lea r10, [rbp - ZU_SIZE]
+    mov [r10 + ZU_CAPACITY], rax
+    mov ARG1, [r10 + ZU_CTX]
+    mov ARG2, [r10 + ZU_OLD_ROOT]
+    call zone_page_addr
+    lea r10, [rbp - ZU_SIZE]
+    mov eax, [rax + ZONE_LEVEL]
+    mov [r10 + ZU_OLD_LEVEL], rax
+    mov [r10 + ZU_NEW_LEVEL], rax
+    mov qword [r10 + ZU_DIR_ADDR], 0
+    mov qword [r10 + ZU_DIR_INDEX], -1
+
+    mov rax, 1                     ; copied statistics page
+    cmp qword [r10 + ZU_NEW_LEVEL], ZONE_LEAF
+    je .replace_need_ready
+    inc rax                         ; root directory
+    cmp qword [r10 + ZU_NEW_LEVEL], ZONE_ROOT
+    jne .replace_need_ready
+    inc rax                         ; middle directory
+.replace_need_ready:
+    mov [rbp - ZU_SIZE - 24], rax
+    mov ARG1, [r10 + ZU_CTX]
+    call db_bitmap_headroom
+    cmp rax, [rbp - ZU_SIZE - 24]
+    jb .replace_full
+    lea ARG1, [rbp - ZU_SIZE]
+    call zone_new_root
+    test eax, eax
+    jnz .replace_failed
+    lea ARG1, [rbp - ZU_SIZE]
+    call zone_open_page
+    test eax, eax
+    jnz .replace_failed
+
+    lea r10, [rbp - ZU_SIZE]
+    mov rax, [r10 + ZU_PAGE_INDEX]
+    imul rax, [r10 + ZU_SLOTS]
+    mov rcx, [r10 + ZU_LEAF_INDEX]
+    sub rcx, rax
+    imul rcx, [r10 + ZU_STRIDE]
+    add rcx, [r10 + ZU_PAGE_ADDR]
+    add rcx, ZONE_DATA
+    mov rax, [rbp - ZU_SIZE - 16]
+    imul rax, ZSTAT_SIZE
+    add rcx, rax
+    PASS_ARG5 rcx
+    mov ARG1, [r10 + ZU_CTX]
+    mov ARG2, [r10 + ZU_SCHEMA]
+    mov ARG3, [rbp - ZU_SIZE - 8]
+    mov ARG4, [rbp - ZU_SIZE - 16]
+    call zone_recompute_column
+
+    lea r10, [rbp - ZU_SIZE]
+    mov ARG1, [r10 + ZU_PAGE_ADDR]
+    call zone_seal
+    lea r10, [rbp - ZU_SIZE]
+    cmp qword [r10 + ZU_DIR_ADDR], 0
+    je .replace_seal_root
+    mov ARG1, [r10 + ZU_DIR_ADDR]
+    call zone_seal
+    lea r10, [rbp - ZU_SIZE]
+.replace_seal_root:
+    cmp qword [r10 + ZU_NEW_LEVEL], ZONE_LEAF
+    je .replace_published
+    mov ARG1, [r10 + ZU_ROOT_ADDR]
+    call zone_seal
+    lea r10, [rbp - ZU_SIZE]
+.replace_published:
+    mov rdx, [r10 + ZU_NEW_ROOT]
+    xor eax, eax
+    jmp .replace_done
+.replace_disabled:
+    xor edx, edx
+    xor eax, eax
+    jmp .replace_done
+.replace_full:
+    mov eax, CybouDB_E_FULL
+    xor edx, edx
+    jmp .replace_done
+.replace_failed:
+    xor edx, edx
+.replace_done:
+    FRAME_END
     ret
 
 ; -----------------------------------------------------------------------------

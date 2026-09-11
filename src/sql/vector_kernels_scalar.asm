@@ -10,9 +10,10 @@ default rel
 extern cpu_has_avx2
 extern sql_kernel_force_scalar
 global vector_dot_f32_scalar, vector_l2sq_f32_scalar, vector_dot_f32_resolve
+global vector_l2sq_f32_resolve
 global vector_cosine_normalized_f32_scalar, vector_cosine_normalized_f32_resolve
-global vector_normalize_f32_scalar
-extern vector_dot_f32_avx2
+global vector_normalize_f32_scalar, vector_normalize_f32_resolve
+extern vector_dot_f32_avx2, vector_l2sq_f32_avx2, vector_normalize_f32_avx2
 
 section .text
 vector_dot_f32_resolve:
@@ -31,6 +32,42 @@ vector_dot_f32_resolve:
     ret
 .scalar:
     lea rax, [rel vector_dot_f32_scalar]
+    ret
+
+vector_l2sq_f32_resolve:
+    cmp dword [sql_kernel_force_scalar], 0
+    jne .l2_scalar
+    FRAME_BEGIN 0, 0
+    call cpu_has_avx2
+    test eax, eax
+    jz .l2_scalar_framed
+    lea rax, [rel vector_l2sq_f32_avx2]
+    FRAME_END
+    ret
+.l2_scalar_framed:
+    lea rax, [rel vector_l2sq_f32_scalar]
+    FRAME_END
+    ret
+.l2_scalar:
+    lea rax, [rel vector_l2sq_f32_scalar]
+    ret
+
+vector_normalize_f32_resolve:
+    cmp dword [sql_kernel_force_scalar], 0
+    jne .normalize_scalar
+    FRAME_BEGIN 0, 0
+    call cpu_has_avx2
+    test eax, eax
+    jz .normalize_scalar_framed
+    lea rax, [rel vector_normalize_f32_avx2]
+    FRAME_END
+    ret
+.normalize_scalar_framed:
+    lea rax, [rel vector_normalize_f32_scalar]
+    FRAME_END
+    ret
+.normalize_scalar:
+    lea rax, [rel vector_normalize_f32_scalar]
     ret
 
 ; Normalized cosine is definitionally the dot product. Keep named entry points

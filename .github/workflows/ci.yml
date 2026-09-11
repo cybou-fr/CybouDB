@@ -44,6 +44,7 @@ jobs:
           python3 tests/zone_tests.py ./cyboudb ./build/cow_harness
           python3 tests/zone_validation_tests.py ./cyboudb ./build/cow_harness
           python3 tests/span_tests.py ./cyboudb ./build/cow_harness
+          python3 tests/concurrency_tests.py ./cyboudb ./build/cow_harness
           python3 tests/sql_numeric_tests.py ./cyboudb ./build/cow_harness
           sh build.sh --sql-tests
           python3 tests/zone_sql_tests.py ./cyboudb ./build/cow_harness ./build/sql_harness
@@ -134,6 +135,7 @@ jobs:
           python tests/zone_tests.py ./cyboudb.exe ./build/cow_harness.exe
           python tests/zone_validation_tests.py ./cyboudb.exe ./build/cow_harness.exe
           python tests/span_tests.py ./cyboudb.exe ./build/cow_harness.exe
+          python tests/concurrency_tests.py ./cyboudb.exe ./build/cow_harness.exe
           python tests/sql_numeric_tests.py ./cyboudb.exe ./build/cow_harness.exe
           python tests/sql_api_tests.py ./cyboudb.exe ./build/sql_harness.exe
           python tests/zone_sql_tests.py ./cyboudb.exe ./build/cow_harness.exe ./build/sql_harness.exe

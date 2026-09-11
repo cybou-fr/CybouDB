@@ -3,8 +3,9 @@
 BITS 64
 default rel
 extern crc32c, db_catalog_get, db_catalog_set_data, db_catalog_set_data_stats
-extern db_catalog_replace_data
+extern db_catalog_replace_data, db_catalog_replace_data_stats
 extern db_zone_update, db_zone_reserve
+extern db_zone_replace_one
 extern db_bitmap_candidate_payload, db_bitmap_headroom, db_bitmap_deep
 extern db_cow_alloc_page, db_cow_copy_page
 extern db_cow_alloc_run, db_cow_copy_run
@@ -2227,7 +2228,7 @@ pax_append_page:
 ; deliberately narrow UPDATE-V1 primitive; later versions can copy several
 ; changed paths while retaining this publication contract.
 db_pax_update_one:
-    FRAME_BEGIN 256, 1
+    FRAME_BEGIN 272, 1
     mov [rbp - 8], ARG1             ; ctx
     mov [rbp - 16], ARG2            ; table id
     mov [rbp - 24], ARG3            ; column index
@@ -2572,6 +2573,17 @@ db_pax_update_one:
     mov ARG2, [rbp - 104]
     call pax_seal_leaf
 
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 64]
+    mov ARG3, [rbp - 208]
+    mov ARG4, [rbp - 128]
+    mov rax, [rbp - 24]
+    PASS_ARG5 rax
+    call db_zone_replace_one
+    test eax, eax
+    jnz .upd_done
+    mov [rbp - 256], rdx            ; exact replacement statistics root
+
     cmp qword [rbp - 88], 0
     je .upd_publish_leaf
     mov ARG1, [rbp - 8]
@@ -2610,7 +2622,8 @@ db_pax_update_one:
     mov ARG1, [rbp - 8]
     mov ARG2, [rbp - 16]
     mov ARG3, [rbp - 176]
-    call db_catalog_replace_data
+    mov ARG4, [rbp - 256]
+    call db_catalog_replace_data_stats
     jmp .upd_done
 .upd_success:
     xor eax, eax

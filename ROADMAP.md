@@ -185,7 +185,11 @@ cyboudb query demo.cdb "SELECT id, score FROM runs WHERE score > 90"
 * [x] COW executor for flat multi-leaf, fixed-width `UPDATE`
 * [x] coalesce all 64-row predicate spans per leaf into one COW rewrite
 * [x] UPDATE recovery tests for ENOSPC, both commit barriers and torn publication
+* [x] COW-copy and exactly recompute the affected zone-map column/leaf on UPDATE
 * [ ] tree-directory and TEXT/BLOB `UPDATE`
+* [x] process-level single-writer lock with concurrent read-only opens
+* [x] lifetime reader pins and a reclamation barrier for retired pages
+* [x] concurrent snapshot/reclamation stress test across repeated generations
 * [x] a type system, and a decision on NULL semantics written down before it
       is implemented
 * [x] binder: resolve names against the catalog, report unknown ones by
@@ -370,6 +374,9 @@ reference the vector kernels are checked against.
 * [x] AVX2 scan kernels (`src/sql/kernels_avx2.asm`: INT32, INT64, FLOAT32, BOOL; 256-bit YMM, signaling NaN-safe integer key classification)
 * [x] BMI2 primitives (`src/sql/bmi2.asm`: `pext`, `pdep`, `bzhi`, fast NULL mask compaction; `tzcnt` row dispatch, dynamic CPUID detection and bit-for-bit scalar fallbacks)
 * [ ] FMA3 vector operations
+* [x] runtime-dispatched AVX2 squared-L2 kernel with scalar parity
+* [x] atomic in-place AVX2 FLOAT32 normalization with scalar parity
+* [x] allocation-free streaming Top-K squared L2 with candidate pruning
 * [x] hardware CRC-32C, validated against the scalar reference (`src/core/checksum.asm`: SSE4.2 `crc32` qword unrolled loop with dynamic CPUID detection and bit-for-bit scalar validation)
 * [ ] AVX-512 experimental kernels
 * [x] reproducible benchmarks (in-process comparative harness across SQLite,

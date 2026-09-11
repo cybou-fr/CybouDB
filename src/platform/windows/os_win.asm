@@ -43,6 +43,8 @@ extern WideCharToMultiByte
 extern GetConsoleMode
 extern ReadConsoleW
 extern ReadFile
+extern LockFileEx
+extern UnlockFileEx
 
 %ifndef CybouDB_LIBRARY
 extern cyboudb_main
@@ -56,6 +58,7 @@ global os_stdin_isatty, os_read_stdin, os_read_console
 global vfs_create_new, vfs_create_truncate, vfs_open_rw, vfs_open_ro
 global vfs_size, vfs_resize, vfs_map_rw, vfs_map_ro, vfs_unmap
 global vfs_sync, vfs_close
+global vfs_lock_writer, vfs_lock_reader, vfs_reclaim_safe
 global os_mem_alloc, os_mem_free, os_utf8_to_wide
 
 ; --- Win32 constants ---------------------------------------------------------
@@ -75,11 +78,14 @@ global os_mem_alloc, os_mem_free, os_utf8_to_wide
 %define PAGE_READWRITE         4
 %define FILE_MAP_READ          4
 %define FILE_MAP_RW            6            ; FILE_MAP_READ | FILE_MAP_WRITE
+%define LOCKFILE_FAIL_IMMEDIATELY 1
+%define LOCKFILE_EXCLUSIVE_LOCK  2
 
 ; --- Win32 error codes we tell apart -----------------------------------------
 %define ERROR_FILE_NOT_FOUND   2
 %define ERROR_PATH_NOT_FOUND   3
 %define ERROR_ACCESS_DENIED    5
+%define ERROR_SHARING_VIOLATION 32
 %define ERROR_FILE_EXISTS      80
 %define ERROR_ALREADY_EXISTS   183
 
@@ -674,6 +680,68 @@ vfs_open_ro:
     FRAME_END
     ret
 
+; CreateFileW already enforces single-writer ownership: writable handles share
+; reads but not writes. Keep the common core contract explicit on Windows.
+vfs_lock_writer:
+    xor     eax, eax
+    ret
+
+; Shared lifetime lock on byte 1 pins the generation selected by db_open.
+vfs_lock_reader:
+    FRAME_BEGIN 32, 2
+    mov     qword [rbp - 32], 0
+    mov     qword [rbp - 24], 0
+    mov     qword [rbp - 16], 1         ; OVERLAPPED.Offset
+    mov     qword [rbp - 8], 0
+    mov     edx, LOCKFILE_FAIL_IMMEDIATELY
+    xor     r8d, r8d
+    mov     r9d, 1
+    mov     qword STKARG(0), 0
+    lea     rax, [rbp - 32]
+    mov     STKARG(1), rax
+    call    LockFileEx
+    test    eax, eax
+    jnz     .reader_locked
+    mov     rax, -1
+    FRAME_END
+    ret
+.reader_locked:
+    xor     eax, eax
+    FRAME_END
+    ret
+
+; Brief exclusive byte-1 lock detects existing snapshot readers.
+vfs_reclaim_safe:
+    FRAME_BEGIN 48, 2
+    mov     [rbp - 40], ARG1
+    mov     qword [rbp - 32], 0
+    mov     qword [rbp - 24], 0
+    mov     qword [rbp - 16], 1
+    mov     qword [rbp - 8], 0
+    mov     edx, LOCKFILE_FAIL_IMMEDIATELY | LOCKFILE_EXCLUSIVE_LOCK
+    xor     r8d, r8d
+    mov     r9d, 1
+    mov     qword STKARG(0), 0
+    lea     rax, [rbp - 32]
+    mov     STKARG(1), rax
+    call    LockFileEx
+    test    eax, eax
+    jz      .reclaim_blocked
+    mov     rcx, [rbp - 40]
+    xor     edx, edx
+    mov     r8d, 1
+    xor     r9d, r9d
+    lea     rax, [rbp - 32]
+    mov     STKARG(0), rax
+    call    UnlockFileEx
+    mov     eax, 1
+    FRAME_END
+    ret
+.reclaim_blocked:
+    xor     eax, eax
+    FRAME_END
+    ret
+
 ; -----------------------------------------------------------------------------
 ;  classify_open(ARG1 = CreateFileW result, ARG2 = reason slot or 0)
 ;      -> RAX: the handle, or -1
@@ -715,6 +783,8 @@ classify_open:
     je      .noent
     cmp     eax, ERROR_ACCESS_DENIED
     je      .access
+    cmp     eax, ERROR_SHARING_VIOLATION
+    je      .busy
     cmp     eax, ERROR_FILE_EXISTS
     je      .exists
     cmp     eax, ERROR_ALREADY_EXISTS
@@ -728,6 +798,9 @@ classify_open:
     jmp     .store
 .exists:
     mov     edx, CybouDB_OSERR_EXISTS
+    jmp     .store
+.busy:
+    mov     edx, CybouDB_OSERR_BUSY
 .store:
     mov     [r11], rdx
 .give_up:
@@ -958,4 +1031,3 @@ os_utf8_to_wide:
     call    MultiByteToWideChar
     FRAME_END
     ret
-

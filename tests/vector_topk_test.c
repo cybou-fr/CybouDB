@@ -14,7 +14,10 @@ typedef struct {
 } vector_topk_state;
 
 extern int vector_topk_cosine_f32(vector_topk_state *);
+extern int vector_topk_l2sq_f32(vector_topk_state *);
 extern int vector_normalize_f32_scalar(const float *, float *, uint64_t);
+extern void *vector_normalize_f32_resolve(void);
+typedef int (*normalize_fn)(const float *, float *, uint64_t);
 typedef struct {
     float *base;
     uint64_t capacity, used, dim, stride, count;
@@ -100,10 +103,52 @@ int main(void) {
         CHECK(vector_normalize_f32_scalar(NULL, output, 2) == -1);
         CHECK(vector_normalize_f32_scalar(output, NULL, 2) == -1);
         CHECK(vector_normalize_f32_scalar(output, output, 0) == -1);
+        {
+            float source[9] = {3, 4, 0, -5, 12, 1, 2, 3, 4};
+            float scalar[9], automatic[9];
+            CHECK(vector_normalize_f32_scalar(source, scalar, 9) == 0);
+            sql_kernel_force_scalar = 0;
+            normalize_fn normalize = (normalize_fn)vector_normalize_f32_resolve();
+            CHECK(normalize(source, automatic, 9) == 0);
+            CHECK(memcmp(scalar, automatic, sizeof(scalar)) == 0);
+            for (int i = 0; i < 9; i++) automatic[i] = 17.0f;
+            {
+                float zero9[9] = {0};
+                CHECK(normalize(zero9, automatic, 9) == -1);
+                for (int i = 0; i < 9; i++) CHECK(automatic[i] == 17.0f);
+                zero9[8] = nan.f;
+                CHECK(normalize(zero9, automatic, 9) == -2);
+                for (int i = 0; i < 9; i++) CHECK(automatic[i] == 17.0f);
+            }
+            CHECK(normalize(source, source, 9) == 0);
+            CHECK(memcmp(scalar, source, sizeof(scalar)) == 0);
+        }
     }
     for (uint64_t k = 1; k <= 8; k++) {
         CHECK(run_case(1, k) == 0);
         CHECK(run_case(0, k) == 0);
+    }
+    {
+        static const float query[2] = {0.0f, 0.0f};
+        static const float vectors[6][2] = {
+            {3, 4}, {1, 0}, {-1, 0}, {0, 0}, {1, 0}, {2, 0}
+        };
+        uint64_t ids[4];
+        float distances[4];
+        vector_topk_state l2 = {query, &vectors[0][0], 6, 2, 4, 8,
+                                ids, distances, 0, NULL, 0};
+        CHECK(vector_topk_l2sq_f32(&l2) == 0);
+        CHECK(l2.out_count == 4 && l2.eval_count == 6);
+        CHECK(ids[0] == 3 && ids[1] == 1 && ids[2] == 2 && ids[3] == 4);
+        CHECK(distances[0] == 0.0f && distances[1] == 1.0f &&
+              distances[2] == 1.0f && distances[3] == 1.0f);
+        {
+            uint64_t candidates = (1ull << 0) | (1ull << 5);
+            l2.k = 2; l2.candidates = &candidates;
+            CHECK(vector_topk_l2sq_f32(&l2) == 0);
+            CHECK(l2.eval_count == 2 && ids[0] == 5 && ids[1] == 0);
+            CHECK(distances[0] == 4.0f && distances[1] == 25.0f);
+        }
     }
     {
         float query[1] = {1.0f}, vectors[1] = {1.0f}, score[1];

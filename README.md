@@ -319,6 +319,7 @@ Built with `--core-tests` (`build/cow_harness`):
 * `tests/zone_sql_tests.py`: SQL zone ON/OFF parity, FLOAT32 and 3VL semantics, and per-leaf pruning counters.
 * `tests/pax_tests.py`: Single-page PAX layout, NULL masks, and boundary limits.
 * `tests/pax_multi_tests.py`: Multi-page directory traversal, two-level trees, and cross-page batches.
+* `tests/concurrency_tests.py`: Single-writer exclusion, read-only coexistence, and reader-pinned reclamation.
 * `tests/span_tests.py`: Paired span maps, 63 GiB scaling, and page recycling.
 * `tests/sql_numeric_tests.py`: IEEE 754 floats, signed zeros, subnormals,
   infinities, and 3VL NaN predicate evaluation.

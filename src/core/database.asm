@@ -43,6 +43,7 @@ default rel
 extern vfs_create_new, vfs_create_truncate, vfs_open_ro, vfs_open_rw
 extern vfs_size, vfs_resize, vfs_map_rw, vfs_map_ro, vfs_unmap
 extern vfs_sync, vfs_close
+extern vfs_lock_writer, vfs_lock_reader
 %ifdef CybouDB_TEST_COMMIT_HOOK
 extern test_commit_hook
 %endif
@@ -307,6 +308,8 @@ oserr_to_code:
     je      .access
     cmp     ARG1, CybouDB_OSERR_EXISTS
     je      .exists
+    cmp     ARG1, CybouDB_OSERR_BUSY
+    je      .busy
     ret
 .noent:
     mov     eax, CybouDB_E_NOENT
@@ -316,6 +319,9 @@ oserr_to_code:
     ret
 .exists:
     mov     eax, CybouDB_E_EXISTS
+    ret
+.busy:
+    mov     eax, CybouDB_E_BUSY
     ret
 
 ; -----------------------------------------------------------------------------
@@ -469,8 +475,21 @@ db_open:
     je      .e_open
     mov     r10, [rbp - 16]
     mov     [r10 + DB_HANDLE], rax
-
+    cmp     qword [rbp - 88], 0
+    je      .lock_reader
     mov     ARG1, rax
+    call    vfs_lock_writer
+    cmp     rax, -1
+    je      .e_busy_close
+    jmp     .writer_lock_ready
+.lock_reader:
+    mov     ARG1, rax
+    call    vfs_lock_reader
+    cmp     rax, -1
+    je      .e_busy_close
+.writer_lock_ready:
+    mov     r10, [rbp - 16]
+    mov     ARG1, [r10 + DB_HANDLE]
     call    vfs_size
     cmp     rax, -1
     je      .e_size
@@ -786,6 +805,15 @@ db_open:
     mov     ARG1, [rbp - 96]            ; say what the OS actually objected to
     mov     ARG2, CybouDB_E_OPEN
     call    oserr_to_code
+    FRAME_END
+    ret
+.e_busy_close:
+    mov     r10, [rbp - 16]
+    mov     ARG1, [r10 + DB_HANDLE]
+    call    vfs_close
+    mov     r10, [rbp - 16]
+    mov     qword [r10 + DB_HANDLE], -1
+    mov     eax, CybouDB_E_BUSY
     FRAME_END
     ret
 

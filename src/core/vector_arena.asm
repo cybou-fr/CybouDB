@@ -4,7 +4,7 @@
 BITS 64
 default rel
 
-extern vector_normalize_f32_scalar
+extern vector_normalize_f32_resolve
 global vector_arena_init, vector_arena_append, vector_arena_get
 
 section .text
@@ -56,11 +56,14 @@ vector_arena_append:
     jc .append_full
     cmp rax, [r12 + VARENA_CAPACITY]
     ja .append_full
+    mov [rbp - 32], rcx
+    call vector_normalize_f32_resolve
+    mov r10, rax
     mov ARG2, [r12 + VARENA_BASE]
-    add ARG2, rcx
+    add ARG2, [rbp - 32]
     mov ARG1, r13
     mov ARG3, [r12 + VARENA_DIM]
-    call vector_normalize_f32_scalar
+    call r10
     test eax, eax
     jnz .append_done
     mov rax, [r12 + VARENA_COUNT]

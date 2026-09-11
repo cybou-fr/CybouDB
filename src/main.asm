@@ -169,6 +169,7 @@ e_catalog_full:  db "error: catalog directory is full", 10, 0
 e_rows: db "error: row count or index exceeds table capacity", 10, 0
 e_pax: db "error: invalid PAX data page", 10, 0
 e_value: db "error: invalid value or NULL for column type", 10, 0
+e_busy: db "error: database is locked by another writer", 10, 0
 
     align 8
 err_table:
@@ -178,7 +179,7 @@ err_table:
     dq e_noent, e_access, e_state, e_generation
     dq e_bitmap, e_cow_pages
     dq e_catalog, e_schema, e_notfound, e_catalog_full
-    dq e_rows, e_pax, e_value
+    dq e_rows, e_pax, e_value, e_busy
 
 err_no_pax_cli:  db "error: database does not support PAX tables (create with create-pax-multi)", 10, 0
 msg_sql_table_created: db "Table created.", 10, 0

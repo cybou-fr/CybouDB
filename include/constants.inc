@@ -49,7 +49,8 @@
 %define CybouDB_E_ROWS       30            ; invalid batch count or row index
 %define CybouDB_E_PAX        31            ; invalid PAX data page
 %define CybouDB_E_VALUE      32            ; invalid scalar value or NULL constraint
-%define CybouDB_E_COUNT      33            ; size of the message table
+%define CybouDB_E_BUSY       33            ; another writer owns the database
+%define CybouDB_E_COUNT      34            ; size of the message table
 
 ; --- Why an operating system call failed -------------------------------------
 ;  The platform layer translates its native error - errno on Linux, the Win32
@@ -64,6 +65,7 @@
 %define CybouDB_OSERR_ACCESS 2             ; permission denied
 %define CybouDB_OSERR_EXISTS 3             ; the path is already taken
 %define CybouDB_OSERR_OTHER  4
+%define CybouDB_OSERR_BUSY   5             ; sharing/advisory writer lock conflict
 
 ; --- Process exit codes ------------------------------------------------------
 %define EXIT_OK           0

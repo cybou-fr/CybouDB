@@ -11,6 +11,7 @@ extern for8_eq, for8_ne, for8_lt, for8_le, for8_gt, for8_ge
 extern for16_eq, for16_ne, for16_lt, for16_le, for16_gt, for16_ge
 extern vector_dot_f32_scalar, vector_l2sq_f32_scalar
 extern vector_dot_f32_resolve
+extern vector_l2sq_f32_resolve
 extern vector_cosine_normalized_f32_resolve
 extern os_mem_alloc, os_mem_free
 %ifdef CybouDB_WINDOWS
@@ -84,6 +85,8 @@ cyboudb_main:
     je .vector_dot_auto
     cmp qword [r10], 35
     je .vector_cosine_auto
+    cmp qword [r10], 36
+    je .vector_l2_auto
     cmp qword [r10], 8
     je .resolve_for8
     cmp qword [r10], 16
@@ -182,6 +185,9 @@ cyboudb_main:
     jmp .vector_result
 .vector_dot_auto:
     call vector_dot_f32_resolve
+    jmp .vector_auto_ready
+.vector_l2_auto:
+    call vector_l2sq_f32_resolve
     jmp .vector_auto_ready
 .vector_cosine_auto:
     call vector_cosine_normalized_f32_resolve
