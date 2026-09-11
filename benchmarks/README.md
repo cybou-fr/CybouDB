@@ -1,5 +1,17 @@
 # Benchmarks
 
+For deterministic vector exact-search measurements:
+
+```sh
+sh build.sh --vector-bench          # Windows: build.bat --vector-bench
+./build/vector_search_bench 20000 128 10 3
+```
+
+The fixture uses a fixed PRNG seed and prints order-sensitive result checksums
+alongside scalar and runtime-dispatched cosine/L2 throughput. It exits with an
+error if the rankings differ. Input generation and normalization are outside
+the timed region.
+
 ```sh
 sh build.sh --bench          # Windows: build.bat --bench
 python3 benchmarks/run_benchmarks.py ./cyboudb ./build/bench_harness

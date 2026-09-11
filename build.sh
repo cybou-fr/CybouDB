@@ -80,7 +80,7 @@ if [ "${1:-}" = "--duckdb-bench" ]; then
     exit 0
 fi
 
-if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api-bench" ] || [ "${1:-}" = "--for-experiment" ]; then
+if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api-bench" ] || [ "${1:-}" = "--vector-bench" ] || [ "${1:-}" = "--for-experiment" ]; then
     mkdir -p build/lib
     LIB_SOURCES="src/api/cyboudb_c.asm ${SOURCES#src/main.asm }"
     TEST_DEFS=""
@@ -110,6 +110,12 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         CC=gcc
         command -v gcc >/dev/null 2>&1 || CC=clang
         "$CC" -O2 -no-pie -Wall -Iinclude benchmarks/c_api_harness.c build/libcyboudb.a -o build/c_api_harness
+    fi
+    if [ "${1:-}" = "--vector-bench" ]; then
+        CC=gcc
+        command -v gcc >/dev/null 2>&1 || CC=clang
+        "$CC" -O2 -no-pie -Wall benchmarks/vector_search_bench.c build/libcyboudb.a -o build/vector_search_bench
+        echo "Build OK -> build/vector_search_bench"
     fi
     if [ "${1:-}" = "--for-experiment" ]; then
         CC=gcc

@@ -460,7 +460,7 @@ sorting. JOIN ordering and pull-style C stepping remain explicitly gated.
 * [x] normalized cosine similarity
 * [x] deterministic filtered streaming top-k
 * [x] runtime exact vector search over contiguous candidates
-* [ ] reproducible benchmarks
+* [x] reproducible exact-search benchmarks with fixed input generation and result checksums
 
 ---
 

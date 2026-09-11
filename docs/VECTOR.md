@@ -77,3 +77,16 @@ succeeds. Invalid or non-finite vectors therefore leave the arena unchanged.
 Capacity exhaustion returns `VECTOR_FULL`, and address arithmetic is checked
 before writing. The later persistent extent layer can map file extents into
 this same contract without placing vector payloads inside PAX pages.
+
+## Reproducible benchmark
+
+`build.sh --vector-bench` (or `build.bat --vector-bench`) builds
+`build/vector_search_bench`. It generates normalized vectors from a fixed
+xorshift seed and reports scalar and runtime-dispatched throughput for cosine
+and squared L2 exact search. Each row includes an order-sensitive result-id
+checksum, and the process fails if scalar and dispatched rankings differ.
+
+The optional arguments are `count dimensions k iterations`; defaults are
+`20000 128 10 3`. Generation and normalization happen before timing. Reported
+throughput therefore measures the allocation-free Top-K scan, not fixture
+construction.

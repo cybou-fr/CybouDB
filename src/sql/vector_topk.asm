@@ -173,6 +173,10 @@ vector_topk_l2sq_f32:
     inc qword [r12 + VTOPK_EVAL_COUNT]
     ucomiss xmm0, xmm0
     jp .l2_nonfinite
+    movd eax, xmm0
+    and eax, 0x7f800000
+    cmp eax, 0x7f800000
+    je .l2_nonfinite
     movss [rbp - 48], xmm0
     xor r11d, r11d
 .l2_find:

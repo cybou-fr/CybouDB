@@ -58,6 +58,8 @@ int main(void) {
     memset(&bad, 0, sizeof(bad));
     CHECK(vector_topk_cosine_f32(NULL) == -1);
     CHECK(vector_topk_cosine_f32(&bad) == -1);
+    CHECK(vector_topk_l2sq_f32(NULL) == -1);
+    CHECK(vector_topk_l2sq_f32(&bad) == -1);
     {
         float storage[6] = {0};
         float a[2] = {3.0f, 4.0f}, b[2] = {0.0f, 2.0f};
@@ -137,17 +139,27 @@ int main(void) {
         float distances[4];
         vector_topk_state l2 = {query, &vectors[0][0], 6, 2, 4, 8,
                                 ids, distances, 0, NULL, 0};
-        CHECK(vector_topk_l2sq_f32(&l2) == 0);
-        CHECK(l2.out_count == 4 && l2.eval_count == 6);
-        CHECK(ids[0] == 3 && ids[1] == 1 && ids[2] == 2 && ids[3] == 4);
-        CHECK(distances[0] == 0.0f && distances[1] == 1.0f &&
-              distances[2] == 1.0f && distances[3] == 1.0f);
+        for (int scalar = 1; scalar >= 0; scalar--) {
+            sql_kernel_force_scalar = scalar;
+            CHECK(vector_topk_l2sq_f32(&l2) == 0);
+            CHECK(l2.out_count == 4 && l2.eval_count == 6);
+            CHECK(ids[0] == 3 && ids[1] == 1 && ids[2] == 2 && ids[3] == 4);
+            CHECK(distances[0] == 0.0f && distances[1] == 1.0f &&
+                  distances[2] == 1.0f && distances[3] == 1.0f);
+        }
         {
             uint64_t candidates = (1ull << 0) | (1ull << 5);
             l2.k = 2; l2.candidates = &candidates;
             CHECK(vector_topk_l2sq_f32(&l2) == 0);
             CHECK(l2.eval_count == 2 && ids[0] == 5 && ids[1] == 0);
             CHECK(distances[0] == 4.0f && distances[1] == 25.0f);
+        }
+        {
+            static const float huge[2] = {3.4028234e38f, 0.0f};
+            l2.vectors = huge; l2.count = 1; l2.k = 1; l2.candidates = NULL;
+            l2.out_count = 99; l2.eval_count = 99;
+            CHECK(vector_topk_l2sq_f32(&l2) == -2);
+            CHECK(l2.out_count == 0 && l2.eval_count == 1);
         }
     }
     {
