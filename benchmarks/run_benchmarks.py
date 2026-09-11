@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Legacy single-level scan and layout benchmarks for the batch executor.
 
 Run: python benchmarks/run_benchmarks.py [cyboudb] [bench_harness]
@@ -104,7 +104,7 @@ def fill(database, table, columns, cell):
 
 def build(directory, name, tables):
     """Create a fresh database holding exactly `tables`, in that order."""
-    database = directory / f"{name}.cyboudb"
+    database = directory / f"{name}.cdb"
     run(BINARY, "create-pax-multi", database, PAGES, "--force")
     return database, {table: fill(database, table, columns, cell)
                       for table, columns, cell in tables}

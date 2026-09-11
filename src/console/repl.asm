@@ -1,17 +1,17 @@
-; =============================================================================
+﻿; =============================================================================
 ;  src/console/repl.asm - CybouDB Interactive Console and Batch REPL
 ; =============================================================================
 ;  Phase 4: Interactive console and piped batch execution.
 ;
 ;  Features:
 ;    - Interactive input from terminal (Windows ReadConsoleW, Linux stdin)
-;    - Stream reading for redirected pipes (cat script.sql | cyboudb db.cyboudb)
+;    - Stream reading for redirected pipes (cat script.sql | cyboudb db.cdb)
 ;    - Multiline SQL statement accumulation until terminating semicolon ';'
 ;    - Multiple statements per line support
 ;    - Trailing statement execution on EOF
 ;    - Meta-commands: .tables, .schema [TABLE], .info, .help, .quit / .exit
 ;    - Clean error reporting without terminating the interactive session
-;    - Autocommit after mutating statements (CREATE TABLE, INSERT INTO)
+;    - Autocommit after mutating statements (CREATE TABLE, INSERT INTO, UPDATE)
 ; =============================================================================
 
 %include "cyboudb.inc"

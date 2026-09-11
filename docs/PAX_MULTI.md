@@ -1,4 +1,4 @@
-# Multi-page PAX tables
+﻿# Multi-page PAX tables
 
 Status: a bounded data-page directory, cross-page batch insertion, scalar row
 lookup and a scan cursor are implemented. `cyboudb query` drives all of it
@@ -9,8 +9,8 @@ materialising only the columns the plan asks for.
 ## Creation and compatibility
 
 ```sh
-cyboudb create-pax-multi demo.cyboudb 512
-cyboudb info demo.cyboudb
+cyboudb create-pax-multi demo.cdb 512
+cyboudb info demo.cdb
 ```
 
 The immutable incompatible flags are `0x1E`: COW `0x2`, catalog `0x4`, PAX

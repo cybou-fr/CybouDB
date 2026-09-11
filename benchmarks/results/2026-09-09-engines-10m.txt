@@ -1,6 +1,6 @@
-======================================================================================================================
+﻿======================================================================================================================
 Cross-engine benchmark - events table, 7 columns, 10,000,000 rows
-  CybouDB   file:    422.6 MB  events_10000000.cyboudb
+  CybouDB   file:    422.6 MB  events_10000000.cdb
   SQLite file:    322.8 MB  events_10000000.sqlite
   DuckDB file:     44.3 MB  events_10000000.duckdb
   DuckDB C API: C:\Users\cybou\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\_duckdb.cp312-win_amd64.pyd

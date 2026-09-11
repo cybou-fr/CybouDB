@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Deterministic benchmark datasets, and the seeding of one per engine.
 
 Two datasets are defined, because a single one answers only half the question:
@@ -155,7 +155,7 @@ def metadata(dataset, rows):
 def db_paths(db_dir, dataset, rows):
     stem = f"events_{rows}" if dataset == "structured" else f"events_{dataset}_{rows}"
     return {
-        "cyboudb": db_dir / f"{stem}.cyboudb",
+        "cyboudb": db_dir / f"{stem}.cdb",
         "sqlite": db_dir / f"{stem}.sqlite",
         "duckdb": db_dir / f"{stem}.duckdb",
         "meta": db_dir / f"{stem}.json",
@@ -387,7 +387,7 @@ if __name__ == "__main__":
                         default=ROOT / "build" / f"bench_harness{EXE}")
     args = parser.parse_args()
 
-    paths, _ = ensure(args.db_dir, args.dataset, args.rows, args.cyboudb, args.bench_harness)
+    paths, _ = ensure(args.db_dir, args.dataset, args.rows, args.cdb, args.bench_harness)
     print(json.dumps(metadata(args.dataset, args.rows), indent=2))
     for key in ("cyboudb", "sqlite", "duckdb"):
         if paths[key].exists():

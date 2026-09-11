@@ -1,4 +1,4 @@
-"""Regression: allocator commits preserve a nonzero catalog root."""
+﻿"""Regression: allocator commits preserve a nonzero catalog root."""
 import pathlib
 import struct
 import subprocess
@@ -16,7 +16,7 @@ def run(*args, ok=True):
 
 
 directory = pathlib.Path("build/testrun")
-path = directory / "root.cyboudb"
+path = directory / "root.cdb"
 run("create", path, 16)
 run("alloc", path, 2)
 data = bytearray(path.read_bytes())

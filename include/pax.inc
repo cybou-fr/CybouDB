@@ -48,6 +48,10 @@
 %define UPDATE_SPAN_START 0
 %define UPDATE_SPAN_MASK  8
 %define UPDATE_SPAN_SIZE  16
+; Consecutive predicate spans coalesced into one physical leaf rewrite.
+%define UPDATE_GROUP_SPANS 0
+%define UPDATE_GROUP_COUNT 8
+%define UPDATE_GROUP_SIZE  16
 ; Row read output: arrays with schema column-count slots/bytes.
 %define ROW_VALUES 0
 %define ROW_NULLS 8

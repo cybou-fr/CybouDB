@@ -43,6 +43,9 @@ default rel
 extern vfs_create_new, vfs_create_truncate, vfs_open_ro, vfs_open_rw
 extern vfs_size, vfs_resize, vfs_map_rw, vfs_map_ro, vfs_unmap
 extern vfs_sync, vfs_close
+%ifdef CybouDB_TEST_COMMIT_HOOK
+extern test_commit_hook
+%endif
 extern crc32c
 extern db_cow_alloc_page
 extern db_bitmap_init, db_bitmap_validate, db_bitmap_seal
@@ -1039,6 +1042,30 @@ db_commit:
     xor     ARG2, ARG2                  ; nothing staged: still flush once
     mov     ARG3, CybouDB_MIN_PAGES
 .range_known:
+%ifdef CybouDB_TEST_COMMIT_HOOK
+    mov     ARG1, 1
+    call    test_commit_hook
+    test    eax, eax
+    jnz     .e_sync
+    mov     r10, [rbp - 8]
+    cmp     qword [r10 + DB_MODE], 1
+    jne     .hook_legacy_range
+    mov     ARG2, [r10 + DB_DIRTY_LO]
+    mov     rax, [r10 + DB_DIRTY_HI]
+    cmp     rax, ARG2
+    jbe     .hook_no_new_pages
+    mov     ARG3, rax
+    sub     ARG3, ARG2
+    jmp     .hook_range_ready
+.hook_no_new_pages:
+    xor     ARG2, ARG2
+    mov     ARG3, CybouDB_MIN_PAGES
+    jmp     .hook_range_ready
+.hook_legacy_range:
+    xor     ARG2, ARG2
+    mov     ARG3, [r10 + DB_PAGES]
+.hook_range_ready:
+%endif
     mov     ARG1, r10
     call    sync_pages
     cmp     rax, -1
@@ -1079,6 +1106,22 @@ db_commit:
     add     rax, [r10 + DB_BITMAP]
     mov     ARG3, rax
 .publish_range:
+%ifdef CybouDB_TEST_COMMIT_HOOK
+    mov     ARG1, 2
+    call    test_commit_hook
+    test    eax, eax
+    jnz     .e_sync
+    mov     r10, [rbp - 8]
+    mov     ARG3, CybouDB_MIN_PAGES
+    test    qword [r10 + DB_FEATURES], CybouDB_FEATURE_MAP_SPAN
+    jz      .hook_publish_range_ready
+    mov     ARG1, [r10 + DB_PAGES]
+    call    db_bitmap_leaves
+    mov     r10, [rbp - 8]
+    add     rax, [r10 + DB_BITMAP]
+    mov     ARG3, rax
+.hook_publish_range_ready:
+%endif
     mov     ARG1, r10
     xor     ARG2, ARG2
     call    sync_pages

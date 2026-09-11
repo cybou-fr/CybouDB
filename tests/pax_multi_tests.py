@@ -1,4 +1,4 @@
-"""Multi-page PAX path copying, boundary reads and graph recovery."""
+﻿"""Multi-page PAX path copying, boundary reads and graph recovery."""
 from pax_support import *
 
 
@@ -65,7 +65,7 @@ def verify(b, kinds, flags, values, nulls):
 
 with tempfile.TemporaryDirectory() as temporary:
     temp = pathlib.Path(temporary)
-    path, batch = temp / "multi.cyboudb", temp / "batch.bin"
+    path, batch = temp / "multi.cdb", temp / "batch.bin"
     kinds, flags = [1, 2, 3, 4] * 2, [1] * 8
     empty = multi_seed(path, kinds, flags)
     assert u64(empty, 16) == 30 | 64 | 128 | 256

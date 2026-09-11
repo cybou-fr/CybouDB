@@ -1,4 +1,4 @@
-"""Allocation-map format, recovery and CLI tests, independent of ASM encoding."""
+﻿"""Allocation-map format, recovery and CLI tests, independent of ASM encoding."""
 import pathlib
 import struct
 import subprocess
@@ -51,7 +51,7 @@ def seal(data, page):
 
 with tempfile.TemporaryDirectory() as directory:
     directory = pathlib.Path(directory)
-    path = directory / "db.cyboudb"
+    path = directory / "db.cdb"
     for size in (0, 3, CAPACITY + 1):
         run(binary, "create-cow", path, size, rc=2, contains="between 4 and 16112")
         assert not path.exists()
@@ -92,7 +92,7 @@ with tempfile.TemporaryDirectory() as directory:
     assert path.read_bytes() == good
     check("ordinary CLI free cannot overwrite a COW payload")
 
-    small = directory / "partial-batch.cyboudb"
+    small = directory / "partial-batch.cdb"
     run(binary, "create-cow", small, 6)
     before = small.read_bytes()
     run(binary, "alloc", small, 2, rc=2, contains="database is full")

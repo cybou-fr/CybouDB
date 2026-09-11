@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Cross-engine benchmark: SQLite, DuckDB (1 and 8 threads), CybouDB scalar, CybouDB AVX2.
 
 Two comparisons are measured, and they are deliberately kept apart because they
@@ -157,7 +157,7 @@ class Engines:
         self.iters = args.iters
         self.warmup = args.warmup
         self.dataset = args.dataset
-        self.cyboudb_db = paths["cyboudb"]
+        self.cdb_db = paths["cyboudb"]
         self.sqlite_db = paths["sqlite"]
         self.duckdb_db = paths["duckdb"]
         self.duckdb_library = find_duckdb_library(args.duckdb_lib)
@@ -170,16 +170,16 @@ class Engines:
             return run_harness(SQLITE_HARNESS, self.sqlite_db, sql,
                                self.iters, self.warmup, mode)
         if engine == "cyboudb_zone_on":
-            return run_harness(CybouDB_HARNESS, self.cyboudb_db, sql,
+            return run_harness(CybouDB_HARNESS, self.cdb_db, sql,
                                self.iters, self.warmup, mode, extra=[0, 0, 0])
         if engine == "cyboudb_zone_off":
-            return run_harness(CybouDB_HARNESS, self.cyboudb_db, sql,
+            return run_harness(CybouDB_HARNESS, self.cdb_db, sql,
                                self.iters, self.warmup, mode, extra=[0, 1, 0])
         if engine == "cyboudb_scalar_zone_on":
-            return run_harness(CybouDB_HARNESS, self.cyboudb_db, sql,
+            return run_harness(CybouDB_HARNESS, self.cdb_db, sql,
                                self.iters, self.warmup, mode, extra=[1, 0, 0])
         if engine == "cyboudb_scalar_zone_off":
-            return run_harness(CybouDB_HARNESS, self.cyboudb_db, sql,
+            return run_harness(CybouDB_HARNESS, self.cdb_db, sql,
                                self.iters, self.warmup, mode, extra=[1, 1, 0])
         if engine in ("duckdb_1t", "duckdb_8t"):
             threads = 1 if engine == "duckdb_1t" else 8
@@ -253,7 +253,7 @@ def run_filter(engines, cyboudb_exe, order, repeats):
             if engine in ("sqlite", "duckdb_1t", "duckdb_8t"):
                 agg = engines.measure(engine, sql, MODE_AGGREGATE)
                 counts[engine] = agg["selected"] // engines.iters
-        counts["cyboudb"] = cyboudb_count(cyboudb_exe, engines.cyboudb_db, sql)
+        counts["cyboudb"] = cyboudb_count(cyboudb_exe, engines.cdb_db, sql)
 
         distinct = set(counts.values())
         parity = "MATCH" if len(distinct) == 1 else "MISMATCH"
@@ -274,7 +274,7 @@ def run_filter(engines, cyboudb_exe, order, repeats):
         speedup_zone.append(sp_zone)
 
         # Separate diagnostic run: trace ON, 1 execution
-        diag = run_zone_diagnostics(CybouDB_HARNESS, engines.cyboudb_db, sql, MODE_FILTER)
+        diag = run_zone_diagnostics(CybouDB_HARNESS, engines.cdb_db, sql, MODE_FILTER)
         diagnostics.append((name, diag))
 
         print(f"{name:<24} {counts['cyboudb']:>10,} | " +
@@ -351,7 +351,7 @@ def run_materialize(engines, order, repeats):
         speedup_zone.append(sp_zone)
 
         # Separate diagnostic run
-        diag = run_zone_diagnostics(CybouDB_HARNESS, engines.cyboudb_db, sql, MODE_MATERIALIZE)
+        diag = run_zone_diagnostics(CybouDB_HARNESS, engines.cdb_db, sql, MODE_MATERIALIZE)
         diagnostics.append((name, diag))
 
         print(f"{name:<24} {selected:>10,} | " +
@@ -403,7 +403,7 @@ def main():
         duckdb_seeded = paths["duckdb"].exists()
     else:
         paths, duckdb_seeded = datasets.ensure(
-            args.db_dir, args.dataset, args.rows, args.cyboudb, CybouDB_HARNESS)
+            args.db_dir, args.dataset, args.rows, args.cdb, CybouDB_HARNESS)
 
     engines = Engines(args, paths, duckdb_seeded)
 
@@ -418,7 +418,7 @@ def main():
     print(f"  dataset: {meta['dataset']} (generator v{meta['generator_version']}, "
           f"sha256 {meta['digest_sha256'][:16]} over the first "
           f"{meta['digest_rows']:,} rows)")
-    for label, path in (("CybouDB  ", engines.cyboudb_db),
+    for label, path in (("CybouDB  ", engines.cdb_db),
                         ("SQLite", engines.sqlite_db),
                         ("DuckDB", engines.duckdb_db)):
         if path.exists():
@@ -431,7 +431,7 @@ def main():
           f"figures are ns/logical-row (median of process runs)")
     print("=" * 130)
 
-    filter_ok = run_filter(engines, args.cyboudb, order, args.repeats)
+    filter_ok = run_filter(engines, args.cdb, order, args.repeats)
     materialize_ok = run_materialize(engines, order, args.repeats)
     print()
     return 0 if (filter_ok and materialize_ok) else 1

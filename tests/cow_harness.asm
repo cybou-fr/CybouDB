@@ -13,7 +13,7 @@ extern db_pax_insert, db_pax_read, db_pax_update_one, os_write
 extern db_zone_lookup, db_zone_stride
 extern db_pax_scan_open, db_pax_scan_next
 extern vfs_open_ro, vfs_size, vfs_map_ro
-global cyboudb_main, test_sync
+global cyboudb_main, test_sync, test_commit_hook
 
 %macro CTX 0
     lea ARG1, [ctx]
@@ -30,6 +30,7 @@ mode: resq 1
 path: resq 1
 page: resq 1
 sync_count: resq 1
+fault_kind: resq 1
 table_id: resq 1
 column_type: resq 1
 schema_page: resq 1
@@ -45,7 +46,8 @@ column_count: resq 1
 cursor: resb CybouDB_SCAN_SIZE
 scan_out: resq 3
 scan_rows: resq 1
-update_span: resq 2
+update_span: resq 4
+update_group: resq 2
 ; Batch fixture geometry, matching tests/pax_support.py: a row count, then
 ; FIXTURE_SLOTS u64 value slots, then one NULL byte per slot.
 %define FIXTURE_SLOTS 16384
@@ -88,6 +90,15 @@ cyboudb_main:
     jz .args_ready
     mov ARG1, rax
     lea ARG2, [column_type]
+    call os_str_to_u64
+    test eax, eax
+    jz failure
+    mov ARG1, 6
+    call os_argv
+    test rax, rax
+    jz .args_ready
+    mov ARG1, rax
+    lea ARG2, [fault_kind]
     call os_str_to_u64
     test eax, eax
     jz failure
@@ -247,6 +258,13 @@ cyboudb_main:
     mov ARG2, [page]
     call db_cow_set_root
     REQUIRE CybouDB_E_STATE
+    cmp qword [mode], 58
+    jne .failed_sync_close
+    CTX
+    call db_close
+    xor eax, eax
+    jmp .return
+.failed_sync_close:
     jmp .close
 
 .guards:
@@ -355,6 +373,8 @@ cyboudb_main:
     CTX
     mov ARG2, [table_id]
     lea ARG3, [batch]
+    cmp qword [mode], 58
+    je .pax_inserted
     call db_pax_insert
     cmp qword [mode], 53
     jne .pax_environment_checked
@@ -375,7 +395,10 @@ cyboudb_main:
     REQUIRE CybouDB_OK
 .pax_inserted:
     cmp qword [mode], 54
+    je .pax_update
+    cmp qword [mode], 58
     jne .pax_not_update
+.pax_update:
     CTX
     mov ARG2, [table_id]
     mov ARG3, [column_type]
@@ -383,8 +406,13 @@ cyboudb_main:
     xor rax, rax
     PASS_ARG5 rax
     mov qword [update_span + UPDATE_SPAN_START], 0
-    mov qword [update_span + UPDATE_SPAN_MASK], 6
+    mov qword [update_span + UPDATE_SPAN_MASK], 2
+    mov qword [update_span + UPDATE_SPAN_SIZE + UPDATE_SPAN_START], 2
+    mov qword [update_span + UPDATE_SPAN_SIZE + UPDATE_SPAN_MASK], 1
     lea rax, [update_span]
+    mov [update_group + UPDATE_GROUP_SPANS], rax
+    mov qword [update_group + UPDATE_GROUP_COUNT], 2
+    lea rax, [update_group]
     PASS_ARG6 rax
     call db_pax_update_one
     test eax, eax
@@ -445,6 +473,13 @@ cyboudb_main:
     je .failed_sync
     cmp qword [mode], 44
     je .failed_sync
+    cmp qword [mode], 58
+    jne .pax_commit_status_ready
+    cmp qword [fault_kind], 3
+    je .failed_sync
+    cmp qword [fault_kind], 4
+    je .failed_sync
+.pax_commit_status_ready:
     REQUIRE CybouDB_OK
     jmp .close
 .pax_read:
@@ -671,6 +706,44 @@ cyboudb_main:
 failure:
     mov ARG1, 99
     call os_exit
+
+; Core-test-only db_commit hook. Fault kinds mirror the historical sync modes:
+; 3 fails the data barrier, 4 fails publication, 5 tears the inactive copy.
+test_commit_hook:
+    mov rax, [fault_kind]
+    test rax, rax
+    jz .commit_hook_ok
+    cmp rax, 3
+    jne .commit_hook_publish
+    cmp ARG1, 1
+    jne .commit_hook_ok
+    mov eax, 1
+    ret
+.commit_hook_publish:
+    cmp ARG1, 2
+    jne .commit_hook_ok
+    cmp rax, 4
+    je .commit_hook_fail
+    cmp rax, 5
+    jne .commit_hook_ok
+    mov r10, CybouDB_SB_PAGE_A + CybouDB_SB_PAGE_B
+    sub r10, [ctx + DB_SB_PAGE]
+    shl r10, CybouDB_PAGE_SHIFT
+    add r10, [ctx + DB_BASE]
+    mov dword [r10], 0
+    FRAME_BEGIN 0, 0
+    mov ARG1, [ctx + DB_HANDLE]
+    mov ARG2, [ctx + DB_BASE]
+    mov ARG3, [ctx + DB_SIZE]
+    call vfs_sync
+    xor ARG1, ARG1
+    call os_exit
+.commit_hook_fail:
+    mov eax, 1
+    ret
+.commit_hook_ok:
+    xor eax, eax
+    ret
 
 ; Only database.asm calls this shim; real VFS calls remain available above.
 test_sync:

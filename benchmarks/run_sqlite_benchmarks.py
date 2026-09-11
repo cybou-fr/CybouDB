@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """CybouDB vs. SQLite Out-of-Cache Benchmarks (Phase 3.5).
 
 Compares CybouDB's columnar zero-copy batch executor against SQLite's
@@ -402,10 +402,10 @@ def main():
     bench_dir = ROOT / "build" / "benchrun"
     bench_dir.mkdir(parents=True, exist_ok=True)
 
-    cyboudb_db = bench_dir / f"events_{args.rows}.cyboudb"
+    cyboudb_db = bench_dir / f"events_{args.rows}.cdb"
     sqlite_db = bench_dir / f"events_{args.rows}.sqlite"
 
-    build_cyboudb_events(args.cyboudb, args.bench_harness, cyboudb_db, args.rows)
+    build_cyboudb_events(args.cdb, args.bench_harness, cyboudb_db, args.rows)
     build_sqlite_events(sqlite_db, args.rows)
 
     cyboudb_size_mb = cyboudb_db.stat().st_size / (1024 * 1024)
@@ -413,7 +413,7 @@ def main():
 
     meta = get_metadata(args.sqlite_harness, sqlite_db)
     meta["binary_sha256"] = {str(path.name): hashlib.sha256(path.read_bytes()).hexdigest()
-                             for path in (args.cyboudb, args.bench_harness, args.sqlite_harness)}
+                             for path in (args.cdb, args.bench_harness, args.sqlite_harness)}
     mmap_mb = meta["sqlite_mmap"] / (1024 * 1024)
     mmap_desc = f"PRAGMA mmap_size={mmap_mb:.0f} MB" if mmap_mb > 0 else "mmap=OFF"
 

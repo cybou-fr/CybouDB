@@ -1,4 +1,4 @@
-# Decision: COW before PAX
+﻿# Decision: COW before PAX
 
 Status: persisted COW capability, append-only page operations and an allocation
 map are implemented and tested. A separate capability now enables the typed
@@ -74,9 +74,9 @@ initial sync failure instead of reporting success.
 Create COW storage explicitly:
 
 ```sh
-cyboudb create-cow demo.cyboudb 256
-cyboudb alloc demo.cyboudb 4
-cyboudb info demo.cyboudb
+cyboudb create-cow demo.cdb 256
+cyboudb alloc demo.cdb 4
+cyboudb info demo.cdb
 ```
 
 `create-cow` supports `--force` with the same non-destructive default as `create`.

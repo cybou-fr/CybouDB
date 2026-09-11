@@ -1,9 +1,9 @@
-"""Compressed storage: partial-leaf COW, boundary reads and corruption recovery."""
+﻿"""Compressed storage: partial-leaf COW, boundary reads and corruption recovery."""
 from pax_support import *
 
 with tempfile.TemporaryDirectory() as temporary:
     temp = pathlib.Path(temporary)
-    path, batch = temp / "compressed.cyboudb", temp / "batch.bin"
+    path, batch = temp / "compressed.cdb", temp / "batch.bin"
     kinds = [1, 2, 3, 4, 1]
     seed(path, kinds, [1] * 5, 20000, command="create-compressed")
     assert u64(path.read_bytes(), 16) & 544 == 544  # compression + MAP_SPAN

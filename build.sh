@@ -1,4 +1,4 @@
-#!/bin/sh
+﻿#!/bin/sh
 # ===========================================================================
 #  build.sh - build CybouDB for Linux x86-64
 #
@@ -141,7 +141,7 @@ for f in $SOURCES; do
     echo "[asm]  $f"
     defs=""
     if [ "${1:-}" = "--core-tests" ] && [ "$f" = src/core/database.asm ]; then
-        defs="-Dvfs_sync=test_sync"
+        defs="-Dvfs_sync=test_sync -DCybouDB_TEST_COMMIT_HOOK=1"
     fi
     nasm -f elf64 $INC $defs "$f" -o "$o"
     OBJS="$OBJS $o"
@@ -152,5 +152,5 @@ ld -o "$OUT" $OBJS
 
 echo
 echo "Build OK -> ./$OUT"
-echo "  ./$OUT create test.cyboudb 256"
-echo "  ./$OUT info   test.cyboudb"
+echo "  ./$OUT create test.cdb 256"
+echo "  ./$OUT info   test.cdb"

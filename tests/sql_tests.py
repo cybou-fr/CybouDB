@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Portable SQL regression suite. Run: python tests/sql_tests.py [binary]."""
 import os
 from pathlib import Path
@@ -47,6 +47,39 @@ def generation():
     match = re.search(r"Generation:\s+(\d+)", result.stdout)
     assert result.returncode == 0 and match, result.stdout + result.stderr
     return int(match.group(1))
+
+
+def update_enospc_atomicity():
+    """A later leaf group cannot publish an earlier staged group."""
+    global database
+    original_database = database
+    with tempfile.TemporaryDirectory(prefix='cyboudb-update-full-') as directory:
+        database = Path(directory) / 'full.cdb'
+        setup = invoke('create-pax-multi', database, '26', '--force')
+        assert setup.returncode == 0, setup.stdout + setup.stderr
+        check('update_full_create',
+              'CREATE TABLE t (id INT64 NOT NULL, val INT32)',
+              message='Table created')
+        check('update_full_insert_first',
+              'INSERT INTO t VALUES ' + ','.join(f'({i},{i})' for i in range(1, 257)),
+              message='INSERT 256')
+        check('update_full_insert_second',
+              'INSERT INTO t VALUES ' + ','.join(f'({i},{i})' for i in range(257, 401)),
+              message='INSERT 144')
+        before = generation()
+        check('update_enospc_after_first_leaf',
+              'UPDATE t SET val = 999 WHERE id = 1 OR id = 321', rc=2,
+              message='database is full')
+        assert generation() == before, 'failed UPDATE published a generation'
+        check('update_enospc_reopen_original_rows',
+              'SELECT id,val FROM t WHERE id = 1 OR id = 321',
+              rows=[(1, 1), (321, 321)])
+        result = invoke('check', database)
+        assert result.returncode == 0 and 'Status:          OK' in result.stdout, \
+            result.stdout + result.stderr
+        check('update_enospc_database_reusable',
+              'SELECT COUNT(*) FROM t', rows=[(400,)])
+    database = original_database
 
 
 def run():
@@ -482,10 +515,11 @@ def run():
 
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory(prefix='cyboudb-sql-') as directory:
-        database = Path(directory) / 'test.cyboudb'
+        database = Path(directory) / 'test.cdb'
         setup = invoke('create-pax-multi', database, '10000', '--force')
         if setup.returncode:
             sys.exit(f'Database setup failed: {setup.stdout} {setup.stderr}')
         run()
+        update_enospc_atomicity()
     print(f'SQL test suite: {passed} passed, {failed} failed')
     sys.exit(1 if failed else 0)

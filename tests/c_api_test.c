@@ -1,4 +1,4 @@
-/* =============================================================================
+﻿/* =============================================================================
  *  tests/c_api_test.c - Regression test suite for the CybouDB C ABI
  * =============================================================================
  */
@@ -54,7 +54,7 @@ static void test_invalid_args(void) {
     int rc = cyboudb_open(NULL, CybouDB_OPEN_READONLY, &db);
     ASSERT_EQ(rc, CybouDB_MISUSE, "cyboudb_open NULL path");
 
-    rc = cyboudb_open("test.cyboudb", CybouDB_OPEN_READONLY, NULL);
+    rc = cyboudb_open("test.cdb", CybouDB_OPEN_READONLY, NULL);
     ASSERT_EQ(rc, CybouDB_MISUSE, "cyboudb_open NULL out_db");
 
     rc = cyboudb_close(NULL);
@@ -83,7 +83,7 @@ static void test_invalid_args(void) {
     ASSERT_EQ(cyboudb_batch_bytes(NULL, NULL, 0, 0, NULL, 0),
               CybouDB_MISUSE, "cyboudb_batch_bytes NULL stmt");
 
-    rc = cyboudb_open("non_existent_file_xyz123.cyboudb", CybouDB_OPEN_READONLY, &db);
+    rc = cyboudb_open("non_existent_file_xyz123.cdb", CybouDB_OPEN_READONLY, &db);
     ASSERT_EQ(rc, CybouDB_ERROR, "cyboudb_open missing file");
 
     total_tests++;
@@ -972,7 +972,7 @@ static void test_varlen_accessors(const char *db_path, int enabled) {
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
-    const char *db_path = (argc > 1) ? argv[1] : "test_c_api.cyboudb";
+    const char *db_path = (argc > 1) ? argv[1] : "test_c_api.cdb";
     printf("Running CybouDB C API Test Suite on %s...\n", db_path);
 
     if (argc > 2 && strcmp(argv[2], "varlen") == 0) {

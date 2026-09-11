@@ -1,4 +1,4 @@
-# CybouDB Zone Maps 3-Way Benchmark, 10,000,000 Rows - 2026-09-09
+﻿# CybouDB Zone Maps 3-Way Benchmark, 10,000,000 Rows - 2026-09-09
 
 Host: Intel Core Ultra 7 258V (12 MB L3), Windows 11.
 Runner: benchmarks/run_3way_benchmark.py --rows 10000000 --repeats 5.
@@ -24,7 +24,7 @@ Datasets evaluated: structured, shuffled_structured, and high_entropy.
 
 ## 1. Structured Dataset (Sorted amount)
 
-events_structured_10000000.cyboudb (422.6 MB, 10M rows).
+events_structured_10000000.cdb (422.6 MB, 10M rows).
 
 ### FILTER: SELECT count(*) FROM events WHERE ... (ns/logical-row, median of 5 repeats)
 
@@ -67,7 +67,7 @@ events_structured_10000000.cyboudb (422.6 MB, 10M rows).
 
 ## 2. Shuffled Structured Dataset (Deterministic Permutation)
 
-events_shuffled_structured_10000000.cyboudb (422.6 MB, 10M rows).
+events_shuffled_structured_10000000.cdb (422.6 MB, 10M rows).
 - Identical values, distribution, and NULL counts as structured, but permuted across pages via deterministic coprime affine generator.
 
 ### FILTER (ns/logical-row, median of 5 repeats)
@@ -102,7 +102,7 @@ events_shuffled_structured_10000000.cyboudb (422.6 MB, 10M rows).
 
 ## 3. High Entropy Dataset (Independent PRNG)
 
-events_high_entropy_10000000.cyboudb (422.6 MB, 10M rows).
+events_high_entropy_10000000.cdb (422.6 MB, 10M rows).
 
 ### FILTER (ns/logical-row, median of 5 repeats)
 

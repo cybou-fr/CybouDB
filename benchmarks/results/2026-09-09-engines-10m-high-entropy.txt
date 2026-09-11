@@ -1,11 +1,11 @@
-[CybouDB]   reusing events_high_entropy_10000000.cyboudb (10,000,000 rows)
+﻿[CybouDB]   reusing events_high_entropy_10000000.cdb (10,000,000 rows)
 [SQLite] reusing events_high_entropy_10000000.sqlite (10,000,000 rows)
 [DuckDB] seeding events_high_entropy_10000000.duckdb with 10,000,000 high_entropy rows
 [DuckDB] 10,000,000 rows in 71.2s (140,362 rows/s)
 ======================================================================================================================
 Cross-engine benchmark - events table, 7 columns, 10,000,000 rows
   dataset: high_entropy (generator v1, sha256 5d184d4984eb3947 over the first 100,000 rows)
-  CybouDB   file:    422.6 MB  events_high_entropy_10000000.cyboudb
+  CybouDB   file:    422.6 MB  events_high_entropy_10000000.cdb
   SQLite file:    383.8 MB  events_high_entropy_10000000.sqlite
   DuckDB file:    360.5 MB  events_high_entropy_10000000.duckdb
   DuckDB C API: C:\Users\cybou\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\site-packages\_duckdb.cp312-win_amd64.pyd

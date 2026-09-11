@@ -1,4 +1,4 @@
-# CybouDB Roadmap
+﻿# CybouDB Roadmap
 
 Checkboxes describe the repository as it stands, not as it is meant to end up.
 An item is only ticked when it exists in the code and is covered by the test
@@ -20,7 +20,8 @@ in-place page mutation. The separate persisted COW mode now protects allocation
 maps, a typed catalog and bounded multi-page PAX tables, with complete graph
 validation.
 
-`cyboudb query` runs `CREATE TABLE`, `INSERT` and `SELECT ... WHERE` against real
+`cyboudb query` runs `CREATE TABLE`, `INSERT`, correctness-first `UPDATE`, and
+`SELECT ... WHERE` against real
 pages. The executor scans in batches of 64 rows, reads only the columns the
 plan asks for and evaluates predicates through AVX2 SIMD kernels with CPUID dispatch.
 An interactive console (REPL) supports multiline statements, piped scripts,
@@ -42,9 +43,10 @@ filter comparison outright and change nothing on materialization. Per-scenario r
 conditions are recorded in [benchmarks/README.md](benchmarks/README.md);
 performance depends on the query, execution mode and hardware.
 
-Vectors, SQL transactions, and an ARM64 backend remain unimplemented. So do
-`DROP TABLE`, `UPDATE` and `DELETE`: the MVP subset was deliberately narrowed
-to the three statements above, and the rest is listed under Phase 3 as still outstanding.
+Vectors, SQL transactions, `DROP TABLE`, `DELETE`, and an ARM64 backend remain
+unimplemented. `UPDATE` currently supports one fixed-width assignment with a
+mandatory predicate on flat PAX directories; tree and TEXT/BLOB mutation remain
+listed under Phase 3.
 
 ## How the phases are ordered
 
@@ -171,7 +173,7 @@ into a database. It ends with statements executing against real pages, one
 shot per invocation:
 
 ```sh
-cyboudb query demo.cyboudb "SELECT id, score FROM runs WHERE score > 90"
+cyboudb query demo.cdb "SELECT id, score FROM runs WHERE score > 90"
 ```
 
 * [x] tokenizer, with source positions kept for error messages
@@ -181,6 +183,8 @@ cyboudb query demo.cyboudb "SELECT id, score FROM runs WHERE score > 90"
 * [x] statement parser contract: single-column `UPDATE ... SET literal WHERE ...`
 * [x] binder contract for typed single-column `UPDATE`
 * [x] COW executor for flat multi-leaf, fixed-width `UPDATE`
+* [x] coalesce all 64-row predicate spans per leaf into one COW rewrite
+* [x] UPDATE recovery tests for ENOSPC, both commit barriers and torn publication
 * [ ] tree-directory and TEXT/BLOB `UPDATE`
 * [x] a type system, and a decision on NULL semantics written down before it
       is implemented

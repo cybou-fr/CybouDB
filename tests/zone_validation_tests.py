@@ -1,4 +1,4 @@
-"""Zone graph corruption, candidate recovery and exhaustive data agreement."""
+﻿"""Zone graph corruption, candidate recovery and exhaustive data agreement."""
 from pax_support import *
 
 
@@ -14,7 +14,7 @@ def isolated(b):
 
 with tempfile.TemporaryDirectory() as temporary:
     temp = pathlib.Path(temporary)
-    path, batch = temp / "zone.cyboudb", temp / "batch.bin"
+    path, batch = temp / "zone.cdb", temp / "batch.bin"
     seed(path, [1, 2, 3, 4], [1] * 4, 4096, command="create-large")
     fixture(batch, [[-3, -9, 0x80000001, 0], [7, 13, 1, 1]],
             [[0] * 4, [0] * 4])

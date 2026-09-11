@@ -1,4 +1,4 @@
-"""End-to-end SQL/CLI coverage for persisted TEXT and BLOB values."""
+﻿"""End-to-end SQL/CLI coverage for persisted TEXT and BLOB values."""
 import pathlib
 import subprocess
 import sys
@@ -30,7 +30,7 @@ def console(path, sql):
 
 
 with tempfile.TemporaryDirectory() as tmp:
-    path = pathlib.Path(tmp) / "varlen.cyboudb"
+    path = pathlib.Path(tmp) / "varlen.cdb"
     run("create-large", path, 512)
     run("query", path, "CREATE TABLE docs (id INT64 NOT NULL, body TEXT, raw BLOB)")
     check("create TEXT/BLOB schema")

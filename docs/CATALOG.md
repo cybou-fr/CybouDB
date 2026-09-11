@@ -1,4 +1,4 @@
-# Typed COW catalog
+﻿# Typed COW catalog
 
 Status: a fixed-height catalog is implemented. It stores table definitions and
 fixed-width column declarations. The separate [PAX capability](PAX.md) adds
@@ -8,8 +8,8 @@ directory splitting or reclamation yet.
 ## Creation and compatibility
 
 ```sh
-cyboudb create-catalog demo.cyboudb 256
-cyboudb info demo.cyboudb
+cyboudb create-catalog demo.cdb 256
+cyboudb info demo.cdb
 ```
 
 `create-catalog` sets immutable incompatible flags `0x6`: COW (`0x2`) plus

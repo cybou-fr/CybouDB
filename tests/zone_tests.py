@@ -1,4 +1,4 @@
-"""Per-leaf zone statistics: what an insert records, and what it must not.
+﻿"""Per-leaf zone statistics: what an insert records, and what it must not.
 
 The statistics are read back through the harness rather than decoded out of
 the file, because what matters to a scan is exactly what db_zone_lookup
@@ -109,7 +109,7 @@ def compare(got, want, kinds, name):
 
 with tempfile.TemporaryDirectory() as temporary:
     temp = pathlib.Path(temporary)
-    path, batch = temp / "zone.cyboudb", temp / "batch.bin"
+    path, batch = temp / "zone.cdb", temp / "batch.bin"
 
     # --- every type, with and without NULLs ----------------------------------
     kinds = [INT32, INT64, FLOAT32, BOOL]
@@ -156,7 +156,7 @@ with tempfile.TemporaryDirectory() as temporary:
     check("a later insert merges into the statistics already there")
 
     # --- FLOAT32 corner cases -------------------------------------------------
-    path2 = temp / "zone_float.cyboudb"
+    path2 = temp / "zone_float.cdb"
     kinds2 = [FLOAT32]
     large_seed(path2, kinds2, [1])
     specials = [float("inf"), float("-inf"), -0.0, 0.0, 1.4e-45, -3.5, 2.5]
@@ -170,7 +170,7 @@ with tempfile.TemporaryDirectory() as temporary:
     assert as_float(got[0][2]) == float("inf")
     check("NaN is flagged and excluded; infinities bound the range")
 
-    path3 = temp / "zone_nan.cyboudb"
+    path3 = temp / "zone_nan.cdb"
     large_seed(path3, kinds2, [1])
     fixture(batch, [[0x7FC00000], [0xFFC00000]], [[0], [0]])
     run(harness, path3, 40, 1, 0, batch)
@@ -213,7 +213,7 @@ with tempfile.TemporaryDirectory() as temporary:
     expected = [exact_stats(values) for values in padded]
     snapshots = []
     for mxcsr in (0x1f80, 0x1fc0, 0x9f80, 0xffc0, 0, 0x8040):
-        fp_path = temp / f"zone_mxcsr_{mxcsr}.cyboudb"
+        fp_path = temp / f"zone_mxcsr_{mxcsr}.cdb"
         large_seed(fp_path, [FLOAT32] * len(cases))
         for part in (float_rows[:1], float_rows[1:]):
             fixture(batch, part)
@@ -225,7 +225,7 @@ with tempfile.TemporaryDirectory() as temporary:
     assert all(got == snapshots[0] for got in snapshots)
     check("FLOAT32 raw stats match under DAZ, FTZ, rounding and unmasked exceptions")
 
-    path4 = temp / "zone_null.cyboudb"
+    path4 = temp / "zone_null.cdb"
     large_seed(path4, [INT32], [1])
     fixture(batch, [[7], [8], [9]], [[1], [1], [1]])
     run(harness, path4, 40, 1, 0, batch)
@@ -234,7 +234,7 @@ with tempfile.TemporaryDirectory() as temporary:
     check("a leaf of nothing but NULLs claims no values")
 
     # --- leaf boundaries ------------------------------------------------------
-    path5 = temp / "zone_leaves.cyboudb"
+    path5 = temp / "zone_leaves.cdb"
     kinds5 = [INT32, INT64]
     large_seed(path5, kinds5, [0, 0])
     cap5 = capacity_of(kinds5)
@@ -255,7 +255,7 @@ with tempfile.TemporaryDirectory() as temporary:
     check("a leaf created by this insert starts from its own rows only")
 
     # --- one row per leaf, at the boundary ------------------------------------
-    path6 = temp / "zone_edge.cyboudb"
+    path6 = temp / "zone_edge.cdb"
     large_seed(path6, [INT32], [0])
     cap6 = capacity_of([INT32])
     edge = [[r] for r in range(cap6 + 1)]
@@ -271,7 +271,7 @@ with tempfile.TemporaryDirectory() as temporary:
     # A wide schema shrinks both the leaf and the page: 64 columns give a
     # 1536-byte stride, so a zone page describes two leaves and a handful of
     # rows is enough to make the tree grow a directory.
-    path7 = temp / "zone_wide.cyboudb"
+    path7 = temp / "zone_wide.cdb"
     wide = [INT32] * 64
     large_seed(path7, wide, [0] * 64)
     cap7 = capacity_of(wide)

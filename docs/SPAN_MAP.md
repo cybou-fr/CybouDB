@@ -1,4 +1,4 @@
-# The paired multi-page allocation map
+﻿# The paired multi-page allocation map
 
 Status: implemented, and the only format that reclaims pages. `create-large`
 produces it; the CLI and every internal API work on it. The flat map keeps its
@@ -41,8 +41,8 @@ limits: 251 tables, 1..64 columns, 251 data pages per table.
 ## Creation and compatibility
 
 ```sh
-cyboudb create-large demo.cyboudb 40000
-cyboudb info demo.cyboudb
+cyboudb create-large demo.cdb 40000
+cyboudb info demo.cdb
 ```
 
 The immutable incompatible flags are `0x3E`: COW `0x2`, catalog `0x4`, PAX

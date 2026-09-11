@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Repeat the historical alone/shared comparison using its original fixtures.
 
-Build fixtures with run_benchmarks.py once if build/benchrun/{events,wide,shared}.cyboudb
+Build fixtures with run_benchmarks.py once if build/benchrun/{events,wide,shared}.cdb
 are missing. This runner is read-only and checks row counts and materialized
 checksums before reporting a layout ratio. No allocation-policy cause is assumed.
 """
@@ -29,16 +29,16 @@ def main():
     args = parser.parse_args()
     if min(args.iterations, args.repeats) < 1 or args.warmup < 0:
         parser.error("iterations/repeats must be positive, warmup nonnegative")
-    cases = [("events", "alone", "events.cyboudb", "id"),
-             ("events", "shared", "shared.cyboudb", "id"),
-             ("wide32", "alone", "wide.cyboudb", "c0"),
-             ("wide32", "shared", "shared.cyboudb", "c0")]
+    cases = [("events", "alone", "events.cdb", "id"),
+             ("events", "shared", "shared.cdb", "id"),
+             ("wide32", "alone", "wide.cdb", "c0"),
+             ("wide32", "shared", "shared.cdb", "c0")]
     rows = {}
     for table, layout, filename, _ in cases:
         path = args.directory / filename
         if not path.exists():
             parser.error(f"missing {path}; build the legacy fixtures with run_benchmarks.py")
-        text = run_cmd(args.cyboudb, "query", path, f"SELECT COUNT(*) FROM {table}").decode()
+        text = run_cmd(args.cdb, "query", path, f"SELECT COUNT(*) FROM {table}").decode()
         counts = [int(line.strip()) for line in text.splitlines() if line.strip().isdigit()]
         if len(counts) != 1 or counts[0] <= 0:
             raise RuntimeError(f"invalid row count for {table}/{layout}")
@@ -53,7 +53,7 @@ def main():
               "warmup": args.warmup, "repeats": args.repeats,
               "harness_sha256": hashlib.sha256(args.bench_harness.read_bytes()).hexdigest(),
               "fixtures": {name: hashlib.sha256((args.directory / name).read_bytes()).hexdigest()
-                           for name in ("events.cyboudb", "wide.cyboudb", "shared.cyboudb")}, "modes": []}
+                           for name in ("events.cdb", "wide.cdb", "shared.cdb")}, "modes": []}
     for mode in (0, 1):
         samples = {(table, layout): [] for table, layout, _, _ in cases}
         for repeat in range(args.repeats):

@@ -1,9 +1,9 @@
-# Compression V1
+﻿# Compression V1
 
 Compression V1 supports RAW (0), CONST (1) and FOR (2). RLE and dictionary
 encoding are not implemented or advertised by this format.
 
-`cyboudb create-compressed file.cyboudb 120000` creates a database with MAP_SPAN,
+`cyboudb create-compressed file.cdb 120000` creates a database with MAP_SPAN,
 PAX runs, PAX trees, zone maps and compression. The page-count limit is the
 same as `create-large`; compression is an immutable file capability.
 

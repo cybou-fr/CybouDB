@@ -1,4 +1,4 @@
-"""Batch delivery and row adapter equivalence, stop semantics and arena bounds."""
+﻿"""Batch delivery and row adapter equivalence, stop semantics and arena bounds."""
 from pathlib import Path
 import struct
 import subprocess
@@ -62,7 +62,7 @@ def cells(i):
 
 
 with tempfile.TemporaryDirectory() as directory:
-    database = Path(directory) / 'sinks.cyboudb'
+    database = Path(directory) / 'sinks.cdb'
     run(binary, 'create-pax-multi', database, 4096, '--force')
     run(binary, 'query', database, 'CREATE TABLE t (id INT64, val INT32, f FLOAT32, b BOOL, extra INT32)')
     previous = 0

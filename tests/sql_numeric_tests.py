@@ -1,8 +1,8 @@
-"""IEEE edge cases using exact raw bits seeded through the storage API."""
+﻿"""IEEE edge cases using exact raw bits seeded through the storage API."""
 from pax_support import *
 
 with tempfile.TemporaryDirectory() as directory:
-    path = pathlib.Path(directory) / 'numeric.cyboudb'
+    path = pathlib.Path(directory) / 'numeric.cdb'
     batch = pathlib.Path(directory) / 'batch.bin'
     initial = seed(path, [1, 3], [0, 1], command='create-pax-multi')
     schema = graph(initial)[2]

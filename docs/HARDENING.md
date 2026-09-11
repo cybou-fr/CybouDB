@@ -1,4 +1,4 @@
-# Hardening work from the September 2026 review
+﻿# Hardening work from the September 2026 review
 
 Baseline: `ef293296831850fe20db22a6cddb1b3fcf88812c`.
 Complete contract and lifetime fixes before adding SQL features or freezing
@@ -126,7 +126,7 @@ permission check skipped).
 ## Completed: verification runs and performance measurements
 
 1. **Shared-file layout benchmark**: repeated with `run_layout_benchmarks.py`
-   using original fixtures (`events.cyboudb`, `wide.cyboudb`, `shared.cyboudb`). Mode 0
+   using original fixtures (`events.cdb`, `wide.cdb`, `shared.cdb`). Mode 0
    (filter) and Mode 1 (materialize) on 112,384 rows show shared/alone ratios of
    0.94x-1.03x (~1.0x parity), with bit-for-bit identical materialized checksums.
    The historical slowdown was resolved by prepared-plan catalog validation fast paths.

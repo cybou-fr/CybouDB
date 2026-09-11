@@ -1,4 +1,4 @@
-"""Paired multi-page allocation map: layout, growth past 16112 pages, recovery."""
+﻿"""Paired multi-page allocation map: layout, growth past 16112 pages, recovery."""
 from pax_support import *
 
 LEAF = 16112
@@ -44,7 +44,7 @@ def states(b, total):
 
 with tempfile.TemporaryDirectory() as temporary:
     temp = pathlib.Path(temporary)
-    path, batch = temp / "span.cyboudb", temp / "batch.bin"
+    path, batch = temp / "span.cdb", temp / "batch.bin"
 
     for total in (6, 20000, 40000):
         run(binary, "create-large", path, total, "--force")

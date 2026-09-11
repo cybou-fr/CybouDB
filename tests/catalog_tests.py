@@ -1,4 +1,4 @@
-"""Typed catalog, path-copy and recovery tests with independent disk decoding."""
+﻿"""Typed catalog, path-copy and recovery tests with independent disk decoding."""
 import pathlib
 import struct
 import subprocess
@@ -89,7 +89,7 @@ def schema_page(page_id, table_id, generation=2, columns=1):
 
 with tempfile.TemporaryDirectory() as directory:
     directory = pathlib.Path(directory)
-    path = directory / "catalog.cyboudb"
+    path = directory / "catalog.cdb"
     run(binary, "create-catalog", path, 64)
     data = path.read_bytes()
     assert u64(data, 16) == 6
@@ -147,13 +147,13 @@ with tempfile.TemporaryDirectory() as directory:
         assert path.read_bytes() == good
     check("invalid ids, schema types, duplicate names and read-only put are atomic")
 
-    small = directory / "small.cyboudb"
+    small = directory / "small.cdb"
     run(binary, "create-catalog", small, 6)
     before = small.read_bytes()
     run(harness, small, 20, 1, rc=15)
     assert small.read_bytes() == before
     check("space preflight reserves map plus complete two-page path")
-    raw = directory / "raw.cyboudb"
+    raw = directory / "raw.cdb"
     run(binary, "create-cow", raw, 64)
     before = raw.read_bytes()
     run(harness, raw, 20, 1, rc=22)

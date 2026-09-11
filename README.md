@@ -1,4 +1,4 @@
-# CybouDB
+﻿# CybouDB
 
 **CybouDB** is an experimental embedded database engine written in assembly, close
 to the hardware, with a portable on-disk format and architecture-specific
@@ -39,7 +39,7 @@ underlying CPU.
 | Multi-page PAX tables | working; two-level directory tree (up to 28M rows per table), cross-page batches |
 | Paired multi-page allocation map | working; `create-large`, 63 GiB ceiling, page reclamation |
 | SQL engine: parser, binder, executor | working; pure x86-64 scalar and batch execution |
-| SQL statements | working; `CREATE TABLE`, `INSERT INTO` (multi-row), `SELECT ... WHERE`, stable single-key `ORDER BY`, `LIMIT [OFFSET]`, correctness-first `INNER JOIN`/`LEFT JOIN` on qualified INT32/INT64 equi-keys |
+| SQL statements | working; `CREATE TABLE`, `INSERT INTO` (multi-row), fixed-width flat-PAX `UPDATE ... SET literal WHERE`, `SELECT ... WHERE`, stable single-key `ORDER BY`, `LIMIT [OFFSET]`, correctness-first `INNER JOIN`/`LEFT JOIN` on qualified INT32/INT64 equi-keys |
 | SQL types and semantics | fixed-width storage working for `INT32`, `INT64`, `FLOAT32`, `BOOL`; persistent `TEXT`/`BLOB` storage working for `create-large` databases |
 | CLI: `query` | working; executes statements, autocommits mutations, tabular output |
 | CLI: `create`, `info`, `check`, `alloc`, `free` | working |
@@ -101,16 +101,16 @@ CONST/FOR inside fixed-size slots; it does not reduce the logical file size.
 
 ```sh
 # Create a PAX database file (256 pages = 1 MiB)
-cyboudb create-pax demo.cyboudb 256
+cyboudb create-pax demo.cdb 256
 
 # Define a table (supports INT32, INT64, FLOAT32, BOOL, NULL / NOT NULL)
-cyboudb query demo.cyboudb "CREATE TABLE users (id INT32 NOT NULL, score FLOAT32, active BOOL)"
+cyboudb query demo.cdb "CREATE TABLE users (id INT32 NOT NULL, score FLOAT32, active BOOL)"
 
 # Insert rows (supports multi-row batches up to 256 rows)
-cyboudb query demo.cyboudb "INSERT INTO users VALUES (1, 98.5, true), (2, null, false), (3, -12.25, true)"
+cyboudb query demo.cdb "INSERT INTO users VALUES (1, 98.5, true), (2, null, false), (3, -12.25, true)"
 
 # Query data with projection and filtering (3VL logic, comparison operators, IS NULL)
-cyboudb query demo.cyboudb "SELECT id, score FROM users WHERE active = true AND score > 0.0"
+cyboudb query demo.cdb "SELECT id, score FROM users WHERE active = true AND score > 0.0"
 ```
 
 `TEXT` and `BLOB` are persistently supported for databases created with
@@ -129,7 +129,7 @@ id | score
 (1 row)
 ```
 
-Mutating statements (`CREATE TABLE`, `INSERT INTO`) automatically commit changes
+Mutating statements (`CREATE TABLE`, `INSERT INTO`, `UPDATE`) automatically commit changes
 to disk upon success. `SELECT` statements open the database in read-only mode,
 evaluating predicates using Three-Valued Logic (3VL) and pruning unreferenced
 columns during columnar batch scans.
@@ -148,9 +148,9 @@ CybouDB includes an interactive console (REPL) for exploratory queries and SQL s
 
 ```sh
 # Start interactive console
-cyboudb demo.cyboudb
+cyboudb demo.cdb
 # or explicitly:
-cyboudb console demo.cyboudb
+cyboudb console demo.cdb
 ```
 
 Within the console, queries can span multiple lines until terminated with a semicolon (`;`). Meta-commands provide catalog and database inspection:
@@ -188,7 +188,7 @@ cyboudb> .quit
 Non-interactive scripts can also be piped directly into CybouDB:
 
 ```sh
-cat script.sql | cyboudb demo.cyboudb
+cat script.sql | cyboudb demo.cdb
 ```
 
 Piped scripts continue after SQL errors but return a nonzero exit status if
@@ -237,14 +237,14 @@ Low-level storage inspection and page allocation commands operate directly
 against database pages:
 
 ```sh
-cyboudb create demo.cyboudb 256     # a database of 256 pages (1 MiB)
-cyboudb info   demo.cyboudb         # metadata, validated before it is printed
-cyboudb alloc  demo.cyboudb 4       # hand out four pages and commit
-cyboudb free   demo.cyboudb 5       # return page 5 to the free list and commit
+cyboudb create demo.cdb 256     # a database of 256 pages (1 MiB)
+cyboudb info   demo.cdb         # metadata, validated before it is printed
+cyboudb alloc  demo.cdb 4       # hand out four pages and commit
+cyboudb free   demo.cdb 5       # return page 5 to the free list and commit
 ```
 
 ```text
-$ cyboudb info demo.cyboudb
+$ cyboudb info demo.cdb
 CybouDB Database Info
 ------------------
   Magic:           CybouDB
@@ -259,27 +259,27 @@ CybouDB Database Info
   Status:          OK
 ```
 
-Use `cyboudb create-cow demo.cyboudb 256` for the experimental COW mode. Its
+Use `cyboudb create-cow demo.cdb 256` for the experimental COW mode. Its
 allocation map protects committed pages and persists the storage mode, so
 `alloc` automatically follows the COW path after reopen. `free` is not supported
 in this mode. The current single-map limit is 4..16112 total pages; see
 [the format and limits](docs/COW.md).
 
-`cyboudb create-catalog demo.cyboudb 256` enables the typed catalog as well. Its
+`cyboudb create-catalog demo.cdb 256` enables the typed catalog as well. Its
 internal API stores table names and column declarations with COW schema/root
 updates. See [the catalog contract](docs/CATALOG.md).
 
-`cyboudb create-pax demo.cyboudb 256` additionally enables fixed-width row batches,
+`cyboudb create-pax demo.cdb 256` additionally enables fixed-width row batches,
 per-column NULL masks and scalar reads. The first stage holds one PAX page per
 table. A page stores as many whole 64-row groups as its schema allows - 3520
 rows for a single BOOL column - so the 64-row group stays the unit a NULL mask
 and future vector kernels work on without capping what a page may hold.
 
-`cyboudb create-pax-multi demo.cyboudb 512` enables a directory of PAX pages per
+`cyboudb create-pax-multi demo.cdb 512` enables a directory of PAX pages per
 table, scaling through a two-level directory tree up to 63,001 leaf runs
 (up to 28 million rows) with cross-page batch insertion.
 
-`cyboudb create-large demo.cyboudb 40000` adds the paired multi-page allocation map,
+`cyboudb create-large demo.cdb 40000` adds the paired multi-page allocation map,
 which takes the map out of the allocator and raises the file limit from 63 MiB
 to 63 GiB. It is also the only format that reclaims pages: once the file is
 full it recycles what previous generations retired instead of refusing.

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Interactive REPL and pipe regression suite for CybouDB.
 Run: python tests/repl_tests.py [binary]
 """
@@ -296,11 +296,11 @@ def setup_db(db_path):
 if __name__ == "__main__":
     test_dir = ROOT / "build" / "testrun_repl"
     test_dir.mkdir(parents=True, exist_ok=True)
-    db_file = test_dir / "test.cyboudb"
+    db_file = test_dir / "test.cdb"
     if db_file.exists():
         db_file.unlink()
 
-    rel_db = Path("build") / "testrun_repl" / "test.cyboudb"
+    rel_db = Path("build") / "testrun_repl" / "test.cdb"
 
     setup = subprocess.run(
         [str(BINARY), "create-pax-multi", str(rel_db), "10000", "--force"],

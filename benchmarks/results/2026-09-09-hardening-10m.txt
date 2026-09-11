@@ -1,4 +1,4 @@
-[CybouDB] Using cached database events_10000000.cyboudb (10,000,000 rows)
+﻿[CybouDB] Using cached database events_10000000.cdb (10,000,000 rows)
 [SQLite] Using cached database events_10000000.sqlite (10,000,000 rows)
 
 ==========================================================================================================

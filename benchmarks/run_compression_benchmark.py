@@ -1,4 +1,4 @@
-"""RAW/CONST/FOR gate: separate fixtures, rotated processes and parity checks."""
+﻿"""RAW/CONST/FOR gate: separate fixtures, rotated processes and parity checks."""
 import argparse
 import collections
 import json
@@ -73,7 +73,7 @@ def fixtures(args, dataset):
         # v2 records the writer policy that rounds FOR widths 1..8 to 8 and
         # 9..16 to 16.  Never reuse v1 fixtures when measuring direct-FOR.
         profile = "for-zone-v2" if compressed else "raw-zone-v1"
-        path = args.db_dir / f"{dataset}_{args.rows}_{profile}.cyboudb"
+        path = args.db_dir / f"{dataset}_{args.rows}_{profile}.cdb"
         meta_path = path.with_suffix(".json")
         meta = ds.metadata(dataset, args.rows)
         meta.update(storage_profile=profile, required_features=1008 if compressed else 496,
@@ -81,8 +81,8 @@ def fixtures(args, dataset):
         old = read_metadata(meta_path)
         if old != meta:
             path.unlink(missing_ok=True)
-        ds.seed_cyboudb(args.cyboudb, bench.CybouDB_HARNESS, path, args.rows, dataset, compressed)
-        ds.run_cmd(args.cyboudb, "check", path)
+        ds.seed_cyboudb(args.cdb, bench.cdb_HARNESS, path, args.rows, dataset, compressed)
+        ds.run_cmd(args.cdb, "check", path)
         meta_path.write_text(json.dumps(meta, indent=2) + "\n")
         paths["compressed" if compressed else "raw"] = path
     path = args.db_dir / f"{dataset}_{args.rows}.duckdb"
@@ -132,14 +132,14 @@ def main():
             for repeat in range(args.repeats):
                 for e in engines[repeat % 4:] + engines[:repeat % 4]:
                     is_cyboudb = e in ("raw", "compressed")
-                    exe = bench.CybouDB_HARNESS if is_cyboudb else bench.DUCKDB_HARNESS
+                    exe = bench.cdb_HARNESS if is_cyboudb else bench.DUCKDB_HARNESS
                     db = paths[e] if is_cyboudb else paths["duckdb"]
                     extra = [0, 0, 0] if is_cyboudb else (1 if e.endswith("1t") else 8)
                     rec = bench.run_harness(exe, db, sql, args.iters, args.warmup,
                                             mode, extra, None if is_cyboudb else env)
                     # Aggregate results live in a dedicated untimed diagnostic record.
                     if mode == 0:
-                        count = (bench.cyboudb_count(args.cyboudb, db, sql) if is_cyboudb else
+                        count = (bench.cdb_count(args.cdb, db, sql) if is_cyboudb else
                                  bench.run_harness(exe, db, sql, 1, 0, 2, extra, env)["selected"])
                         signature = (count,)
                     else:

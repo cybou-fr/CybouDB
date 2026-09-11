@@ -1,6 +1,6 @@
 # CybouDB SQL Dialect and Engine Specification
 
-Status: The Phase 3 SQL MVP engine is fully integrated. It supports zero-copy scalar execution of CREATE TABLE, INSERT INTO ... VALUES (...), and SELECT ... FROM ... WHERE ... over COW catalog and PAX columnar table storage.
+Status: The Phase 3 SQL MVP engine is fully integrated. It supports CREATE TABLE, INSERT INTO ... VALUES (...), correctness-first UPDATE, and zero-copy scalar SELECT ... FROM ... WHERE ... over COW catalog and PAX columnar table storage.
 
 ---
 
@@ -111,6 +111,19 @@ SELECT col1 FROM table_name [WHERE expression] LIMIT count [OFFSET count];
   - Logical operators: AND, OR (with standard precedence: AND binds tighter than OR).
   - Parentheses: Sub-expressions can be nested with ( ... ).
 
+### 1.4 UPDATE
+
+```sql
+UPDATE table_name SET column_name = literal WHERE expression;
+```
+
+UPDATE accepts exactly one assignment and requires `WHERE`. The target is a
+fixed-width INT32, INT64, FLOAT32, or BOOL column in a table whose PAX directory
+is flat. NULL obeys the target column's nullability. Predicate matches are
+collected from one source snapshot before any mutation, then coalesced by leaf
+so each changed leaf is copied, decoded, encoded, and sealed once. TEXT/BLOB
+targets and two-level tree directories are not yet supported.
+
 ---
 
 ## 2. Type System & Semantics
@@ -131,7 +144,7 @@ SQL keywords (SELECT, FROM, WHERE, etc.) and identifiers (table names, column na
 
 ### 2.3 Commit & Persistence Policy
 - sql_execute executes the bound physical plan against the open database context in memory without issuing a commit.
-- In CLI mode (cyboudb query <db> <sql>), mutating statements (CREATE TABLE, INSERT INTO) are automatically committed via db_commit upon successful execution.
+- In CLI mode (cyboudb query <db> <sql>), mutating statements (CREATE TABLE, INSERT INTO, UPDATE) are automatically committed via db_commit upon successful execution. An UPDATE matching no rows does not publish an empty generation.
 - Read-only statements (SELECT) open the database in read-only mode and do not write or commit.
 
 ---

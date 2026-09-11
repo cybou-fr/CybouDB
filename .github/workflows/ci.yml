@@ -1,4 +1,4 @@
-name: CI
+﻿name: CI
 
 # The engine writes files that outlive the process, so the thing worth
 # protecting is behaviour on damaged input, not just whether it assembles.
@@ -69,14 +69,14 @@ jobs:
       - name: Build static library and run C API tests
         run: |
           sh build.sh --c-tests
-          ./cyboudb create-large build/test_ci_varlen_c.cyboudb 10000 --force
-          ./build/c_api_test build/test_ci_varlen_c.cyboudb varlen
+          ./cyboudb create-large build/test_ci_varlen_c.cdb 10000 --force
+          ./build/c_api_test build/test_ci_varlen_c.cdb varlen
           python3 tests/compress_tests.py ./build/compress_harness
           python3 tests/benchmark_profile_tests.py
-          ./cyboudb create-pax-multi build/test_ci_c.cyboudb 10000 --force
-          ./build/c_api_test build/test_ci_c.cyboudb
-          ./cyboudb create-compressed build/test_ci_compressed_c.cyboudb 10000 --force
-          ./build/c_api_test build/test_ci_compressed_c.cyboudb compressed
+          ./cyboudb create-pax-multi build/test_ci_c.cdb 10000 --force
+          ./build/c_api_test build/test_ci_c.cdb
+          ./cyboudb create-compressed build/test_ci_compressed_c.cdb 10000 --force
+          ./build/c_api_test build/test_ci_compressed_c.cdb compressed
           ./build/vector_topk_test
 
       - name: Interactive REPL and pipe tests
@@ -159,19 +159,19 @@ jobs:
         run: |
           call build.bat --c-tests
           if errorlevel 1 exit /b 1
-          cyboudb.exe create-large build\test_ci_varlen_c.cyboudb 10000 --force
+          cyboudb.exe create-large build\test_ci_varlen_c.cdb 10000 --force
           if errorlevel 1 exit /b 1
-          build\c_api_test.exe build\test_ci_varlen_c.cyboudb varlen
+          build\c_api_test.exe build\test_ci_varlen_c.cdb varlen
           if errorlevel 1 exit /b 1
           python tests/compress_tests.py ./build/compress_harness.exe
           if errorlevel 1 exit /b 1
           python tests/benchmark_profile_tests.py
           if errorlevel 1 exit /b 1
-          cyboudb.exe create-pax-multi build\test_ci_c.cyboudb 10000 --force
-          build\c_api_test.exe build\test_ci_c.cyboudb
+          cyboudb.exe create-pax-multi build\test_ci_c.cdb 10000 --force
+          build\c_api_test.exe build\test_ci_c.cdb
           if errorlevel 1 exit /b 1
-          cyboudb.exe create-compressed build\test_ci_compressed_c.cyboudb 10000 --force
-          build\c_api_test.exe build\test_ci_compressed_c.cyboudb compressed
+          cyboudb.exe create-compressed build\test_ci_compressed_c.cdb 10000 --force
+          build\c_api_test.exe build\test_ci_compressed_c.cdb compressed
           if errorlevel 1 exit /b 1
           build\vector_topk_test.exe
           if errorlevel 1 exit /b 1

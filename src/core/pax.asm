@@ -2221,13 +2221,13 @@ pax_append_page:
     FRAME_END
     ret
 
-; db_pax_update_one(ctx, table_id, col_idx, value, is_null, update_span)
-; rewrites one 64-row predicate span in a fixed-width, single-leaf table.
+; db_pax_update_one(ctx, table_id, col_idx, value, is_null, update_group)
+; rewrites all predicate spans in one fixed-width leaf with one COW copy.
 ; Every unsupported shape is rejected before the first allocation. This is the
 ; deliberately narrow UPDATE-V1 primitive; later versions can copy several
 ; changed paths while retaining this publication contract.
 db_pax_update_one:
-    FRAME_BEGIN 224, 1
+    FRAME_BEGIN 256, 1
     mov [rbp - 8], ARG1             ; ctx
     mov [rbp - 16], ARG2            ; table id
     mov [rbp - 24], ARG3            ; column index
@@ -2237,6 +2237,16 @@ db_pax_update_one:
     mov rax, IN_ARG6
     test rax, rax
     jz .upd_rows
+    mov rdx, [rax + UPDATE_GROUP_SPANS]
+    test rdx, rdx
+    jz .upd_rows
+    mov [rbp - 232], rdx            ; first span
+    mov rcx, [rax + UPDATE_GROUP_COUNT]
+    test rcx, rcx
+    jz .upd_rows
+    mov [rbp - 240], rcx            ; spans in this leaf
+    mov qword [rbp - 248], 0
+    mov rax, rdx
     mov rdx, [rax + UPDATE_SPAN_START]
     mov [rbp - 184], rdx            ; global first row of this mask
     mov rax, [rax + UPDATE_SPAN_MASK]
@@ -2305,6 +2315,51 @@ db_pax_update_one:
     test rax, rax
     jnz .upd_rows
 .upd_mask_ok:
+    ; Validate the whole group before allocating anything. The executor emits
+    ; these in scan order, but the storage boundary independently guarantees
+    ; that every mask belongs to this leaf and addresses real rows.
+    mov qword [rbp - 248], 1
+.upd_group_preflight:
+    mov rax, [rbp - 248]
+    cmp rax, [rbp - 240]
+    jae .upd_group_preflight_done
+    shl rax, 4
+    add rax, [rbp - 232]
+    mov r8, [rax + UPDATE_SPAN_START]
+    mov r9, [rax + UPDATE_SPAN_MASK]
+    test r9, r9
+    jz .upd_rows
+    mov r10, [rbp - 64]
+    cmp r8, [r10 + CAT_TABLE_ROWS]
+    jae .upd_rows
+    mov rax, r8
+    xor edx, edx
+    div qword [rbp - 200]
+    cmp rax, [rbp - 208]
+    jne .upd_rows
+    mov rcx, [rbp - 200]
+    sub rcx, rdx
+    mov rax, [r10 + CAT_TABLE_ROWS]
+    sub rax, r8
+    cmp rcx, rax
+    jbe .upd_group_preflight_leaf_end
+    mov rcx, rax
+.upd_group_preflight_leaf_end:
+    cmp rcx, 64
+    jbe .upd_group_preflight_lanes
+    mov rcx, 64
+.upd_group_preflight_lanes:
+    cmp rcx, 64
+    je .upd_group_preflight_next
+    mov rax, r9
+    shr rax, cl
+    test rax, rax
+    jnz .upd_rows
+.upd_group_preflight_next:
+    inc qword [rbp - 248]
+    jmp .upd_group_preflight
+.upd_group_preflight_done:
+    mov qword [rbp - 248], 0
     mov r10, [rbp - 64]
     mov rax, [r10 + CAT_DATA_ROOT]
     test rax, rax
@@ -2453,6 +2508,54 @@ db_pax_update_one:
     inc ecx
     cmp rcx, [rbp - 192]
     jb .upd_row
+
+    inc qword [rbp - 248]
+    mov rax, [rbp - 248]
+    cmp rax, [rbp - 240]
+    jae .upd_group_done
+    shl rax, 4
+    add rax, [rbp - 232]
+    mov rdx, [rax + UPDATE_SPAN_START]
+    mov [rbp - 184], rdx
+    mov rax, [rax + UPDATE_SPAN_MASK]
+    mov [rbp - 48], rax
+    test rax, rax
+    jz .upd_rows
+    mov r10, [rbp - 64]
+    mov rcx, [r10 + CAT_TABLE_ROWS]
+    cmp [rbp - 184], rcx
+    jae .upd_rows
+    sub rcx, [rbp - 184]
+    cmp rcx, 64
+    jbe .upd_group_lanes_ready
+    mov rcx, 64
+.upd_group_lanes_ready:
+    mov [rbp - 192], rcx
+    mov rcx, [rbp - 200]
+    mov rax, [rbp - 184]
+    xor edx, edx
+    div rcx
+    cmp rax, [rbp - 208]
+    jne .upd_rows
+    mov [rbp - 216], rdx
+    mov rax, [rbp - 200]
+    sub rax, rdx
+    cmp [rbp - 192], rax
+    jbe .upd_group_span_in_leaf
+    mov [rbp - 192], rax
+.upd_group_span_in_leaf:
+    mov rcx, [rbp - 192]
+    cmp rcx, 64
+    je .upd_group_mask_ok
+    mov rax, [rbp - 48]
+    shr rax, cl
+    test rax, rax
+    jnz .upd_rows
+.upd_group_mask_ok:
+    mov r11, [rbp - 48]
+    xor ecx, ecx
+    jmp .upd_row
+.upd_group_done:
 
     mov r10, [rbp - 128]
     mov rax, [rbp - 120]

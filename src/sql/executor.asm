@@ -9,7 +9,7 @@
 BITS 64
 default rel
 
-extern db_catalog_put, db_pax_insert, db_pax_update_one, db_commit
+extern db_catalog_put, db_pax_insert, db_pax_update_one, db_pax_capacity, db_commit
 extern sql_select_open, sql_select_next
 extern sql_arena_alloc
 extern sql_join_execute
@@ -601,6 +601,10 @@ sql_execute_batch:
     mov rax, [rbp - 184]
     mov [r10 + PLAN_DATA1], rax
     mov qword [rbp - 200], 0
+    mov ARG1, [rbp - 8]
+    mov ARG2, [r10 + PLAN_SCHEMA_PAGE]
+    call db_pax_capacity
+    mov [rbp - 216], rax            ; physical rows per leaf
 .update_apply:
     mov rax, [rbp - 200]
     cmp rax, [rbp - 176]
@@ -608,18 +612,46 @@ sql_execute_batch:
     shl rax, 4
     add rax, [rbp - 168]
     mov [rbp - 208], rax
+    mov rdx, [rax + UPDATE_SPAN_START]
+    mov rax, rdx
+    xor edx, edx
+    div qword [rbp - 216]
+    mov [rbp - 224], rax            ; leaf shared by this group
+    mov rcx, [rbp - 200]
+.update_group:
+    inc rcx
+    cmp rcx, [rbp - 176]
+    jae .update_group_ready
+    mov rax, rcx
+    shl rax, 4
+    add rax, [rbp - 168]
+    mov rax, [rax + UPDATE_SPAN_START]
+    xor edx, edx
+    div qword [rbp - 216]
+    cmp rax, [rbp - 224]
+    je .update_group
+.update_group_ready:
+    mov rax, rcx
+    sub rax, [rbp - 200]
+    mov [rbp - 232], rax
+    mov rax, [rbp - 208]
+    mov [rbp - 248], rax            ; UPDATE_GROUP_SPANS
+    mov rax, [rbp - 232]
+    mov [rbp - 240], rax            ; UPDATE_GROUP_COUNT
+    mov r10, [rbp - 16]
     mov ARG1, [rbp - 8]
     mov ARG2, [r10 + PLAN_TABLE_ID]
     mov ARG3, [r10 + PLAN_UPDATE_COL_IDX]
     mov ARG4, [r10 + PLAN_UPDATE_VALUE]
     mov rax, [r10 + PLAN_UPDATE_IS_NULL]
     PASS_ARG5 rax
-    mov rax, [rbp - 208]
+    lea rax, [rbp - 248]
     PASS_ARG6 rax
     call db_pax_update_one
     test eax, eax
     jnz .storage_done
-    inc qword [rbp - 200]
+    mov rax, [rbp - 232]
+    add [rbp - 200], rax
     mov r10, [rbp - 16]
     jmp .update_apply
 .exec_select:

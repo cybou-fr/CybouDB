@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Produce deliberately damaged CybouDB databases for the test suite.
 
 Every variant starts from a healthy database and breaks exactly one thing, so
@@ -10,7 +10,7 @@ The CRC-32C here is an independent implementation of the same function the
 engine computes in assembly. It is validated against the published test
 vector on every run, so a bug shared by both sides cannot pass unnoticed.
 
-Usage:  corrupt.py <healthy.cyboudb> <output directory>
+Usage:  corrupt.py <healthy.cdb> <output directory>
 """
 
 import os
@@ -61,42 +61,42 @@ def main():
 
     # A byte of the header changes, its checksum is left stale.
     buf = bytearray(good); buf[64] ^= 0xFF
-    write("hdr_crc.cyboudb", buf)
+    write("hdr_crc.cdb", buf)
 
     # Some other file that happens to have the right size.
     buf = bytearray(good); buf[0:4] = b"XXXX"
-    write("bad_magic.cyboudb", buf)
+    write("bad_magic.cdb", buf)
 
     # A well-formed header written by a future version of the format.
     buf = bytearray(good); struct.pack_into("<I", buf, 8, 2); seal_header(buf)
-    write("version2.cyboudb", buf)
+    write("version2.cdb", buf)
 
     # A page size this build does not implement.
     buf = bytearray(good); struct.pack_into("<I", buf, 12, 8192); seal_header(buf)
-    write("pagesize.cyboudb", buf)
+    write("pagesize.cdb", buf)
 
     # An incompatible feature bit the engine has never heard of.
     buf = bytearray(good); struct.pack_into("<Q", buf, 16, 1); seal_header(buf)
-    write("features.cyboudb", buf)
+    write("features.cdb", buf)
 
     # Copy A destroyed, copy B intact: the database must still open off B.
     buf = bytearray(good); buf[PAGE_SIZE + 16] ^= 0xFF
-    write("sb_a_bad.cyboudb", buf)
+    write("sb_a_bad.cdb", buf)
 
     # Both copies destroyed: nothing left to fall back to.
     buf = bytearray(good)
     buf[PAGE_SIZE + 16] ^= 0xFF
     buf[2 * PAGE_SIZE + 16] ^= 0xFF
-    write("sb_both_bad.cyboudb", buf)
+    write("sb_both_bad.cdb", buf)
 
     # Copy B carries a newer generation: it must win over copy A.
     buf = bytearray(good)
     struct.pack_into("<Q", buf, 2 * PAGE_SIZE + 8, 7)
     seal_superblock(buf, 2)
-    write("sb_b_newer.cyboudb", buf)
+    write("sb_b_newer.cdb", buf)
 
     # The file lost its last page, so the counts no longer describe it.
-    write("truncated.cyboudb", bytearray(good)[:-PAGE_SIZE])
+    write("truncated.cdb", bytearray(good)[:-PAGE_SIZE])
 
     # The free list points at a page that carries no free-page record. The
     # database still opens - the pointer is inside the allocated range - and
@@ -105,7 +105,7 @@ def main():
     for page in (1, 2):
         struct.pack_into("<Q", buf, page * PAGE_SIZE + 32, 3)
         seal_superblock(buf, page)
-    write("freelist_bad.cyboudb", buf)
+    write("freelist_bad.cdb", buf)
 
     # An extension root written by a build that implements the extension. This
     # one has to be refused rather than ignored: whatever it points at governs
@@ -114,7 +114,7 @@ def main():
     for page in (1, 2):
         struct.pack_into("<Q", buf, page * PAGE_SIZE + 56, 3)
         seal_superblock(buf, page)
-    write("feature_root.cyboudb", buf)
+    write("feature_root.cdb", buf)
 
     # The reserved region of the superblock is where the writer's in-memory
     # staged marker sits, so a non-zero byte there must never come off a disk.
@@ -122,14 +122,14 @@ def main():
     for page in (1, 2):
         buf[page * PAGE_SIZE + 120] = 1
         seal_superblock(buf, page)
-    write("sb_reserved.cyboudb", buf)
+    write("sb_reserved.cdb", buf)
 
     # More pages in use than the file holds.
     buf = bytearray(good)
     for page in (1, 2):
         struct.pack_into("<Q", buf, page * PAGE_SIZE + 24, 9999)
         seal_superblock(buf, page)
-    write("alloc_gt_total.cyboudb", buf)
+    write("alloc_gt_total.cdb", buf)
 
     print("corrupt.py: wrote %d variants to %s" % (len(os.listdir(outdir)), outdir))
 

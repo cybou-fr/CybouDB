@@ -1,9 +1,9 @@
-"""Single-page PAX batches, scalar reads and recovery boundaries."""
+﻿"""Single-page PAX batches, scalar reads and recovery boundaries."""
 from pax_support import *
 
 with tempfile.TemporaryDirectory() as directory:
     directory = pathlib.Path(directory)
-    path, batch = directory / "pax.cyboudb", directory / "batch.bin"
+    path, batch = directory / "pax.cdb", directory / "batch.bin"
     kinds, flags = [1, 2, 3, 4], [1, 1, 1, 1]
     empty = seed(path, kinds, flags)
     assert u64(empty, 16) == 14 and b"COW catalog + PAX" in run(binary, "info", path)
@@ -209,18 +209,44 @@ with tempfile.TemporaryDirectory() as directory:
     run(harness, path, 41, 1, 0, rc=30)
     check("rejected PAX range stays protected before publication")
 
-    update_path = directory / "pax-update-one.cyboudb"
+    update_path = directory / "pax-update-one.cdb"
     seed(update_path, [2, 1], [0, 1], command="create-large")
     update_values = [[1, 10], [2, 20], [3, 30]]
     update_nulls = [[0, 0], [0, 0], [0, 1]]
     fixture(batch, update_values, update_nulls)
-    run(harness, update_path, 54, 1, 1, batch)
-    update_values[1][1] = 99
-    update_values[2][1] = 99
-    update_nulls[2][1] = 0
+    run(harness, update_path, 40, 1, 1, batch)
+    update_original = update_path.read_bytes()
+    run(harness, update_path, 58, 1, 1, batch)
+    updated_values = [row[:] for row in update_values]
+    updated_nulls = [row[:] for row in update_nulls]
+    updated_values[1][1] = 99
+    updated_values[2][1] = 99
+    updated_nulls[2][1] = 0
     for i in range(3):
-        read(update_path, i, update_values[i], update_nulls[i])
+        read(update_path, i, updated_values[i], updated_nulls[i])
     run(binary, "check", update_path)
-    check("single-leaf COW update rewrites selected values and NULL metadata")
+    check("coalesced single-leaf COW update applies multiple predicate spans")
+
+    for fault, name in ((3, "data sync failure"),
+                        (4, "publication sync failure"),
+                        (5, "torn superblock")):
+        update_path.write_bytes(update_original)
+        run(harness, update_path, 58, 1, 1, batch, fault)
+        run(binary, "check", update_path)
+        rows = []
+        for i in range(3):
+            raw = run(harness, update_path, 41, 1, i)
+            rows.append((list(struct.unpack("<QQ", raw[:16])), list(raw[16:18])))
+        canonical_old = [[0 if update_nulls[r][c] else update_values[r][c]
+                          for c in range(2)] for r in range(3)]
+        old_rows = [(row, mask) for row, mask in zip(canonical_old, update_nulls)]
+        new_rows = [(row, mask) for row, mask in zip(updated_values, updated_nulls)]
+        assert rows in (old_rows, new_rows), (fault, rows)
+        if fault in (3, 5):
+            assert rows == old_rows
+        check("UPDATE " + name + " recovers one complete generation")
+
+
+
 
 print(f"PAX passed: {check_count()}")

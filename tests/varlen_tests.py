@@ -1,4 +1,4 @@
-"""Focused integration test for validate-before-copy varlen reads."""
+﻿"""Focused integration test for validate-before-copy varlen reads."""
 import pathlib
 import subprocess
 import sys
@@ -7,7 +7,7 @@ import tempfile
 binary, harness = (str(pathlib.Path(a).resolve()) for a in sys.argv[1:])
 
 with tempfile.TemporaryDirectory() as tmp:
-    path = pathlib.Path(tmp) / "varlen.cyboudb"
+    path = pathlib.Path(tmp) / "varlen.cdb"
     created = subprocess.run(
         [binary, "create-large", str(path), "128"], capture_output=True
     )

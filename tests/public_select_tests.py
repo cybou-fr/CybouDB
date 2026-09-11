@@ -1,4 +1,4 @@
-"""Public and callback execution parity, including actual zone pruning paths."""
+﻿"""Public and callback execution parity, including actual zone pruning paths."""
 from pathlib import Path
 import sys
 import tempfile
@@ -9,7 +9,7 @@ from run_c_api_benchmark import run
 binary, seed_harness, harness = [Path(p).resolve() for p in sys.argv[1:]]
 with tempfile.TemporaryDirectory() as temporary:
     for compressed in (False, True):
-        path = Path(temporary) / ('encoded.cyboudb' if compressed else 'raw.cyboudb')
+        path = Path(temporary) / ('encoded.cdb' if compressed else 'raw.cdb')
         datasets.seed_cyboudb(binary, seed_harness, path, 10000, 'structured', compressed)
         for sql, mode, selected in (
             ('SELECT COUNT(*) FROM events WHERE amount < 0', 0, 0),

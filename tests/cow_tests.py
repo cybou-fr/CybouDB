@@ -1,4 +1,4 @@
-"""COW core tests with independent disk inspection and injected sync failures.
+﻿"""COW core tests with independent disk inspection and injected sync failures.
 
 Usage: python tests/cow_tests.py <cyboudb> <cow_harness>
 These exercise process exits and explicit corruption, not physical power loss.
@@ -49,7 +49,7 @@ def seal_map(data, page):
 
 with tempfile.TemporaryDirectory() as directory:
     directory = pathlib.Path(directory)
-    source = directory / "source.cyboudb"
+    source = directory / "source.cdb"
     run(binary, "create-cow", source, 16)
     run(binary, "alloc", source, 1)
     good = bytearray(source.read_bytes())
@@ -68,7 +68,7 @@ with tempfile.TemporaryDirectory() as directory:
                        (5, "torn superblock falls back"),
                        (7, "protected page and legacy free guards"),
                        (8, "read-only and closed handle guards")):
-        path = directory / (str(mode) + ".cyboudb")
+        path = directory / (str(mode) + ".cdb")
         path.write_bytes(good)
         run(harness, path, mode)
         data = path.read_bytes()
@@ -81,7 +81,7 @@ with tempfile.TemporaryDirectory() as directory:
         check(name)
 
     for mode in (1, 4, 6):
-        path = directory / (str(mode) + ".cyboudb")
+        path = directory / (str(mode) + ".cdb")
         path.write_bytes(good)
         run(harness, path, mode)
         data = path.read_bytes()
@@ -102,7 +102,7 @@ with tempfile.TemporaryDirectory() as directory:
                6: "repeated commits protect prior pages"}[mode])
 
     # The older coherent copy can have a higher watermark and its own map.
-    path = directory / "older-high.cyboudb"
+    path = directory / "older-high.cdb"
     data = bytearray(good)
     data[6 * P:10 * P] = b"\x7b" * (4 * P)
     data[8 * P:9 * P] = data[4 * P:5 * P]
@@ -124,7 +124,7 @@ with tempfile.TemporaryDirectory() as directory:
     check("allocation protects both coherent superblock watermarks")
 
     # After two commits, either superblock independently names intact data.
-    path = directory / "two-commits.cyboudb"
+    path = directory / "two-commits.cdb"
     path.write_bytes(good)
     run(harness, path, 6)
     both = path.read_bytes()
@@ -139,7 +139,7 @@ with tempfile.TemporaryDirectory() as directory:
         check(f"payload survives loss of superblock {damaged}")
 
     # An unflagged legacy file is never silently converted to COW.
-    path = directory / "legacy.cyboudb"
+    path = directory / "legacy.cdb"
     run(binary, "create", path, 16)
     run(binary, "alloc", path, 1)
     run(binary, "free", path, 3)
@@ -148,14 +148,14 @@ with tempfile.TemporaryDirectory() as directory:
     assert path.read_bytes() == before
     check("legacy database refused unchanged")
 
-    path = directory / "full.cyboudb"
+    path = directory / "full.cdb"
     run(binary, "create-cow", path, 5)
     before = path.read_bytes()
     run(harness, path, 1, rc=15)
     assert path.read_bytes() == before
     check("insufficient room for map plus payload refused unchanged")
 
-    path = directory / "generation.cyboudb"
+    path = directory / "generation.cdb"
     data = bytearray(good)
     for page in (1, 2):
         struct.pack_into("<Q", data, page * P + 8, 2**64 - 1)
@@ -165,7 +165,7 @@ with tempfile.TemporaryDirectory() as directory:
     assert path.read_bytes() == data
     check("generation exhaustion refused unchanged")
 
-    path = directory / "empty.cyboudb"
+    path = directory / "empty.cdb"
     run(binary, "create-cow", path, 16)
     run(harness, path, 1)
     data = path.read_bytes()
@@ -173,7 +173,7 @@ with tempfile.TemporaryDirectory() as directory:
     assert data[5 * P:6 * P] == b"\xa5" * P
     check("first allocation via COW dispatch")
 
-    run(harness, directory / "create-failed.cyboudb", 10)
+    run(harness, directory / "create-failed.cdb", 10)
     check("create reports failed initial sync")
 
 print(f"COW passed: {passed}")

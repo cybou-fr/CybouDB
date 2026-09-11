@@ -1,4 +1,4 @@
-# Single-page PAX storage
+﻿# Single-page PAX storage
 
 Status: fixed-width row batches and scalar row reads are implemented as internal
 assembly APIs. The base capability described here has one data page per table.
@@ -8,8 +8,8 @@ deletion, updates, reclamation and concurrent access remain pending.
 ## Creation and compatibility
 
 ```sh
-cyboudb create-pax demo.cyboudb 256
-cyboudb info demo.cyboudb
+cyboudb create-pax demo.cdb 256
+cyboudb info demo.cdb
 ```
 
 This creates a new file with immutable incompatible flags `0xE`: COW `0x2`,

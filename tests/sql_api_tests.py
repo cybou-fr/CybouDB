@@ -1,4 +1,4 @@
-"""SQL error domains and exact FLOAT32 parsing under nondefault MXCSR."""
+﻿"""SQL error domains and exact FLOAT32 parsing under nondefault MXCSR."""
 from fractions import Fraction
 from pathlib import Path
 import random
@@ -58,7 +58,7 @@ def nearest(decimal):
 
 
 with tempfile.TemporaryDirectory() as directory:
-    database = Path(directory) / 'api.cyboudb'
+    database = Path(directory) / 'api.cdb'
     run(binary, 'create-pax-multi', database, 128, '--force')
     run(binary, 'query', database, 'CREATE TABLE f (x FLOAT32)')
     run(binary, 'query', database, 'INSERT INTO f VALUES (1.0)')

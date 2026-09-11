@@ -1,4 +1,4 @@
-"""SQL results with zones ON/OFF, independent 3VL oracle and leaf-path counters.
+﻿"""SQL results with zones ON/OFF, independent 3VL oracle and leaf-path counters.
 
 Usage: zone_sql_tests.py <cyboudb> <cow_harness> <sql_harness>
 """
@@ -74,7 +74,7 @@ def parity(path, sql, expected, modes=(32, 33, 34, 35), bits=None):
 
 with tempfile.TemporaryDirectory() as temporary:
     temp = pathlib.Path(temporary)
-    path, batch = temp / "zones.cyboudb", temp / "batch.bin"
+    path, batch = temp / "zones.cdb", temp / "batch.bin"
     kinds = [2, 1, 3, 4, 2]
     seed(path, kinds, [0, 1, 1, 1, 1], 8192,
          command=os.environ.get("CybouDB_TEST_CREATE", "create-large"))

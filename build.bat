@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 rem ===========================================================================
 rem  build.bat - build CybouDB for Windows x64
 rem
@@ -142,7 +142,7 @@ set OBJS=
 for %%F in (%SOURCES%) do (
     echo [asm]  %%F
     set DEFS=
-    if "%~1"=="--core-tests" if "%%F"=="src\core\database.asm" set DEFS=-Dvfs_sync=test_sync
+    if "%~1"=="--core-tests" if "%%F"=="src\core\database.asm" set DEFS=-Dvfs_sync=test_sync -DCybouDB_TEST_COMMIT_HOOK=1
     if "%~1"=="--lib" set DEFS=-DCybouDB_LIBRARY=1
     if "%~1"=="--c-api-bench" set DEFS=-DCybouDB_LIBRARY=1
     if "%~1"=="--for-experiment" set DEFS=-DCybouDB_LIBRARY=1
@@ -206,8 +206,8 @@ goto :ok
 :ok
 echo.
 echo Build OK -^> %OUT%
-echo   %OUT% create test.cyboudb 256
-echo   %OUT% info   test.cyboudb
+echo   %OUT% create test.cdb 256
+echo   %OUT% info   test.cdb
 endlocal
 exit /b 0
 

@@ -1,4 +1,4 @@
-"""Required-column plans, zero-copy sparse views, and wide multi-leaf SELECTs."""
+﻿"""Required-column plans, zero-copy sparse views, and wide multi-leaf SELECTs."""
 from pathlib import Path
 import struct
 import subprocess
@@ -34,7 +34,7 @@ def rows(sql, expected):
 
 
 with tempfile.TemporaryDirectory() as directory:
-    database = Path(directory) / 'pruning.cyboudb'
+    database = Path(directory) / 'pruning.cdb'
     run(binary, 'create-pax-multi', database, 4096, '--force')
     run(binary, 'query', database, 'CREATE TABLE wide (' +
         ','.join(f'c{i} INT32' for i in range(64)) + ')')
