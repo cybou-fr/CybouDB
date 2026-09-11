@@ -202,6 +202,7 @@ check "recovery/newer generation wins" 0 "Generation:      7" "$CybouDB" info "$
 echo
 check "metadata/root round-trip" 0 "checks passed" "$PYTHON" "$root/tests/root_roundtrip.py" "$CybouDB"
 check "sql/end-to-end suite"    0 "0 failed" "$PYTHON" "$root/tests/sql_tests.py" "$CybouDB"
+check "vector/sql suite"        0 "0 failed" "$PYTHON" "$root/tests/vector_sql_tests.py" "$CybouDB"
 echo "passed: $passed   failed: $failed"
 [ "$failed" -eq 0 ] || exit 1
 rm -rf "$work"

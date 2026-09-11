@@ -119,3 +119,22 @@ between scalar and SIMD execution.
 
 Status codes use the `CybouDB_VECTOR_*` family (`CybouDB_VECTOR_OK`, `CybouDB_VECTOR_INVALID`,
 `CybouDB_VECTOR_NONFINITE`, `CybouDB_VECTOR_FULL`). Direct `dot` and `l2sq` primitives return `float`.
+
+## Persistent Vector Storage and SQL Column Access
+
+- **Storage extents**: In tables created with `VECTOR(FLOAT32, n)` columns,
+  vector components are stored persistently in dedicated extent page chains
+  using canonical un-normalized IEEE-754 binary32 floats. PAX leaves hold
+  16-byte varlen descriptors (`{uint64 root, uint64 length}`).
+- **Strict Storage Invariants**: Every non-NULL vector cell must strictly satisfy
+  `descriptor.length == dimensions * 4`. Every NULL vector cell must strictly satisfy
+  `{root: 0, length: 0}`. Corruptions are rejected during PAX page validation.
+- **Cosine Semantics**: Persistent storage preserves the exact un-normalized raw
+  vector components to prevent precision loss, rounding drift, or loss of magnitude.
+  Cosine distance queries and index structures normalize on-the-fly or load unit
+  vectors into in-memory arenas.
+- **Safe Public C Accessors**:
+  - `cyboudb_column_vector_dimensions(stmt, col_idx)` returns declared column dimension.
+  - `cyboudb_column_vector_f32(stmt, col_idx, out, capacity, out_dim)` copies floats for the current row.
+  - `cyboudb_batch_vector_f32(stmt, batch, result_col, row, out, capacity)` copies floats from a batch view.
+  - `cyboudb_batch_column()` returns `NULL` for `CAT_VECTOR` columns to prevent exposing internal extent descriptors.

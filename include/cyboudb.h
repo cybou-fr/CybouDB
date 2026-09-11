@@ -299,8 +299,9 @@ int cyboudb_step_batch(cyboudb_stmt *stmt, const cyboudb_batch_view **out_batch,
  * reordered and duplicate SELECT projections. Returns NULL for invalid indices,
  * NULL arguments, another statement's batch or an exhausted/reset statement.
  * The returned view has the same lifetime as the batch.
- * TEXT/BLOB columns intentionally return NULL here because their internal
- * values are non-contiguous extent descriptors. Use cyboudb_batch_bytes().
+ * TEXT/BLOB and VECTOR columns intentionally return NULL here because their
+ * internal values are non-contiguous extent descriptors. Use cyboudb_batch_bytes()
+ * or cyboudb_batch_vector_f32().
  */
 const cyboudb_colview *cyboudb_batch_column(cyboudb_stmt *stmt,
                                     const cyboudb_batch_view *batch, int result_col);
@@ -316,6 +317,26 @@ int64_t cyboudb_batch_bytes(cyboudb_stmt *stmt,
                             const cyboudb_batch_view *batch,
                             int result_col, uint32_t row,
                             void *out, uint64_t capacity);
+
+/**
+ * Copy one selected VECTOR cell from the current batch into caller-owned float
+ * memory. Returns its dimension count on success, CybouDB_MISUSE for invalid
+ * arguments/type/capacity, or CybouDB_ERROR for a corrupt extent chain.
+ * NULL returns zero; inspect the batch column null_mask before calling to
+ * distinguish NULL from non-NULL.
+ *
+ * @param stmt             The prepared statement.
+ * @param batch            The current batch view.
+ * @param result_col       Result column index (0-indexed).
+ * @param row              Row offset within the batch run (0..row_count-1).
+ * @param out              Destination float buffer.
+ * @param capacity_floats  Maximum number of float elements out can hold.
+ * @return                 Dimension count (>0) on success, 0 for NULL, or negative on error.
+ */
+int64_t cyboudb_batch_vector_f32(cyboudb_stmt *stmt,
+                                 const cyboudb_batch_view *batch,
+                                 int result_col, uint32_t row,
+                                 float *out, uint64_t capacity_floats);
 
 /**
  * Reset a prepared statement back to its initial state so it can be re-run.
@@ -397,6 +418,34 @@ int cyboudb_column_bool(cyboudb_stmt *stmt, int col_idx);
  */
 int cyboudb_column_bytes(cyboudb_stmt *stmt, int col_idx, void *out,
                          uint64_t capacity, uint64_t *out_length);
+
+/**
+ * Return the dimension count of a VECTOR column (1..4096).
+ *
+ * @param stmt     The prepared statement.
+ * @param col_idx  Result column index (0-indexed).
+ * @return         Dimension count on success, or negative CybouDB_MISUSE
+ *                 if not a vector column or invalid argument.
+ */
+int cyboudb_column_vector_dimensions(cyboudb_stmt *stmt, int col_idx);
+
+/**
+ * Copy the current VECTOR value into caller-owned float memory.
+ *
+ * On a valid VECTOR column, *out_dim receives the dimension count.
+ * NULL values have dimension zero; use cyboudb_column_is_null() to distinguish
+ * them. A NULL output pointer is accepted only for NULL values.
+ *
+ * @param stmt             The prepared statement.
+ * @param col_idx          Result column index (0-indexed).
+ * @param out              Destination float buffer.
+ * @param capacity_floats  Maximum number of float elements out can hold.
+ * @param out_dim          Receives dimension count (or 0 for NULL).
+ * @return                 CybouDB_OK, CybouDB_MISUSE for invalid arguments/type/capacity,
+ *                         or CybouDB_ERROR if the persistent value is corrupt.
+ */
+int cyboudb_column_vector_f32(cyboudb_stmt *stmt, int col_idx, float *out,
+                             uint64_t capacity_floats, uint64_t *out_dim);
 
 /* =============================================================================
  *  Convenience One-Shot Execution

@@ -1757,6 +1757,17 @@ page_valid:
     mov r11, [rbp - 112]
     bt qword [r11], r10
     jc .varlen_null
+    mov r11, [rbp - 64]
+    shl r11, 5
+    add r11, [rbp - 24]
+    cmp dword [r11 + CAT_COLUMNS], CAT_VECTOR
+    jne .varlen_chain
+    mov edx, [r11 + CAT_COLUMNS + 4]
+    shr edx, 16
+    shl edx, 2
+    cmp [rax + VAR_CELL_LENGTH], rdx
+    jne .bad
+.varlen_chain:
     mov ARG1, [rbp - 8]
     mov ARG2, [rbp - 16]
     mov ARG3, [rax + VAR_CELL_ROOT]
@@ -1769,13 +1780,24 @@ page_valid:
     jz .bad
     jmp .varlen_next
 .varlen_null:
-    cmp qword [rbp - 136], 0
-    je .varlen_zero
     mov r11, [rbp - 64]
     shl r11, 5
     add r11, [rbp - 24]
+    cmp qword [rbp - 136], 0
+    jz .varlen_null_shallow
     test dword [r11 + CAT_COLUMNS + 4], CAT_NULLABLE
     jz .bad
+    mov rdx, [rax + VAR_CELL_ROOT]
+    or rdx, [rax + VAR_CELL_LENGTH]
+    jnz .bad
+    jmp .varlen_next
+.varlen_null_shallow:
+    cmp dword [r11 + CAT_COLUMNS], CAT_VECTOR
+    jne .varlen_next
+    mov rdx, [rax + VAR_CELL_ROOT]
+    or rdx, [rax + VAR_CELL_LENGTH]
+    jnz .bad
+    jmp .varlen_next
 .varlen_zero:
     cmp qword [rbp - 136], 0
     je .varlen_next                 ; old leaf contents were checked at publish

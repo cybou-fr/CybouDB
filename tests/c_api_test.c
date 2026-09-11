@@ -913,44 +913,32 @@ static void test_varlen_accessors(const char *db_path, int enabled) {
     uint64_t len = 0, mask = 0;
     const cyboudb_batch_view *batch = NULL;
 
-    printf("diag varlen open\n");
     ASSERT_EQ(cyboudb_open(db_path, CybouDB_OPEN_READWRITE, &db), CybouDB_OK, "open varlen fixture");
-    printf("diag varlen create\n");
     ASSERT_EQ(cyboudb_exec(db, "CREATE TABLE api_var (id INT64 NOT NULL, body TEXT, raw BLOB)"), CybouDB_OK, "create varlen table");
     ASSERT_EQ(cyboudb_exec(db, "INSERT INTO api_var VALUES (1, 'alpha', X'00FF'), (2, '', X''), (3, NULL, NULL)"), CybouDB_OK, "insert varlen rows");
-    printf("diag varlen prepare\n");
     ASSERT_EQ(cyboudb_prepare(db, "SELECT body, raw FROM api_var", &stmt), CybouDB_OK, "prepare varlen select");
     ASSERT_EQ(cyboudb_column_type(stmt, 0), CybouDB_TYPE_TEXT, "TEXT public type");
     ASSERT_EQ(cyboudb_column_type(stmt, 1), CybouDB_TYPE_BLOB, "BLOB public type");
 
     ASSERT_EQ(cyboudb_step(stmt), CybouDB_ROW, "varlen row one");
-    printf("diag varlen row accessor\n");
     memset(buf, 0xA5, sizeof(buf));
     ASSERT_EQ(cyboudb_column_bytes(stmt, 0, buf, 4, &len), CybouDB_MISUSE, "reject short row buffer");
-    printf("diag varlen short done\n");
     ASSERT_EQ(len, 5, "report required row length");
     ASSERT_EQ(buf[0], 0xA5, "short row destination unchanged");
     ASSERT_EQ(cyboudb_column_bytes(stmt, 0, buf, sizeof(buf), &len), CybouDB_OK, "copy TEXT row");
-    printf("diag varlen text done\n");
     ASSERT_EQ(len, 5, "TEXT row length");
     ASSERT_EQ(memcmp(buf, "alpha", 5), 0, "TEXT row bytes");
     ASSERT_EQ(cyboudb_column_bytes(stmt, 1, buf, sizeof(buf), &len), CybouDB_OK, "copy BLOB row");
-    printf("diag varlen blob done len=%llu bytes=%u,%u\n", (unsigned long long)len, buf[0], buf[1]);
     ASSERT_EQ(len, 2, "BLOB row length");
     ASSERT_EQ(buf[0], 0, "BLOB zero byte");
     ASSERT_EQ(buf[1], 0xFF, "BLOB high byte");
 
-    printf("diag before row two stmt=%p\n", (void *)stmt);
     ASSERT_EQ(cyboudb_step(stmt), CybouDB_ROW, "varlen empty row");
-    printf("diag after row two\n");
     ASSERT_EQ(cyboudb_column_bytes(stmt, 0, NULL, 0, &len), CybouDB_OK, "empty TEXT copy");
-    printf("diag empty copy done\n");
     ASSERT_EQ(len, 0, "empty TEXT length");
     ASSERT_EQ(cyboudb_step(stmt), CybouDB_ROW, "varlen NULL row");
-    printf("diag null row done\n");
     ASSERT_EQ(cyboudb_column_is_null(stmt, 0), 1, "TEXT NULL remains distinct");
     ASSERT_EQ(cyboudb_column_bytes(stmt, 0, NULL, 0, &len), CybouDB_OK, "NULL TEXT copy");
-    printf("diag null copy done\n");
     ASSERT_EQ(len, 0, "NULL TEXT length");
 
     ASSERT_EQ(cyboudb_reset(stmt), CybouDB_OK, "reset for varlen batch");
@@ -969,6 +957,63 @@ static void test_varlen_accessors(const char *db_path, int enabled) {
     printf("ok   test_varlen_accessors\n");
 }
 
+static void test_vector_accessors(const char *db_path) {
+    cyboudb_db *db = NULL;
+    cyboudb_stmt *stmt = NULL;
+    float vec[8];
+    uint64_t dim = 0, mask = 0;
+    const cyboudb_batch_view *batch = NULL;
+
+    ASSERT_EQ(cyboudb_open(db_path, CybouDB_OPEN_READWRITE, &db), CybouDB_OK, "open vector fixture");
+    ASSERT_EQ(cyboudb_exec(db, "CREATE TABLE api_vec (id INT64 NOT NULL, emb VECTOR(FLOAT32, 4), opt VECTOR(FLOAT32, 2))"), CybouDB_OK, "create vector table");
+    ASSERT_EQ(cyboudb_exec(db, "INSERT INTO api_vec VALUES (1, [1.0, 2.0, 3.0, 4.0], [10.0, 20.0]), (2, [5.0, 6.0, 7.0, 8.0], NULL)"), CybouDB_OK, "insert vector rows");
+    ASSERT_EQ(cyboudb_prepare(db, "SELECT emb, opt FROM api_vec", &stmt), CybouDB_OK, "prepare vector select");
+    ASSERT_EQ(cyboudb_column_type(stmt, 0), CybouDB_TYPE_VECTOR, "emb vector type");
+    ASSERT_EQ(cyboudb_column_type(stmt, 1), CybouDB_TYPE_VECTOR, "opt vector type");
+    ASSERT_EQ(cyboudb_column_vector_dimensions(stmt, 0), 4, "emb dimensions");
+    ASSERT_EQ(cyboudb_column_vector_dimensions(stmt, 1), 2, "opt dimensions");
+    ASSERT_EQ(cyboudb_column_vector_dimensions(stmt, -1), CybouDB_MISUSE, "negative col dimensions");
+    ASSERT_EQ(cyboudb_column_vector_dimensions(stmt, 2), CybouDB_MISUSE, "out-of-bounds dimensions");
+
+    /* Step row 1 */
+    ASSERT_EQ(cyboudb_step(stmt), CybouDB_ROW, "vector row 1");
+    ASSERT_EQ(cyboudb_column_is_null(stmt, 0), 0, "emb not null");
+    ASSERT_EQ(cyboudb_column_vector_f32(stmt, 0, vec, 3, &dim), CybouDB_MISUSE, "reject short vector buffer");
+    ASSERT_EQ(cyboudb_column_vector_f32(stmt, 0, vec, 4, &dim), CybouDB_OK, "copy emb row 1");
+    ASSERT_EQ(dim, 4, "emb row 1 dim");
+    ASSERT_EQ(vec[0] == 1.0f && vec[1] == 2.0f && vec[2] == 3.0f && vec[3] == 4.0f, 1, "emb row 1 values");
+
+    ASSERT_EQ(cyboudb_column_vector_f32(stmt, 1, vec, 2, &dim), CybouDB_OK, "copy opt row 1");
+    ASSERT_EQ(dim, 2, "opt row 1 dim");
+    ASSERT_EQ(vec[0] == 10.0f && vec[1] == 20.0f, 1, "opt row 1 values");
+
+    /* Step row 2 */
+    ASSERT_EQ(cyboudb_step(stmt), CybouDB_ROW, "vector row 2");
+    ASSERT_EQ(cyboudb_column_is_null(stmt, 1), 1, "opt row 2 is null");
+    ASSERT_EQ(cyboudb_column_vector_f32(stmt, 1, NULL, 0, &dim), CybouDB_OK, "null vector copy accepts null out");
+    ASSERT_EQ(dim, 0, "null vector dim is 0");
+
+    /* Batch stepping */
+    ASSERT_EQ(cyboudb_reset(stmt), CybouDB_OK, "reset for vector batch");
+    ASSERT_EQ(cyboudb_step_batch(stmt, &batch, &mask), CybouDB_ROW, "step batch vector");
+    ASSERT_EQ(mask, 3, "vector batch selection mask");
+    ASSERT_EQ(cyboudb_batch_column(stmt, batch, 0) == NULL, 1, "batch_column returns NULL for vector");
+    ASSERT_EQ(cyboudb_batch_column(stmt, batch, 1) == NULL, 1, "batch_column returns NULL for vector 2");
+
+    ASSERT_EQ(cyboudb_batch_vector_f32(stmt, batch, 0, 0, vec, 4), 4, "batch emb row 0 dim");
+    ASSERT_EQ(vec[0] == 1.0f && vec[1] == 2.0f && vec[2] == 3.0f && vec[3] == 4.0f, 1, "batch emb row 0 values");
+    ASSERT_EQ(cyboudb_batch_vector_f32(stmt, batch, 0, 1, vec, 4), 4, "batch emb row 1 dim");
+    ASSERT_EQ(vec[0] == 5.0f && vec[1] == 6.0f && vec[2] == 7.0f && vec[3] == 8.0f, 1, "batch emb row 1 values");
+    ASSERT_EQ(cyboudb_batch_vector_f32(stmt, batch, 1, 1, vec, 2), 0, "batch opt row 1 is NULL");
+    ASSERT_EQ(cyboudb_batch_vector_f32(stmt, batch, 0, 0, vec, 2), CybouDB_MISUSE, "batch reject short buffer");
+    ASSERT_EQ(cyboudb_batch_vector_f32(stmt, batch, 0, 3, vec, 4), CybouDB_MISUSE, "batch reject out of bounds row");
+
+    cyboudb_finalize(stmt);
+    ASSERT_EQ(cyboudb_close(db), CybouDB_OK, "close vector fixture");
+    total_tests++;
+    printf("ok   test_vector_accessors\n");
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -978,6 +1023,7 @@ int main(int argc, char **argv) {
     if (argc > 2 && strcmp(argv[2], "varlen") == 0) {
         test_invalid_args();
         test_varlen_accessors(db_path, 1);
+        test_vector_accessors(db_path);
 #ifdef CybouDB_API_TEST_ALLOC
         ASSERT_EQ(api_live_bytes, 0, "all varlen API allocations released");
         ASSERT_EQ(api_live_allocations, 0, "all varlen API handles released");

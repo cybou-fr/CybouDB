@@ -412,51 +412,31 @@ required - NASM targets x86 only.
 
 ## Phase 8 - Vector engine
 
-Vectors are planned to live in their own contiguous arena rather than inside
-PAX pages; the reasoning is in [ARCHITECTURE.md](ARCHITECTURE.md).
+Vectors are stored persistently via multi-page extent chains linked by 16-byte
+descriptors (`CAT_VECTOR`) in PAX leaves, preserving canonical raw IEEE-754
+`FLOAT32` vector components with exact length validation (`dimensions * 4` bytes).
+For search and computation, vectors are mapped into contiguous caller-owned or
+query-owned arenas for high-throughput SIMD kernels (AVX2/scalar dot product,
+squared L2, and cosine).
 
-The scalar FLOAT32 dot-product and squared-L2 oracle is implemented and tested;
-its ABI and rounding contract are documented in [docs/VECTOR.md](docs/VECTOR.md).
+Cosine semantics maintain raw canonical floats on disk to prevent precision drift
+or loss of component magnitudes; queries or indexing normalize vectors on the fly
+or cache normalized representations in memory.
 
-Persistent vector storage is intentionally gated on the relational mutation
-contract. The SQL AST now uses a stable `type + payload` header, freeing JOIN,
-UPDATE and DELETE to define statement-specific payloads without growing one
-universal structure. Fixed-width SQL aliases are accepted; `VECTOR` is a
-reserved type name but remains rejected by `CREATE TABLE` until persistence is
-defined. Single-table SELECT now carries table namespaces through qualified
-projections and WHERE expressions; an explicit alias hides the base table name.
-The parser also emits a dedicated `AST_JOIN` descriptor for plain/INNER/LEFT
-JOIN with `ON`. The bound plan now records both catalog inputs after validating
-the equi-join shape; execution remains deliberately blocked until its
-two-input row-production contract lands, preventing partial left-only results.
-JOIN binding now normalizes equality order, validates both namespaces and key
-types, and records the two physical key indices in the bound plan.
-Qualified JOIN projections are also mapped to either input schema using a
-source bit in the physical projection descriptor. Wildcard expansion remains
-gated until the joined output-schema contract is finalized.
-The runtime plan now preserves those source descriptors separately and exposes
-compact projection ordinals to result sinks, defining the joined-batch ABI
-needed by the nested-loop producer.
-A correctness-first nested-loop producer now executes INNER and LEFT equi-joins
-for qualified INT32/INT64 keys over raw or compressed PAX inputs. It materializes
-compact 64-row output batches, preserves duplicate matches and projected NULLs,
-and skips NULL join keys; LEFT JOIN synthesizes NULL right-side values for
-unmatched rows. JOIN predicates beyond ON remain gated.
-The callback executor also applies `LIMIT count [OFFSET count]` after filtering
-or join production through one selection-mask adapter, including early producer
-termination at the requested row count. Pull-style C stepping remains gated for
-JOIN, while the shared one-input cursor records LIMIT/OFFSET progress for both
-row and batch C stepping, including reset.
-The SELECT AST and plan have a dedicated single-key ORDER BY descriptor with
-ASC/DESC, qualified-name, result-ordinal, and scalar-type metadata. Single-table
-callback execution now uses arena-bounded row materialization plus stable typed
-insertion sort, with deterministic NULL placement and LIMIT/OFFSET applied after
-sorting. JOIN ordering and pull-style C stepping remain explicitly gated.
+The scalar and AVX2 FLOAT32 dot-product and squared-L2 kernels are implemented,
+tested, and benchmarked; ABI and rounding contracts are documented in
+[docs/VECTOR.md](docs/VECTOR.md).
+
+Persistent vector storage and SQL column types (`VECTOR(FLOAT32, n)`) are fully
+implemented and validated for `CREATE TABLE`, `INSERT`, `SELECT`, `WHERE ... IS [NOT] NULL`,
+and public C APIs (`cyboudb_column_vector_dimensions`, `cyboudb_column_vector_f32`,
+`cyboudb_batch_vector_f32`). Distance expression query execution (`ORDER BY <distance_expr> LIMIT k`)
+remains gated on executor integration as part of finalizing Phase 8.
 
 * [x] runtime-native raw and normalized `FLOAT32` vectors
 * [x] caller-owned contiguous vector arena with raw and normalized appends
 * [x] persistent vector extents
-* [x] SQL surface for vector columns and distance expressions
+* [x] SQL surface for vector columns (storage and types complete; distance expression query execution ORDER BY ... LIMIT remains gated on executor integration)
 * [x] scalar and AVX2 dot products and squared L2 distances with runtime dispatch
 * [x] normalized cosine similarity and raw/normalized L2 Top-K
 * [x] deterministic filtered streaming Top-K with batch feed API

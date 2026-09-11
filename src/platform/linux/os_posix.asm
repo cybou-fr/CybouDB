@@ -409,6 +409,14 @@ vfs_create_truncate:
     cmp     rax, -1
     je      .create_trunc_locked
 
+    ; Try locking reader barrier (byte 1)
+    mov     rdi, [rbp - 16]
+    mov     esi, F_WRLCK
+    mov     edx, 1
+    call    ofd_lock
+    cmp     rax, -1
+    je      .create_trunc_locked
+
     ; Truncate file to 0 bytes
     mov     rdi, [rbp - 16]
     xor     esi, esi                    ; length = 0
