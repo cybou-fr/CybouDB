@@ -536,6 +536,9 @@ extern int db_catalog_set_index_root(void *ctx, uint64_t index_id,
 extern int db_catalog_get(void *ctx, uint64_t id, uint64_t *out_page);
 extern int db_catalog_drop(void *ctx, uint64_t id);
 extern int db_commit(void *ctx);
+extern int db_index_retire_tree(void *ctx, uint64_t root);
+extern void *catalog_find_index(void *ctx, const char *name, uint64_t len,
+                                uint64_t *out_id);
 extern void *catalog_find_table(void *ctx, const char *name, uint64_t len,
                                 uint64_t *out_id);
 
@@ -637,6 +640,43 @@ static void catalog_suite(void *ctx, const char *path) {
         db_rollback(ctx);
     }
 
+    /* The ABI runs statements through its own dispatch, and a second copy of
+       what a statement does is a second place to forget part of it. This one
+       had forgotten the indexes: rows went into the table and none of them
+       into the tree over it. */
+    {
+        uint64_t tbl = 0, page2 = 0;
+        unsigned char *ip;
+        check("a table with an index on it",
+              cyboudb_exec((cyboudb_db *)ctx,
+                           "CREATE TABLE api_t (a INT64, b INT64)") == CybouDB_OK);
+        check("indexed",
+              cyboudb_exec((cyboudb_db *)ctx,
+                           "CREATE INDEX api_idx ON api_t (b)") == CybouDB_OK);
+        check("a row through the ABI",
+              cyboudb_exec((cyboudb_db *)ctx,
+                           "INSERT INTO api_t VALUES (1, 11)") == CybouDB_OK);
+        check("another", cyboudb_exec((cyboudb_db *)ctx,
+                           "INSERT INTO api_t VALUES (2, 22)") == CybouDB_OK);
+        check("found the index", catalog_find_index(ctx, "api_idx", 7, &tbl) != 0);
+        check("which the index knows about",
+              db_catalog_get(ctx, tbl, &page2) == 0);
+        ip = db_index_node_addr(ctx, page2);
+        check("both of them", u64(ip, IDX_ROWS_OFF) == 2);
+
+        check("dropping the table through the ABI",
+              cyboudb_exec((cyboudb_db *)ctx, "DROP TABLE api_t") == CybouDB_OK);
+        check("takes the index with it",
+              catalog_find_index(ctx, "api_idx", 7, &tbl) == 0);
+    }
+
+    /* A real DROP INDEX gives the tree back before dropping the entry; doing
+       it by hand means doing that by hand too. */
+    {
+        uint64_t page3 = 0;
+        db_catalog_get(ctx, 900001, &page3);
+        db_index_retire_tree(ctx, u64(db_index_node_addr(ctx, page3), IDX_ROOT_OFF));
+    }
     check("dropping the index", db_catalog_drop(ctx, 900001) == 0);
     check("commits", db_commit(ctx) == CybouDB_OK);
     check("and it is gone", db_catalog_get(ctx, 900001, &page) != 0);

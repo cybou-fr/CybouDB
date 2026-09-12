@@ -29,6 +29,9 @@ pax_const_columns: resq 1
 pax_bool_columns: resq 1
 pax_null_columns: resq 1
 pax_for_columns:  resq 1
+global pax_leaves_validated
+pax_leaves_validated: dq 0
+
 section .text
 
 ; db_pax_dead_total(ctx, validated_schema) -> RAX: rows of this table marked
@@ -2242,6 +2245,7 @@ page_valid:
 
 ; Called during graph validation, after schema and map validation.
 db_pax_validate:
+    inc qword [rel pax_leaves_validated]
     FRAME_BEGIN 16, 0
     mov [rbp - 8], ARG3
     mov r10, ARG1

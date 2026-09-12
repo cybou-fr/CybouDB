@@ -17,6 +17,12 @@ global db_catalog_put_index, db_catalog_set_index_root, db_catalog_page
 global db_catalog_set_data, db_catalog_set_data_stats, db_catalog_replace_data
 global db_catalog_replace_data_stats
 global db_catalog_truncate_data
+section .data
+; Catalog pages this process validated. A statement proportional to the
+; table shows up here before it shows up in a stopwatch.
+global catalog_pages_validated
+catalog_pages_validated: dq 0
+
 section .text
 
 ; name_valid(pointer, width): nonempty ASCII identifier, NUL and zero padding.
@@ -200,6 +206,7 @@ schema_valid:
 ; already been validated by the allocation layer; check membership before use.
 page_valid:
     FRAME_BEGIN 48, 0
+    inc qword [rel catalog_pages_validated]
     mov [rbp - 8], ARG1
     mov [rbp - 16], ARG2
     mov [rbp - 24], ARG3

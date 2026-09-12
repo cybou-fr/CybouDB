@@ -522,6 +522,10 @@ cyboudb_step:
     je      .step_commit
     cmp     rcx, STMT_ROLLBACK
     je      .step_rollback
+    cmp     rcx, STMT_CREATE_INDEX
+    je      .step_drop                  ; both run through the executor
+    cmp     rcx, STMT_DROP_INDEX
+    je      .step_drop
 
     mov     eax, CybouDB_C_ERROR
     jmp     .step_exit
@@ -657,15 +661,28 @@ cyboudb_step:
     mov     eax, CybouDB_C_DONE
     jmp     .step_exit
 
+; DROP TABLE, CREATE INDEX and DROP INDEX: one path, because all three are
+; a statement the executor runs and an autocommit afterwards.
 .step_drop:
     cmp     dword [r12 + STMT_H_STATE], STMT_STATE_DONE
     je      .step_done_ret
 
-    mov     r9, [rbp - 24]              ; plan
+    ; Likewise: dropping a table takes its indexes with it, and only the
+    ; executor knows that.
+    lea     ARG1, [rbp - 96]
+    lea     ARG2, [r12 + STMT_H_SELECT]
+    mov     ARG3, STMT_H_ARENA_BUF - STMT_H_SELECT
+    call    sql_arena_init
     mov     r10, [r12 + STMT_H_DB]
     lea     ARG1, [r10 + DB_H_CTX]
-    mov     ARG2, [r9 + PLAN_TABLE_ID]
-    call    db_catalog_drop
+    mov     ARG2, [rbp - 24]            ; plan
+    lea     ARG3, [rbp - 96]
+    xor     ARG4, ARG4
+    xor     eax, eax
+    PASS_ARG5 rax
+    xor     eax, eax
+    PASS_ARG6 rax
+    call    sql_execute_batch
     test    eax, eax
     jnz     .step_mutation_error
 
@@ -739,12 +756,24 @@ cyboudb_step:
     cmp     dword [r12 + STMT_H_STATE], STMT_STATE_DONE
     je      .step_done_ret
 
-    mov     r9, [rbp - 24]              ; plan
+    ; Through the shared executor rather than straight to db_pax_insert. The
+    ; second copy of what a statement does is a second place to forget part
+    ; of it, and this one had forgotten the indexes: two hundred rows went
+    ; into a table and none of them into the tree over it.
+    lea     ARG1, [rbp - 96]
+    lea     ARG2, [r12 + STMT_H_SELECT]
+    mov     ARG3, STMT_H_ARENA_BUF - STMT_H_SELECT
+    call    sql_arena_init
     mov     r10, [r12 + STMT_H_DB]
     lea     ARG1, [r10 + DB_H_CTX]
-    mov     ARG2, [r9 + PLAN_TABLE_ID]
-    mov     ARG3, [r9 + PLAN_DATA1]
-    call    db_pax_insert
+    mov     ARG2, [rbp - 24]            ; plan
+    lea     ARG3, [rbp - 96]
+    xor     ARG4, ARG4                  ; no row sink
+    xor     eax, eax
+    PASS_ARG5 rax
+    xor     eax, eax
+    PASS_ARG6 rax
+    call    sql_execute_batch
     test    eax, eax
     jnz     .step_mutation_error
 

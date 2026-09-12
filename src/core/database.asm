@@ -61,6 +61,13 @@ global db_create_catalog
 global db_create_pax, db_create_pax_multi
 global db_create_large, db_create_compressed
 
+section .data
+; Pages handed to the flush at commit. The commit flushes one contiguous
+; range, so this is the distance between the lowest and highest page a
+; transaction touched - not the number it actually wrote.
+global pages_flushed
+pages_flushed: dq 0
+
 section .text
 
 ; -----------------------------------------------------------------------------
@@ -1003,6 +1010,7 @@ db_free_page:
 %define CybouDB_SYNC_ALIGN 65536
 
 sync_pages:
+    add qword [rel pages_flushed], ARG3
     FRAME_BEGIN 32, 0
     mov     [rbp - 8], ARG1
     mov     rax, ARG2

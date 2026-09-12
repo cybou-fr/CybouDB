@@ -26,6 +26,9 @@ section .data
 global index_nodes_walked
 index_nodes_walked: dq 0
 
+global index_child_reads
+index_child_reads: dq 0
+
 section .text
 
 ; index_node_addr(ARG1 = ctx, ARG2 = page id) -> RAX: where it is mapped.
@@ -81,6 +84,7 @@ index_seal:
 .child_sum:
     cmp ecx, [r10 + IDX_COUNT]
     jae .sized
+    inc qword [rel index_child_reads]
     mov rdx, rcx
     shl rdx, 4
     mov rdx, [r10 + IDX_ENTRIES + rdx + IDX_CHILD]

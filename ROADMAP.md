@@ -623,18 +623,20 @@ wrote, and DROP TABLE takes its indexes with it.
 Not done, and measured rather than guessed at - `benchmarks/index_bench.py`
 has the numbers:
 
-* **A commit no longer validates the whole index tree.** Every node records
-  how many entries live at or below it, so validation takes a subtree's size
-  rather than walking it whenever that subtree is older than the candidate
-  generation - which, under copy-on-write, is every subtree a transaction did
-  not touch. `tests/index_probe.c` reports **three nodes validated per INSERT**
-  at 5000 rows and at 50000 alike. `cyboudb check` still walks everything and
-  recomputes the sizes rather than believing them.
-* **Something else in an indexed INSERT is still linear**, and it is not the
-  tree: 1.2 ms per INSERT without an index at either size, 2.1 ms with one at
-  5000 rows and 16.5 ms at 50000, with the same three nodes validated. The
-  cause is not yet attributed and the next step is to attribute it rather than
-  to guess again.
+* **A commit stops at the generation boundary.** Every node records how many
+  entries live at or below it, so validation takes a subtree's size rather than
+  walking it whenever that subtree is older than the candidate generation -
+  which, under copy-on-write, is every subtree a transaction did not touch.
+  `cyboudb check` still walks everything and recomputes the sizes.
+* **An indexed INSERT is still far more expensive than an unindexed one**, and
+  the earlier claim here that it cost three validated nodes was measured
+  through a path that never reached the index at all - the ABI was not
+  maintaining indexes, which is now fixed. Measured again through a path that
+  does the work, `tests/index_probe.c` reports 1.6 ms without an index at
+  either size, 33 ms with one at 5000 rows and 47 ms at 50000, with 44 and 151
+  nodes visited. Two things are wrong there and neither is attributed yet: a
+  parent still calls into every child to find out the child is old, and sealing
+  a node sums its children's sizes rather than adjusting its own.
 * **UPDATE and DELETE rebuild** where they could patch, which makes both linear
   in the table. The statement has the rows that matched but not the keys they
   carried, and that is what would have to change.
