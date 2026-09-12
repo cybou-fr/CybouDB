@@ -51,6 +51,12 @@
 %define DB_DIRTY_LO       136           ; pages this transaction wrote, [lo, hi)
 %define DB_DIRTY_HI       144           ; hi = 0 means it wrote none
 %define DB_VERIFY         152           ; 1 = check every page, not just the new
-%define CybouDB_DB_SIZE      160
+%define DB_TX_ACTIVE      160           ; qword: 1 if inside explicit transaction, 0 if autocommit
+%define DB_TX_ID          168           ; qword: monotonic transaction sequence counter
+%define CybouDB_DB_SIZE      176
+
+; --- Transaction States ---
+%define CybouDB_TX_NONE      0
+%define CybouDB_TX_ACTIVE    1
 
 %endif ; CybouDB_INC

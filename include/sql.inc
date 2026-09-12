@@ -57,6 +57,10 @@
 %define TOK_COSINE_DISTANCE 79
 %define TOK_L2_OP           80          ; <->
 %define TOK_COSINE_OP       81          ; <=>
+%define TOK_BEGIN           82
+%define TOK_TRANSACTION     83
+%define TOK_COMMIT          84
+%define TOK_ROLLBACK        85
 
 ; Types
 %define TOK_TYPE_INT32      30
@@ -114,6 +118,9 @@
 %define STMT_SELECT         3
 %define STMT_UPDATE         4
 %define STMT_DROP_TABLE     5
+%define STMT_BEGIN          6
+%define STMT_COMMIT         7
+%define STMT_ROLLBACK       8
 
 ; --- AST Statement header and statement-specific payload --------------------
 %define AST_STMT_TYPE       0           ; qword: STMT_*

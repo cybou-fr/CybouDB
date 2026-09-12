@@ -54,7 +54,7 @@ extern db_cow_alloc_page
 extern db_bitmap_init, db_bitmap_validate, db_bitmap_seal
 extern db_bitmap_leaves, db_bitmap_recount
 
-global db_create, db_open, db_alloc_page, db_free_page, db_commit, db_close
+global db_create, db_open, db_alloc_page, db_free_page, db_commit, db_rollback, db_close
 global db_create_cow
 global db_create_catalog
 global db_create_pax, db_create_pax_multi
@@ -1208,15 +1208,129 @@ mutation_generation_error:
     ret
 
 ; -----------------------------------------------------------------------------
+;  db_rollback(ARG1 = descriptor) -> RAX: result code
+;
+;  Reverts staged copy-on-write allocations and restores the descriptor state
+;  from the currently committed live superblock.
+; -----------------------------------------------------------------------------
+db_rollback:
+    cmp     qword [ARG1 + DB_MODE], -1
+    je      mutation_state_error
+    cmp     qword [ARG1 + DB_MODE], 1
+    jne     mutation_state_error
+    cmp     qword [ARG1 + DB_WRITABLE], 0
+    je      .e_readonly
+    mov     r10, [ARG1 + DB_SB_PTR]
+    test    r10, r10
+    jz      mutation_state_error
+
+    FRAME_BEGIN 64, 0
+    mov     [rbp - 8], ARG1
+
+    mov     r10, [rbp - 8]
+    mov     r11, [r10 + DB_SB_PTR]
+
+    ; Restore committed superblock fields
+    mov     rax, [r11 + SB_TOTAL_PAGES]
+    mov     [r10 + DB_PAGES], rax
+    mov     rax, [r11 + SB_ALLOC_PAGES]
+    mov     [r10 + DB_ALLOC], rax
+    mov     [r10 + DB_COW_FLOOR], rax
+    mov     rax, [r11 + SB_GENERATION]
+    mov     [r10 + DB_GENERATION], rax
+    mov     rax, [r11 + SB_FREELIST_ROOT]
+    mov     [r10 + DB_FREELIST], rax
+    mov     rax, [r11 + SB_ROOT_PAGE]
+    mov     [r10 + DB_ROOT], rax
+    mov     rax, [r11 + SB_BITMAP_ROOT]
+    mov     [r10 + DB_BITMAP], rax
+
+    mov     qword [r10 + DB_DIRTY_LO], 0
+    mov     qword [r10 + DB_DIRTY_HI], 0
+
+    ; In span layout, copy active leaves to inactive copy
+    test    qword [r10 + DB_FEATURES], CybouDB_FEATURE_MAP_SPAN
+    jz      .recount
+
+    mov     ARG1, [r10 + DB_PAGES]
+    call    db_bitmap_leaves
+    mov     [rbp - 16], rax             ; K
+    mov     r10, [rbp - 8]
+    mov     r11, [r10 + DB_SB_PTR]
+    mov     rax, [r11 + SB_BITMAP_ROOT]
+    mov     [rbp - 24], rax             ; active_root
+    cmp     rax, CybouDB_MIN_PAGES
+    jne     .to_first
+    mov     rax, [rbp - 16]
+    add     rax, CybouDB_MIN_PAGES
+    mov     [rbp - 32], rax             ; other_root
+    jmp     .roots_ready
+.to_first:
+    mov     qword [rbp - 32], CybouDB_MIN_PAGES
+.roots_ready:
+    mov     qword [rbp - 40], 0         ; leaf_idx = 0
+.leaf_copy_loop:
+    mov     rax, [rbp - 40]
+    cmp     rax, [rbp - 16]
+    jae     .recount
+
+    mov     r10, [rbp - 8]
+    mov     rax, [r10 + DB_BASE]
+    mov     rdx, [rbp - 24]
+    add     rdx, [rbp - 40]
+    shl     rdx, CybouDB_PAGE_SHIFT
+    add     rdx, rax                    ; src leaf
+    mov     r8, rdx
+
+    mov     rdx, [rbp - 32]
+    add     rdx, [rbp - 40]
+    shl     rdx, CybouDB_PAGE_SHIFT
+    add     rdx, rax                    ; dst leaf
+    mov     r9, rdx
+
+    mov     ecx, CybouDB_PAGE_SIZE / 8
+.leaf_qwords:
+    mov     rax, [r8]
+    mov     [r9], rax
+    add     r8, 8
+    add     r9, 8
+    dec     ecx
+    jnz     .leaf_qwords
+
+    inc     qword [rbp - 40]
+    jmp     .leaf_copy_loop
+
+.recount:
+    mov     r10, [rbp - 8]
+    mov     ARG1, r10
+    call    db_bitmap_recount
+
+    mov     r10, [rbp - 8]
+    mov     qword [r10 + DB_TX_ACTIVE], 0
+
+    mov     eax, CybouDB_OK
+    FRAME_END
+    ret
+
+.e_readonly:
+    mov     eax, CybouDB_E_READONLY
+    ret
+
+; -----------------------------------------------------------------------------
 ;  db_close(ARG1 = descriptor)
-;  Idempotent, and deliberately does NOT commit. This is not rollback: writes
-;  through the shared mapping can already have reached storage.
+;  Idempotent, rolls back any uncommitted transaction, and releases resources.
 ; -----------------------------------------------------------------------------
 db_close:
     FRAME_BEGIN 16, 0
     mov     [rbp - 8], ARG1
 
     mov     r10, ARG1
+    cmp     qword [r10 + DB_TX_ACTIVE], 0
+    je      .no_uncommitted_tx
+    mov     ARG1, r10
+    call    db_rollback
+.no_uncommitted_tx:
+    mov     r10, [rbp - 8]
     mov     rax, [r10 + DB_BASE]
     test    rax, rax
     jz      .no_map

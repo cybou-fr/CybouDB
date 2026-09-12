@@ -931,8 +931,32 @@ sql_bind:
     je      .bind_update
     cmp     rax, STMT_DROP_TABLE
     je      .bind_drop
+    cmp     rax, STMT_BEGIN
+    je      .bind_begin
+    cmp     rax, STMT_COMMIT
+    je      .bind_commit
+    cmp     rax, STMT_ROLLBACK
+    je      .bind_rollback
 
     mov     eax, SQL_ERR_SYNTAX
+    jmp     .binder_exit
+
+.bind_begin:
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + PLAN_TYPE], STMT_BEGIN
+    xor     eax, eax
+    jmp     .binder_exit
+
+.bind_commit:
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + PLAN_TYPE], STMT_COMMIT
+    xor     eax, eax
+    jmp     .binder_exit
+
+.bind_rollback:
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + PLAN_TYPE], STMT_ROLLBACK
+    xor     eax, eax
     jmp     .binder_exit
 
 ; --- BIND CREATE TABLE -------------------------------------------------------

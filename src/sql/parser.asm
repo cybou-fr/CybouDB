@@ -1676,6 +1676,12 @@ sql_parse:
     je      .parse_update
     cmp     rax, TOK_DROP
     je      .parse_drop
+    cmp     rax, TOK_BEGIN
+    je      .parse_begin
+    cmp     rax, TOK_COMMIT
+    je      .parse_commit
+    cmp     rax, TOK_ROLLBACK
+    je      .parse_rollback
 
     ; Unknown initial token
     mov     ARG1, [rbp - 40]
@@ -2110,6 +2116,57 @@ sql_parse:
     mov     rax, [rbp - 192 + TOK_LEN]
     mov     [r10 + DROP_TABLE_NAME_LEN], rax
 
+    jmp     .check_eof
+
+; --- BEGIN [TRANSACTION|WORK] ------------------------------------------------
+.parse_begin:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_BEGIN
+
+    ; Optional TRANSACTION or WORK keyword
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_peek
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_TRANSACTION
+    jne     .check_eof
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next                ; consume TRANSACTION / WORK
+    jmp     .check_eof
+
+; --- COMMIT [TRANSACTION|WORK] -----------------------------------------------
+.parse_commit:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_COMMIT
+
+    ; Optional TRANSACTION or WORK keyword
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_peek
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_TRANSACTION
+    jne     .check_eof
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next                ; consume TRANSACTION / WORK
+    jmp     .check_eof
+
+; --- ROLLBACK [TRANSACTION|WORK] ---------------------------------------------
+.parse_rollback:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_ROLLBACK
+
+    ; Optional TRANSACTION or WORK keyword
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_peek
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_TRANSACTION
+    jne     .check_eof
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next                ; consume TRANSACTION / WORK
     jmp     .check_eof
 
 ; --- SELECT ------------------------------------------------------------------

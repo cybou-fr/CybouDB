@@ -124,6 +124,19 @@ collected from one source snapshot before any mutation, then coalesced by leaf
 so each changed leaf is copied, decoded, encoded, and sealed once. TEXT/BLOB
 targets and two-level tree directories are not yet supported.
 
+### 1.5 Transactions (BEGIN, COMMIT, ROLLBACK)
+
+```sql
+BEGIN [TRANSACTION | WORK];
+COMMIT [TRANSACTION | WORK];
+ROLLBACK [TRANSACTION | WORK];
+```
+
+- **`BEGIN`**: Starts an explicit transaction. Suspends implicit autocommit on subsequent mutating statements (`INSERT`, `UPDATE`, `CREATE TABLE`, `DROP TABLE`). Assigns a monotonic 64-bit transaction ID. Requires a writable database. Calling `BEGIN` while already in an active transaction returns `SQL_ERR_EXEC` ("cannot BEGIN inside active transaction").
+- **`COMMIT`**: Flushes all staged dirty pages and atomically advances the active superblock generation via `db_commit`. Resets transaction state to inactive. Calling `COMMIT` without an active transaction returns `SQL_ERR_EXEC` ("no active transaction to COMMIT").
+- **`ROLLBACK`**: Discards all uncommitted changes made since `BEGIN` via `db_rollback`. Restores database descriptors (`DB_PAGES`, `DB_ALLOC`, `DB_COW_FLOOR`, `DB_GENERATION`, `DB_FREELIST`, `DB_ROOT`, `DB_BITMAP`), dirty ranges, and span maps directly from the live committed superblock state without disk writes. Resets transaction state to inactive. Calling `ROLLBACK` without an active transaction returns `SQL_ERR_EXEC` ("no active transaction to ROLLBACK").
+- **Auto-Rollback on Close / Disconnect**: Closing the database (`db_close` / `cyboudb_close`) or encountering EOF/disconnect in the REPL or piped input while a transaction is active automatically triggers `db_rollback`, guaranteeing that uncommitted mutations are never published.
+
 ---
 
 ## 2. Type System & Semantics
@@ -143,9 +156,10 @@ SQL keywords (SELECT, FROM, WHERE, etc.) and identifiers (table names, column na
 - `NOT UNKNOWN` remains UNKNOWN. NULL takes precedence if the compared cell is NULL.
 
 ### 2.3 Commit & Persistence Policy
-- sql_execute executes the bound physical plan against the open database context in memory without issuing a commit.
-- In CLI mode (cyboudb query <db> <sql>), mutating statements (CREATE TABLE, INSERT INTO, UPDATE) are automatically committed via db_commit upon successful execution. An UPDATE matching no rows does not publish an empty generation.
-- Read-only statements (SELECT) open the database in read-only mode and do not write or commit.
+- `sql_execute` executes the bound physical plan against the open database context in memory.
+- **Autocommit Mode (default)**: When no explicit transaction is active (`DB_TX_ACTIVE == 0`), each mutating statement (`CREATE TABLE`, `DROP TABLE`, `INSERT INTO`, `UPDATE`) is committed immediately upon successful execution via `db_commit`. An `UPDATE` matching no rows does not publish an empty generation.
+- **Explicit Transaction Mode**: After `BEGIN`, statements stage changes in memory and across append-only COW pages. Autocommit is suspended until an explicit `COMMIT` publishes the changes or `ROLLBACK` discards them.
+- **Read-only statements** (`SELECT`) do not stage mutations or advance superblock generations. Opening a read-only database and executing `BEGIN` is rejected (`SQL_ERR_EXEC`, "database is read-only").
 
 ---
 

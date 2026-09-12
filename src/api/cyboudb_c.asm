@@ -16,7 +16,7 @@ BITS 64
 default rel
 
 ; --- External engine functions -----------------------------------------------
-extern db_open, db_close, db_commit
+extern db_open, db_close, db_commit, db_rollback
 extern db_catalog_put, db_catalog_drop, db_pax_insert
 extern db_var_read_chain
 extern sql_select_open, sql_select_next
@@ -61,6 +61,10 @@ str_count_star: db "count(*)", 0
 str_empty:      db 0
 str_busy:       db "busy: finalize all statements before closing the database", 0
 str_nomem:      db "out of memory preparing statement", 0
+str_tx_active:  db "cannot BEGIN inside active transaction", 0
+str_no_tx_commit: db "no active transaction to COMMIT", 0
+str_no_tx_rollback: db "no active transaction to ROLLBACK", 0
+str_readonly:   db "database is read-only", 0
 
 section .text
 
@@ -510,11 +514,106 @@ cyboudb_step:
     je      .step_insert
     cmp     rcx, STMT_SELECT
     je      .step_select
+    cmp     rcx, STMT_BEGIN
+    je      .step_begin
+    cmp     rcx, STMT_COMMIT
+    je      .step_commit
+    cmp     rcx, STMT_ROLLBACK
+    je      .step_rollback
 
     mov     eax, CybouDB_C_ERROR
     jmp     .step_exit
 
 ; --- DDL / Mutating execution ------------------------------------------------
+.step_begin:
+    cmp     dword [r12 + STMT_H_STATE], STMT_STATE_DONE
+    je      .step_done_ret
+    mov     r10, [r12 + STMT_H_DB]
+    test    dword [r10 + DB_H_FLAGS], CybouDB_C_OPEN_READWRITE
+    jz      .step_begin_readonly
+    cmp     qword [r10 + DB_H_CTX + DB_TX_ACTIVE], 0
+    jne     .step_begin_active
+    mov     qword [r10 + DB_H_CTX + DB_TX_ACTIVE], 1
+    inc     qword [r10 + DB_H_CTX + DB_TX_ID]
+    mov     dword [r12 + STMT_H_STATE], STMT_STATE_DONE
+    mov     eax, CybouDB_C_DONE
+    jmp     .step_exit
+
+.step_begin_readonly:
+    mov     dword [r12 + STMT_H_STATE], STMT_STATE_ERROR
+    mov     r10, [r12 + STMT_H_DB]
+    mov     dword [r10 + DB_H_ERRCODE], CybouDB_C_ERROR
+    lea     r11, [str_readonly]
+    jmp     .step_copy_errmsg
+
+.step_begin_active:
+    mov     dword [r12 + STMT_H_STATE], STMT_STATE_ERROR
+    mov     r10, [r12 + STMT_H_DB]
+    mov     dword [r10 + DB_H_ERRCODE], CybouDB_C_ERROR
+    lea     r11, [str_tx_active]
+    jmp     .step_copy_errmsg
+
+.step_commit:
+    cmp     dword [r12 + STMT_H_STATE], STMT_STATE_DONE
+    je      .step_done_ret
+    mov     r10, [r12 + STMT_H_DB]
+    cmp     qword [r10 + DB_H_CTX + DB_TX_ACTIVE], 0
+    je      .step_commit_no_active
+    lea     ARG1, [r10 + DB_H_CTX]
+    call    db_commit
+    mov     r10, [r12 + STMT_H_DB]
+    mov     qword [r10 + DB_H_CTX + DB_TX_ACTIVE], 0
+    test    eax, eax
+    jnz     .step_mutation_error
+    mov     dword [r12 + STMT_H_STATE], STMT_STATE_DONE
+    mov     eax, CybouDB_C_DONE
+    jmp     .step_exit
+
+.step_commit_no_active:
+    mov     dword [r12 + STMT_H_STATE], STMT_STATE_ERROR
+    mov     r10, [r12 + STMT_H_DB]
+    mov     dword [r10 + DB_H_ERRCODE], CybouDB_C_ERROR
+    lea     r11, [str_no_tx_commit]
+    jmp     .step_copy_errmsg
+
+.step_rollback:
+    cmp     dword [r12 + STMT_H_STATE], STMT_STATE_DONE
+    je      .step_done_ret
+    mov     r10, [r12 + STMT_H_DB]
+    cmp     qword [r10 + DB_H_CTX + DB_TX_ACTIVE], 0
+    je      .step_rollback_no_active
+    lea     ARG1, [r10 + DB_H_CTX]
+    call    db_rollback
+    mov     r10, [r12 + STMT_H_DB]
+    mov     qword [r10 + DB_H_CTX + DB_TX_ACTIVE], 0
+    test    eax, eax
+    jnz     .step_mutation_error
+    mov     dword [r12 + STMT_H_STATE], STMT_STATE_DONE
+    mov     eax, CybouDB_C_DONE
+    jmp     .step_exit
+
+.step_rollback_no_active:
+    mov     dword [r12 + STMT_H_STATE], STMT_STATE_ERROR
+    mov     r10, [r12 + STMT_H_DB]
+    mov     dword [r10 + DB_H_ERRCODE], CybouDB_C_ERROR
+    lea     r11, [str_no_tx_rollback]
+    jmp     .step_copy_errmsg
+
+.step_copy_errmsg:
+    lea     rdi, [r10 + DB_H_ERRMSG]
+    lea     rdx, [r12 + STMT_H_ERRMSG]
+.copy_err_loop:
+    mov     al, [r11]
+    mov     [rdi], al
+    mov     [rdx], al
+    inc     r11
+    inc     rdi
+    inc     rdx
+    test    al, al
+    jnz     .copy_err_loop
+    mov     eax, CybouDB_C_ERROR
+    jmp     .step_exit
+
 .step_create:
     cmp     dword [r12 + STMT_H_STATE], STMT_STATE_DONE
     je      .step_done_ret
@@ -528,10 +627,12 @@ cyboudb_step:
     test    eax, eax
     jnz     .step_mutation_error
 
-    ; Auto-commit if opened read-write
+    ; Auto-commit if opened read-write and not in explicit transaction
     mov     r10, [r12 + STMT_H_DB]
     test    dword [r10 + DB_H_FLAGS], CybouDB_C_OPEN_READWRITE
     jz      .step_create_done
+    cmp     qword [r10 + DB_H_CTX + DB_TX_ACTIVE], 0
+    jne     .step_create_done
     lea     ARG1, [r10 + DB_H_CTX]
     call    db_commit
     test    eax, eax
@@ -554,10 +655,12 @@ cyboudb_step:
     test    eax, eax
     jnz     .step_mutation_error
 
-    ; Auto-commit if opened read-write
+    ; Auto-commit if opened read-write and not in explicit transaction
     mov     r10, [r12 + STMT_H_DB]
     test    dword [r10 + DB_H_FLAGS], CybouDB_C_OPEN_READWRITE
     jz      .step_drop_done
+    cmp     qword [r10 + DB_H_CTX + DB_TX_ACTIVE], 0
+    jne     .step_drop_done
     lea     ARG1, [r10 + DB_H_CTX]
     call    db_commit
     test    eax, eax
@@ -581,10 +684,12 @@ cyboudb_step:
     test    eax, eax
     jnz     .step_mutation_error
 
-    ; Auto-commit if opened read-write
+    ; Auto-commit if opened read-write and not in explicit transaction
     mov     r10, [r12 + STMT_H_DB]
     test    dword [r10 + DB_H_FLAGS], CybouDB_C_OPEN_READWRITE
     jz      .step_insert_done
+    cmp     qword [r10 + DB_H_CTX + DB_TX_ACTIVE], 0
+    jne     .step_insert_done
     lea     ARG1, [r10 + DB_H_CTX]
     call    db_commit
     test    eax, eax

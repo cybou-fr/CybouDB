@@ -43,7 +43,8 @@ filter comparison outright and change nothing on materialization. Per-scenario r
 conditions are recorded in [benchmarks/README.md](benchmarks/README.md);
 performance depends on the query, execution mode and hardware.
 
-SQL transactions, `DELETE`, and an ARM64 backend remain
+SQL transactions are implemented via Phase 2 COW staging (`BEGIN`,
+`COMMIT`, `ROLLBACK`). `DELETE`, and an ARM64 backend remain
 unimplemented. `UPDATE` supports single-column assignments with a mandatory
 predicate across flat and tree-directory PAX tables, including fixed-width and
 persisted variable-width TEXT/BLOB columns. `DROP TABLE` drops tables and
@@ -450,17 +451,20 @@ and O(K) memory overhead.
 ## Phase 9 - Transactions
 
 * [x] atomic metadata commit - superblock generations, single writer
-* [ ] transaction ids
-* [ ] `BEGIN` / `COMMIT` / `ROLLBACK` in the SQL front end
-* [ ] evaluate WAL only if later requirements justify it
-* [ ] SQL transaction recovery built on Phase 2 COW
-* [ ] file locking
-* [ ] concurrent readers
-* [ ] concurrent writers
+* [x] transaction ids (monotonic per-connection 64-bit transaction id)
+* [x] `BEGIN` / `COMMIT` / `ROLLBACK` in the SQL front end (parser, binder, executor, REPL, CLI, and C API)
+* [x] evaluate WAL only if later requirements justify it (Phase 2 append-only COW staging provides instant rollback and crash resilience without write-ahead logging overhead)
+* [x] SQL transaction recovery built on Phase 2 COW (`db_rollback` restores live superblock state, resets staged allocation maps, auto-rollback on close/disconnect)
+* [x] file locking (cross-platform single-writer process-level file locking)
+* [x] concurrent readers (shared read-only mappings with lifetime pinning and generation-safe barriers)
+* [ ] concurrent writers (single-writer model by design; multiple concurrent writers require multi-version concurrency or distributed locks)
 
-The commit protocol that exists today publishes metadata atomically and
-survives a torn superblock write. It is **not** a transaction system: there is
-no log, no isolation and no coordination between processes.
+Transactions provide full ACID semantics built on top of the Phase 2
+append-only Copy-On-Write storage engine. Staging pages in memory and
+allocating beyond the COW floor allows uncommitted mutations to be discarded
+instantly on `ROLLBACK` or process termination without disk write amplification,
+while `COMMIT` atomically advances the active superblock generation. Single-statement
+queries retain backward-compatible autocommit behavior.
 
 ---
 

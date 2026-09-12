@@ -12,7 +12,7 @@
 BITS 64
 default rel
 
-extern db_catalog_put, db_catalog_drop, db_pax_insert, db_pax_update_one, db_pax_capacity, db_commit
+extern db_catalog_put, db_catalog_drop, db_pax_insert, db_pax_update_one, db_pax_capacity, db_commit, db_rollback
 extern db_var_write_chain, db_var_read_chain
 extern sql_select_open, sql_select_next
 extern sql_arena_alloc
@@ -522,8 +522,86 @@ sql_execute_batch:
     je      .exec_update
     cmp     rax, STMT_DROP_TABLE
     je      .exec_drop
+    cmp     rax, STMT_BEGIN
+    je      .exec_begin
+    cmp     rax, STMT_COMMIT
+    je      .exec_commit
+    cmp     rax, STMT_ROLLBACK
+    je      .exec_rollback
     mov     eax, SQL_ERR_SYNTAX
     jmp     .exec_exit
+
+.exec_begin:
+    mov     r10, [rbp - 8]              ; db
+    cmp     qword [r10 + DB_WRITABLE], 1
+    jne     .begin_readonly
+    cmp     qword [r10 + DB_TX_ACTIVE], 0
+    jne     .begin_already_active
+    mov     qword [r10 + DB_TX_ACTIVE], 1
+    inc     qword [r10 + DB_TX_ID]
+    xor     eax, eax
+    jmp     .exec_exit
+
+.begin_readonly:
+    lea     r11, [exec_readonly_tx_msg]
+    jmp     .custom_exec_err
+
+.begin_already_active:
+    lea     r11, [exec_active_tx_msg]
+    jmp     .custom_exec_err
+
+.exec_commit:
+    mov     r10, [rbp - 8]              ; db
+    cmp     qword [r10 + DB_TX_ACTIVE], 0
+    je      .commit_no_active
+    mov     ARG1, r10
+    call    db_commit
+    mov     r10, [rbp - 8]
+    mov     qword [r10 + DB_TX_ACTIVE], 0
+    test    rax, rax
+    jnz     .storage_done
+    xor     eax, eax
+    jmp     .exec_exit
+
+.commit_no_active:
+    lea     r11, [exec_no_active_tx_commit_msg]
+    jmp     .custom_exec_err
+
+.exec_rollback:
+    mov     r10, [rbp - 8]              ; db
+    cmp     qword [r10 + DB_TX_ACTIVE], 0
+    je      .rollback_no_active
+    mov     ARG1, r10
+    call    db_rollback
+    mov     r10, [rbp - 8]
+    mov     qword [r10 + DB_TX_ACTIVE], 0
+    test    rax, rax
+    jnz     .storage_done
+    xor     eax, eax
+    jmp     .exec_exit
+
+.rollback_no_active:
+    lea     r11, [exec_no_active_tx_rollback_msg]
+    jmp     .custom_exec_err
+
+.custom_exec_err:
+    mov     r10, [rbp - 128]            ; out_err
+    test    r10, r10
+    jz      .custom_err_done
+    mov     qword [r10 + SQL_ERR_CODE], SQL_ERR_EXEC
+    mov     qword [r10 + SQL_ERR_DOMAIN], SQL_DOMAIN_SQL
+    xor     ecx, ecx
+.copy_custom_err:
+    mov     dl, [r11 + rcx]
+    mov     [r10 + SQL_ERR_MSG + rcx], dl
+    inc     ecx
+    test    dl, dl
+    jnz     .copy_custom_err
+.custom_err_done:
+    mov     eax, SQL_ERR_EXEC
+    FRAME_END
+    ret
+
 .exec_drop:
     mov     ARG1, [rbp - 8]
     mov     ARG2, [r10 + PLAN_TABLE_ID]
@@ -1510,3 +1588,7 @@ exec_oom_message: db "memory arena capacity exceeded", 0
 exec_storage_message: db "storage execution failed", 0
 exec_sink_message: db "SELECT requires a result callback", 0
 exec_sink_failed_message: db "result callback reported a failure", 0
+exec_active_tx_msg: db "cannot BEGIN inside active transaction", 0
+exec_no_active_tx_commit_msg: db "no active transaction to COMMIT", 0
+exec_no_active_tx_rollback_msg: db "no active transaction to ROLLBACK", 0
+exec_readonly_tx_msg: db "database is read-only", 0

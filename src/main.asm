@@ -188,6 +188,9 @@ msg_sql_table_created: db "Table created.", 10, 0
 msg_sql_table_dropped: db "Table dropped.", 10, 0
 msg_sql_insert_prefix: db "INSERT ", 0
 msg_sql_update_prefix: db "UPDATE ", 0
+msg_sql_begin:         db "BEGIN", 10, 0
+msg_sql_commit:        db "COMMIT", 10, 0
+msg_sql_rollback:      db "ROLLBACK", 10, 0
 msg_sql_rows_prefix:   db "(", 0
 msg_sql_rows_suffix:   db " rows)", 10, 0
 msg_sql_row_suffix:    db " row)", 10, 0
@@ -1064,9 +1067,22 @@ cyboudb_exec_query:
     test    rax, rax
     jnz     .exec_fail
 
+    ; Check if transaction control statement
+    mov     r10, [rbp - 40]
+    cmp     qword [r10 + PLAN_TYPE], STMT_BEGIN
+    je      .begin_done
+    cmp     qword [r10 + PLAN_TYPE], STMT_COMMIT
+    je      .commit_done
+    cmp     qword [r10 + PLAN_TYPE], STMT_ROLLBACK
+    je      .rollback_done
+
+    ; If inside an active transaction, do NOT autocommit!
+    mov     r9, [rbp - 8]
+    cmp     qword [r9 + DB_TX_ACTIVE], 0
+    jne     .mutation_done
+
     ; A predicate that matched no UPDATE rows staged no pages. Preserve the
     ; generation as well as the data instead of publishing an empty commit.
-    mov     r10, [rbp - 40]
     cmp     qword [r10 + PLAN_TYPE], STMT_UPDATE
     jne     .commit_mutation
     cmp     qword [r10 + PLAN_DATA1], 0
@@ -1094,6 +1110,18 @@ cyboudb_exec_query:
     mov     ARG1, [r11 + BATCH_ROWS]
     call    put_u64
     PUTS    str_nl
+    jmp     .exec_success
+
+.begin_done:
+    PUTS    msg_sql_begin
+    jmp     .exec_success
+
+.commit_done:
+    PUTS    msg_sql_commit
+    jmp     .exec_success
+
+.rollback_done:
+    PUTS    msg_sql_rollback
     jmp     .exec_success
 
 .update_done:

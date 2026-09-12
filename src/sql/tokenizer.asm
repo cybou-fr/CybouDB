@@ -59,6 +59,11 @@ kw_desc:     db "desc", 0
 kw_drop:     db "drop", 0
 kw_l2_distance:     db "l2_distance", 0
 kw_cosine_distance: db "cosine_distance", 0
+kw_begin:           db "begin", 0
+kw_transaction:     db "transaction", 0
+kw_work:            db "work", 0
+kw_commit:          db "commit", 0
+kw_rollback:        db "rollback", 0
 
     align 8
 kw_table_entries:
@@ -106,6 +111,11 @@ kw_table_entries:
     dq kw_drop,     4, TOK_DROP
     dq kw_l2_distance, 11, TOK_L2_DISTANCE
     dq kw_cosine_distance, 15, TOK_COSINE_DISTANCE
+    dq kw_begin,    5, TOK_BEGIN
+    dq kw_transaction, 11, TOK_TRANSACTION
+    dq kw_work,     4, TOK_TRANSACTION
+    dq kw_commit,   6, TOK_COMMIT
+    dq kw_rollback, 8, TOK_ROLLBACK
     dq 0,          0, 0                 ; terminator
 
 section .text
