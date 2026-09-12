@@ -34,7 +34,7 @@ extern void *db_index_node_addr(void *ctx, uint64_t page);
 #define IDX_LEVEL   32
 #define IDX_COUNT   36
 #define IDX_ENTRIES 64
-#define IDX_MAX_ENTRIES 251
+#define IDX_MAX_ENTRIES 251u
 
 typedef struct { int64_t key; uint64_t row; } entry_t;
 
@@ -190,6 +190,197 @@ static int build_case(void *ctx, uint64_t count, int expect_height) {
     return 0;
 }
 
+/* --- incremental insert ----------------------------------------------- */
+
+extern int db_index_insert(void *ctx, uint64_t owner, uint64_t root,
+                           int64_t key, uint64_t row, uint64_t *out_root);
+extern int db_index_insert_unique(void *ctx, uint64_t owner, uint64_t root,
+                                  int64_t key, uint64_t row, uint64_t *out_root);
+
+#define CYBOUDB_E_VALUE 32              /* include/constants.inc */
+
+/* Every structural claim a node makes, checked against what is under it:
+   the level its parent says, a count within bounds, entries in order, and an
+   internal entry whose key_end is the largest key beneath that child. Returns
+   the leaf entries found, or -1. */
+static int64_t audit(void *ctx, uint64_t page, int level, int64_t *low,
+                     int64_t *high) {
+    unsigned char *node = db_index_node_addr(ctx, page);
+    uint32_t count = u32(node, IDX_COUNT);
+    int64_t total = 0;
+
+    if (u32(node, 0) != IDX_MAGIC_VALUE) return -1;
+    if ((int)u32(node, IDX_LEVEL) != level) return -1;
+    if (count == 0 || count > IDX_MAX_ENTRIES) return -1;
+
+    if (level == 0) {
+        for (uint32_t i = 0; i < count; i++) {
+            int64_t key = (int64_t)u64(node, IDX_ENTRIES + i * 16);
+            if (i == 0) *low = key;
+            else if (key < *high) return -1;
+            *high = key;
+        }
+        return count;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        int64_t end = (int64_t)u64(node, IDX_ENTRIES + i * 16);
+        uint64_t child = u64(node, IDX_ENTRIES + i * 16 + 8);
+        int64_t sub_low = 0, sub_high = 0;
+        int64_t under = audit(ctx, child, level - 1, &sub_low, &sub_high);
+        if (under < 0) return -1;
+        if (sub_high != end) return -1;             /* key_end is the largest */
+        if (i == 0) *low = sub_low;
+        else if (sub_low < *high) return -1;        /* children do not overlap */
+        *high = sub_high;
+        total += under;
+        node = db_index_node_addr(ctx, page);
+    }
+    return total;
+}
+
+static int tree_ok(void *ctx, uint64_t root, uint64_t expect) {
+    unsigned char *node = db_index_node_addr(ctx, root);
+    int64_t low = 0, high = 0;
+    int64_t total = audit(ctx, root, (int)u32(node, IDX_LEVEL), &low, &high);
+    return total >= 0 && (uint64_t)total == expect;
+}
+
+/* Insert `count` keys in the order `step` walks them, then require that every
+   one of them is found at the row it was given. */
+static void insert_case(void *ctx, const char *what, uint64_t count,
+                        uint64_t step, int expect_level) {
+    uint64_t root = 0, next = 0;
+    int ok = 1;
+    char label[128];
+
+    for (uint64_t i = 0; i < count; i++) {
+        uint64_t k = (i * step) % count;
+        int64_t key = (int64_t)(k * 2) - (int64_t)count;   /* keys straddle zero */
+        int rc = db_index_insert(ctx, 11, root, key, k, &next);
+        if (rc != 0 || next == 0) { ok = 0; break; }
+        root = next;
+    }
+    snprintf(label, sizeof label, "%s: %llu inserts", what,
+             (unsigned long long)count);
+    check(label, ok);
+
+    snprintf(label, sizeof label, "%s: the tree holds together", what);
+    check(label, tree_ok(ctx, root, count));
+
+    if (expect_level >= 0) {
+        snprintf(label, sizeof label, "%s: the root sits at level %d", what,
+                 expect_level);
+        check(label, (int)u32(db_index_node_addr(ctx, root), IDX_LEVEL) ==
+              expect_level);
+    }
+
+    ok = 1;
+    for (uint64_t i = 0; i < count && ok; i++) {
+        int64_t key = (int64_t)(i * 2) - (int64_t)count, found = 0;
+        uint64_t row = ~0ull;
+        if (!key_at(ctx, root, key, &found, &row)) ok = 0;
+        else if (found != key || row != i) ok = 0;
+    }
+    snprintf(label, sizeof label, "%s: every key found at its row", what);
+    check(label, ok);
+
+    ok = 1;
+    for (uint64_t i = 0; i + 1 < count && ok; i++) {
+        int64_t key = (int64_t)(i * 2) - (int64_t)count, found = 0;
+        if (!key_at(ctx, root, key + 1, &found, NULL)) ok = 0;
+        else if (found != key + 2) ok = 0;
+    }
+    snprintf(label, sizeof label, "%s: a missing key positions on the next", what);
+    check(label, ok);
+
+    /* An insert copies the path it descends, and nothing reclaims those copies
+       while the transaction is open. Each case starts from a clean file. */
+    db_rollback(ctx);
+}
+
+static void insert_suite(void *ctx) {
+    uint64_t root = 0, next = 0;
+
+    check("inserting into an empty index makes a root",
+          db_index_insert(ctx, 11, 0, 42, 7, &root) == 0 && root != 0);
+    {
+        int64_t found = 0;
+        uint64_t row = 0;
+        check("and the entry is in it",
+              key_at(ctx, root, 42, &found, &row) && found == 42 && row == 7);
+    }
+
+    /* Ascending is the shape an INSERT into a table produces, since a row's
+       position only ever grows; the others are what an index over an
+       unclustered column sees. */
+    insert_case(ctx, "ascending", 3000, 1, 1);
+    insert_case(ctx, "descending", 3000, 2999, 1);
+    insert_case(ctx, "scattered", 3000, 1009, 1);
+    insert_case(ctx, "one full leaf plus one", IDX_MAX_ENTRIES + 1, 1, 1);
+    /* Inserting into a tree that is already three levels deep. Building it
+       costs one page per 251 entries where inserting costs the height per
+       entry, so this reaches the depth without paying for it. */
+    {
+        entry_t *entries = malloc(sizeof(entry_t) * 63002);
+        uint64_t built = 0;
+        int ok = 1;
+        for (uint64_t i = 0; i < 63002; i++) {
+            entries[i].key = (int64_t)(i * 4) - 63002;
+            entries[i].row = i;
+        }
+        check("a three-level tree to insert into",
+              db_index_build(ctx, 11, entries, 63002, &built) == 0 &&
+              (int)u32(db_index_node_addr(ctx, built), IDX_LEVEL) == 2);
+        for (uint64_t i = 0; i < 300 && ok; i++) {
+            if (db_index_insert(ctx, 11, built, (int64_t)(i * 4) - 63000,
+                                63002 + i, &next) != 0) ok = 0;
+            built = next;
+        }
+        check("300 inserts into it", ok);
+        check("it still holds together", tree_ok(ctx, built, 63302));
+        check("its root did not move level",
+              (int)u32(db_index_node_addr(ctx, built), IDX_LEVEL) == 2);
+        ok = 1;
+        for (uint64_t i = 0; i < 300 && ok; i++) {
+            int64_t key = (int64_t)(i * 4) - 63000, found = 0;
+            uint64_t row = 0;
+            if (!key_at(ctx, built, key, &found, &row)) ok = 0;
+            else if (found != key || row != 63002 + i) ok = 0;
+        }
+        check("and every inserted key is found in it", ok);
+        free(entries);
+        db_rollback(ctx);
+    }
+
+    /* Duplicates: allowed, ordered by the row they name, and refused by a
+       unique index without leaving the tree changed. */
+    root = 0;
+    for (int i = 0; i < 5; i++) {
+        check("duplicate key accepted",
+              db_index_insert(ctx, 11, root, 5, (uint64_t)i, &next) == 0);
+        root = next;
+    }
+    check("five entries under one key", tree_ok(ctx, root, 5));
+
+    check("unique index takes the first",
+          db_index_insert_unique(ctx, 11, 0, 5, 0, &root) == 0 && root != 0);
+    next = 0;
+    check("unique index refuses the second",
+          db_index_insert_unique(ctx, 11, root, 5, 1, &next) == CYBOUDB_E_VALUE);
+
+    /* A refusal happens after the path has been copied, and a copy retires
+       the page it came from, so the caller discards the transaction rather
+       than reusing the tree it handed in - the same contract a refused commit
+       has. Build it again and the different key goes in. */
+    db_rollback(ctx);
+    check("after a rollback the index takes the first again",
+          db_index_insert_unique(ctx, 11, 0, 5, 0, &root) == 0 && root != 0);
+    check("and a different key is accepted",
+          db_index_insert_unique(ctx, 11, root, 6, 1, &next) == 0);
+    check("leaving both in the tree", tree_ok(ctx, next, 2));
+    db_rollback(ctx);
+}
+
 int main(int argc, char **argv) {
     cyboudb_db *db = NULL;
     void *ctx;
@@ -215,6 +406,8 @@ int main(int argc, char **argv) {
     build_case(ctx, IDX_MAX_ENTRIES + 1, 2);    /* one over: a level appears */
     build_case(ctx, 4000, 2);
     build_case(ctx, IDX_MAX_ENTRIES * IDX_MAX_ENTRIES + 1, 3);
+
+    insert_suite(ctx);
 
     check("rollback", db_rollback(ctx) == CybouDB_OK);
     check("close", cyboudb_close(db) == CybouDB_OK);

@@ -11,9 +11,10 @@
 BITS 64
 default rel
 extern crc32c
-extern db_cow_alloc_page
+extern db_cow_alloc_page, db_cow_copy_page
 extern db_bitmap_candidate_payload, db_bitmap_deep
-global db_index_build, db_index_search, db_index_validate
+global db_index_build, db_index_insert, db_index_insert_unique
+global db_index_search, db_index_validate
 global db_index_node_addr
 
 section .text
@@ -316,6 +317,476 @@ db_index_build:
     mov r11, [rbp - 24]
     mov [r11], rcx
 .ok:
+    xor eax, eax
+.done:
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  Incremental insert
+;
+;  One row at a time, which is what an INSERT into a table that already has an
+;  index does. The path from the root to the leaf is copied - every node on it
+;  gets a new page and the old one is retired - so the generation that is still
+;  published keeps pointing at a tree that is entirely intact. Nothing else is
+;  touched: a node off the path is shared between the two generations, which is
+;  what makes a one-row insert cost the height of the tree rather than its size.
+;
+;  A node that overflows splits in half and hands its right half to its parent,
+;  and a root that splits grows a new one above it. Both halves keep 126 of the
+;  252 entries the overflow produced, so a tree built this way is at worst half
+;  empty and a search over it is still bounded by the same height.
+; -----------------------------------------------------------------------------
+%define II_CTX      0
+%define II_OWNER    8
+%define II_KEY      16
+%define II_ROW      24
+%define II_UNIQUE   32
+%define II_SIZE     40
+
+; What a level hands back to the one above it.
+%define IO_NODE     0                   ; the copy that replaces the node
+%define IO_SIB      8                   ; its new right half, or zero
+%define IO_SIB_END  16                  ; the largest key in that half
+%define IO_END      24                  ; the largest key in the copy
+%define IO_SIZE     32
+
+%define IDX_SPLIT_LEFT 126              ; (IDX_MAX_ENTRIES + 1) / 2
+
+; index_restamp(ARG1 = node, ARG2 = ctx, ARG3 = new page id)
+; A copied page still carries the id and generation of the page it came from.
+index_restamp:
+    mov [ARG1 + IDX_PAGE_ID], ARG3
+    mov r10, ARG2
+    mov rax, [r10 + DB_GENERATION]
+    inc rax
+    mov [ARG1 + IDX_GENERATION], rax
+    ret
+
+; index_entry_open(ARG1 = node, ARG2 = count, ARG3 = slot)
+; Move entries from slot upwards one place, leaving slot free to be written.
+index_entry_open:
+    mov rax, ARG2
+.shift:
+    cmp rax, ARG3
+    jbe .done
+    mov r10, rax
+    shl r10, 4
+    mov r11, [ARG1 + IDX_ENTRIES + r10 - 16]
+    mov [ARG1 + IDX_ENTRIES + r10], r11
+    mov r11, [ARG1 + IDX_ENTRIES + r10 - 8]
+    mov [ARG1 + IDX_ENTRIES + r10 + 8], r11
+    dec rax
+    jmp .shift
+.done:
+    ret
+
+; index_entry_put(ARG1 = node, ARG2 = slot, ARG3 = key, ARG4 = payload)
+index_entry_put:
+    mov rax, ARG2
+    shl rax, 4
+    mov [ARG1 + IDX_ENTRIES + rax], ARG3
+    mov [ARG1 + IDX_ENTRIES + rax + 8], ARG4
+    ret
+
+; index_node_end(ARG1 = node) -> RAX: the largest key it holds.
+index_node_end:
+    mov eax, [ARG1 + IDX_COUNT]
+    dec rax
+    shl rax, 4
+    mov rax, [ARG1 + IDX_ENTRIES + rax]
+    ret
+
+; -----------------------------------------------------------------------------
+;  index_insert_node(ARG1 = state, ARG2 = node id, ARG3 = out block)
+;      -> RAX: result code
+;
+;  Local slots: [rbp-8]=state, [rbp-16]=node id, [rbp-24]=out, [rbp-32]=copy id,
+;               [rbp-40]=copy address, [rbp-48]=count, [rbp-56]=slot,
+;               [rbp-64]=sibling id, [rbp-72]=sibling address,
+;               [rbp-80]=child out block (IO_SIZE), [rbp-112]=moved entries
+; -----------------------------------------------------------------------------
+index_insert_node:
+    FRAME_BEGIN 160, 2
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov qword [rbp - 64], 0
+
+    mov r10, ARG1
+    mov ARG1, [r10 + II_CTX]
+    mov ARG2, [rbp - 16]
+    lea ARG3, [rbp - 32]
+    call db_cow_copy_page
+    test eax, eax
+    jnz .done
+    mov r10, [rbp - 8]
+    mov ARG1, [r10 + II_CTX]
+    mov ARG2, [rbp - 32]
+    call index_node_addr
+    mov [rbp - 40], rax
+    mov ARG1, rax
+    mov r10, [rbp - 8]
+    mov ARG2, [r10 + II_CTX]
+    mov ARG3, [rbp - 32]
+    call index_restamp
+    mov r10, [rbp - 40]
+    mov eax, [r10 + IDX_COUNT]
+    mov [rbp - 48], rax
+    cmp dword [r10 + IDX_LEVEL], IDX_LEAF
+    jne .internal
+
+    ; --- a leaf: find where the entry belongs ------------------------------
+    ; Equal keys are ordered by the row they name, which keeps the order total
+    ; and every entry distinct.
+    mov r11, [rbp - 8]
+    mov r8, [r11 + II_KEY]
+    mov r9, [r11 + II_ROW]
+    xor ecx, ecx
+.leaf_slot:
+    cmp rcx, [rbp - 48]
+    jae .leaf_slot_ready
+    mov rax, rcx
+    shl rax, 4
+    mov rdx, [r10 + IDX_ENTRIES + rax]
+    cmp rdx, r8
+    jg .leaf_slot_ready
+    jl .leaf_slot_next
+    cmp qword [r11 + II_UNIQUE], 0
+    jne .duplicate
+    mov rdx, [r10 + IDX_ENTRIES + rax + 8]
+    cmp rdx, r9
+    jg .leaf_slot_ready
+.leaf_slot_next:
+    inc rcx
+    jmp .leaf_slot
+.leaf_slot_ready:
+    mov [rbp - 56], rcx
+    jmp .place
+
+.internal:
+    ; --- an internal node: the first child that could hold the key ---------
+    xor ecx, ecx
+    mov r11, [rbp - 8]
+    mov r8, [r11 + II_KEY]
+.child_slot:
+    inc rcx
+    cmp rcx, [rbp - 48]
+    jae .child_ready
+    mov rax, rcx
+    dec rax
+    shl rax, 4
+    mov rdx, [r10 + IDX_ENTRIES + rax]
+    cmp rdx, r8
+    jl .child_slot
+.child_ready:
+    dec rcx
+    mov [rbp - 56], rcx
+    mov rax, rcx
+    shl rax, 4
+    mov r10, [rbp - 40]
+    mov rax, [r10 + IDX_ENTRIES + rax + 8]
+    mov ARG1, [rbp - 8]
+    mov ARG2, rax
+    lea ARG3, [rbp - 112]
+    call index_insert_node
+    test eax, eax
+    jnz .done
+    ; The child was replaced by its copy, and its largest key may have grown.
+    mov r10, [rbp - 40]
+    mov rax, [rbp - 56]
+    shl rax, 4
+    mov rdx, [rbp - 112 + IO_END]
+    mov [r10 + IDX_ENTRIES + rax], rdx
+    mov rdx, [rbp - 112 + IO_NODE]
+    mov [r10 + IDX_ENTRIES + rax + 8], rdx
+    cmp qword [rbp - 112 + IO_SIB], 0
+    je .finished
+    ; The child split, so this node gains the entry naming its right half.
+    inc qword [rbp - 56]
+    mov r11, [rbp - 8]
+    mov rax, [rbp - 112 + IO_SIB_END]
+    mov [r11 + II_KEY], rax             ; the key and payload to place
+    mov rax, [rbp - 112 + IO_SIB]
+    mov [r11 + II_ROW], rax
+
+.place:
+    ; --- place one entry, splitting the node when it does not fit ----------
+    mov rax, [rbp - 48]
+    cmp rax, IDX_MAX_ENTRIES
+    jae .split
+    mov ARG1, [rbp - 40]
+    mov ARG2, [rbp - 48]
+    mov ARG3, [rbp - 56]
+    call index_entry_open
+    mov ARG1, [rbp - 40]
+    mov ARG2, [rbp - 56]
+    mov r11, [rbp - 8]
+    mov ARG3, [r11 + II_KEY]
+    mov ARG4, [r11 + II_ROW]
+    call index_entry_put
+    mov r10, [rbp - 40]
+    mov rax, [rbp - 48]
+    inc rax
+    mov [r10 + IDX_COUNT], eax
+    jmp .finished
+
+.split:
+    ; A full node becomes two halves of 126. Which half the new entry lands in
+    ; decides how many entries move, and nothing else about the split changes.
+    mov ARG1, [rbp - 8]
+    mov r10, ARG1
+    mov ARG1, [r10 + II_CTX]
+    mov ARG2, [r10 + II_OWNER]
+    mov r11, [rbp - 40]
+    mov eax, [r11 + IDX_LEVEL]
+    mov ARG3, rax
+    lea ARG4, [rbp - 64]
+    call index_new_node
+    test eax, eax
+    jnz .done
+    mov [rbp - 72], rdx
+
+    mov rax, [rbp - 56]
+    cmp rax, IDX_SPLIT_LEFT
+    jae .split_right
+
+    ; The new entry belongs on the left, so the right half starts one lower.
+    mov qword [rbp - 136], IDX_SPLIT_LEFT - 1
+    jmp .split_move
+.split_right:
+    mov qword [rbp - 136], IDX_SPLIT_LEFT
+.split_move:
+    mov r8, [rbp - 40]
+    mov r9, [rbp - 72]
+    mov rcx, [rbp - 136]
+    xor edx, edx
+.split_copy:
+    cmp rcx, [rbp - 48]
+    jae .split_counts
+    mov rax, rcx
+    shl rax, 4
+    mov r11, [r8 + IDX_ENTRIES + rax]
+    mov [rbp - 120], r11
+    mov r11, [r8 + IDX_ENTRIES + rax + 8]
+    mov rax, rdx
+    shl rax, 4
+    mov [r9 + IDX_ENTRIES + rax + 8], r11
+    mov r11, [rbp - 120]
+    mov [r9 + IDX_ENTRIES + rax], r11
+    inc rcx
+    inc rdx
+    jmp .split_copy
+.split_counts:
+    mov [r9 + IDX_COUNT], edx
+    mov [rbp - 128], rdx                ; entries the right half took
+    mov rax, [rbp - 136]
+    mov [r8 + IDX_COUNT], eax
+
+    mov rax, [rbp - 56]
+    cmp rax, IDX_SPLIT_LEFT
+    jae .split_into_right
+    ; Into the left half, whose count is now IDX_SPLIT_LEFT - 1.
+    mov ARG1, [rbp - 40]
+    mov ARG2, [rbp - 136]
+    mov ARG3, [rbp - 56]
+    call index_entry_open
+    mov ARG1, [rbp - 40]
+    mov ARG2, [rbp - 56]
+    mov r11, [rbp - 8]
+    mov ARG3, [r11 + II_KEY]
+    mov ARG4, [r11 + II_ROW]
+    call index_entry_put
+    mov r10, [rbp - 40]
+    mov rax, [rbp - 136]
+    inc rax
+    mov [r10 + IDX_COUNT], eax
+    jmp .split_seal
+.split_into_right:
+    mov rax, [rbp - 56]
+    sub rax, [rbp - 136]
+    mov [rbp - 56], rax                 ; the slot, in the right half
+    mov ARG1, [rbp - 72]
+    mov ARG2, [rbp - 128]
+    mov ARG3, rax
+    call index_entry_open
+    mov ARG1, [rbp - 72]
+    mov ARG2, [rbp - 56]
+    mov r11, [rbp - 8]
+    mov ARG3, [r11 + II_KEY]
+    mov ARG4, [r11 + II_ROW]
+    call index_entry_put
+    mov r10, [rbp - 72]
+    mov rax, [rbp - 128]
+    inc rax
+    mov [r10 + IDX_COUNT], eax
+
+.split_seal:
+    ; Everything above what each half now holds is zero, as every tail is.
+    mov ARG1, [rbp - 72]
+    call index_tail_clear
+    mov ARG1, [rbp - 72]
+    call index_seal
+    mov ARG1, [rbp - 72]
+    call index_node_end
+    mov r10, [rbp - 24]
+    mov [r10 + IO_SIB_END], rax
+    mov rax, [rbp - 64]
+    mov r10, [rbp - 24]
+    mov [r10 + IO_SIB], rax
+
+.finished:
+    mov ARG1, [rbp - 40]
+    call index_tail_clear
+    mov ARG1, [rbp - 40]
+    call index_seal
+    mov ARG1, [rbp - 40]
+    call index_node_end
+    mov r10, [rbp - 24]
+    mov [r10 + IO_END], rax
+    mov rax, [rbp - 32]
+    mov [r10 + IO_NODE], rax
+    cmp qword [rbp - 64], 0
+    jne .split_done
+    mov qword [r10 + IO_SIB], 0
+.split_done:
+    xor eax, eax
+.done:
+    FRAME_END
+    ret
+.duplicate:
+    mov eax, CybouDB_E_VALUE
+    FRAME_END
+    ret
+
+; index_tail_clear(ARG1 = node). Zero everything above the entries it holds:
+; a split leaves the vacated half of a node naming pages it no longer owns.
+index_tail_clear:
+    mov eax, [ARG1 + IDX_COUNT]
+    shl rax, 4
+    lea r10, [ARG1 + IDX_ENTRIES + rax]
+    lea r11, [ARG1 + IDX_CRC]
+.loop:
+    cmp r10, r11
+    jae .done
+    mov dword [r10], 0
+    add r10, 4
+    jmp .loop
+.done:
+    ret
+
+; -----------------------------------------------------------------------------
+;  db_index_insert(ctx, owner, root, key, row, out_root) -> RAX: result code
+;  db_index_insert_unique(...) is the same with the constraint enforced, and
+;  answers CybouDB_E_VALUE when the tree already holds that key.
+;
+;  Two entry points rather than a seventh argument: six is what the ABI passes
+;  in registers on both platforms, and the flag is a property of the index
+;  rather than of the row being inserted.
+;
+;  Local slots: [rbp-8]=out_root, [rbp-16]=root, [rbp-64]=state (II_SIZE),
+;               [rbp-96]=new root id, [rbp-128]=out block, [rbp-144]=level
+; -----------------------------------------------------------------------------
+db_index_insert_unique:
+    mov r11d, 1
+    jmp index_insert_common
+db_index_insert:
+    xor r11d, r11d
+index_insert_common:
+    FRAME_BEGIN 192, 2
+    lea r10, [rbp - 64]                 ; the state, built once for the descent
+    mov [r10 + II_CTX], ARG1
+    mov [r10 + II_OWNER], ARG2
+    mov [r10 + II_KEY], ARG4
+    mov [r10 + II_UNIQUE], r11
+    mov [rbp - 16], ARG3
+    mov rax, IN_ARG5
+    mov [r10 + II_ROW], rax
+    mov rax, IN_ARG6
+    mov [rbp - 8], rax
+
+    cmp qword [rbp - 16], 0
+    jne .descend
+
+    ; An empty index: the first entry is a leaf, and that leaf is the root.
+    lea r10, [rbp - 64]
+    mov ARG1, [r10 + II_CTX]
+    mov ARG2, [r10 + II_OWNER]
+    xor ARG3, ARG3
+    lea ARG4, [rbp - 96]
+    call index_new_node
+    test eax, eax
+    jnz .done
+    mov ARG1, rdx
+    xor ARG2, ARG2
+    lea r10, [rbp - 64]
+    mov ARG3, [r10 + II_KEY]
+    mov ARG4, [r10 + II_ROW]
+    call index_entry_put
+    mov r10, [rbp - 96]
+    lea r11, [rbp - 64]
+    mov ARG1, [r11 + II_CTX]
+    mov ARG2, r10
+    call index_node_addr
+    mov dword [rax + IDX_COUNT], 1
+    mov ARG1, rax
+    call index_seal
+    mov rax, [rbp - 96]
+    mov r10, [rbp - 8]
+    mov [r10], rax
+    xor eax, eax
+    jmp .done
+
+.descend:
+    lea ARG1, [rbp - 64]
+    mov ARG2, [rbp - 16]
+    lea ARG3, [rbp - 128]
+    call index_insert_node
+    test eax, eax
+    jnz .done
+    cmp qword [rbp - 128 + IO_SIB], 0
+    jne .grow
+    mov rax, [rbp - 128 + IO_NODE]
+    mov r10, [rbp - 8]
+    mov [r10], rax
+    xor eax, eax
+    jmp .done
+
+.grow:
+    ; The root split, so the tree gains a level: one node naming both halves.
+    lea r10, [rbp - 64]
+    mov ARG1, [r10 + II_CTX]
+    mov ARG2, [rbp - 128 + IO_NODE]
+    call index_node_addr
+    mov ecx, [rax + IDX_LEVEL]
+    inc rcx
+    mov [rbp - 144], rcx
+    lea r10, [rbp - 64]
+    mov ARG1, [r10 + II_CTX]
+    mov ARG2, [r10 + II_OWNER]
+    mov ARG3, [rbp - 144]
+    lea ARG4, [rbp - 96]
+    call index_new_node
+    test eax, eax
+    jnz .done
+    mov [rbp - 152], rdx
+    mov ARG1, rdx
+    xor ARG2, ARG2
+    mov ARG3, [rbp - 128 + IO_END]
+    mov ARG4, [rbp - 128 + IO_NODE]
+    call index_entry_put
+    mov ARG1, [rbp - 152]
+    mov ARG2, 1
+    mov ARG3, [rbp - 128 + IO_SIB_END]
+    mov ARG4, [rbp - 128 + IO_SIB]
+    call index_entry_put
+    mov r10, [rbp - 152]
+    mov dword [r10 + IDX_COUNT], 2
+    mov ARG1, r10
+    call index_seal
+    mov rax, [rbp - 96]
+    mov r10, [rbp - 8]
+    mov [r10], rax
     xor eax, eax
 .done:
     FRAME_END

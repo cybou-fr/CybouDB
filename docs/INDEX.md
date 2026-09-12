@@ -161,6 +161,16 @@ new root publishes the index's, or neither is published.
 Uniqueness is enforced where the insert happens, not by a later check, so a
 violating statement fails before it has staged a row.
 
+A refused insert is not a no-op on the tree: the path to the leaf has already
+been copied by the time the duplicate is seen, and a copy retires the page it
+came from. The caller discards the transaction rather than reusing the root it
+handed in — the same contract a refused commit has, and for the same reason.
+
+An insert costs the height of the tree in copied pages, and nothing else: a
+node off the path is shared between the two generations rather than rewritten.
+A node that overflows splits into two halves of 126, so a tree grown one row
+at a time is at worst half empty and its height is still bounded by the fan-out.
+
 ## Copy-on-write
 
 A tree node is an ordinary payload page and obeys the rules in
