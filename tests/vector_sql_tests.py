@@ -435,6 +435,16 @@ def main():
         lines = [line.strip() for line in res.stdout.strip().splitlines() if line.strip() and not line.startswith('-') and not line.startswith('id') and not line.startswith('(')]
         test('topk_cosine_op_limit', res.returncode == 0 and lines == ['3', '1'], res.stdout)
 
+        # 15g3. Cosine with OFFSET: skip the first of the two parallel vectors
+        res = run_cmd(['query', topk_db, 'SELECT id FROM items ORDER BY COSINE_DISTANCE(emb, [1.0, 2.0, 3.0]) LIMIT 1 OFFSET 1;'])
+        lines = [line.strip() for line in res.stdout.strip().splitlines() if line.strip() and not line.startswith('-') and not line.startswith('id') and not line.startswith('(')]
+        test('topk_cosine_offset', res.returncode == 0 and lines == ['1'], res.stdout)
+
+        # 15g4. Cosine behind a WHERE filter
+        res = run_cmd(['query', topk_db, 'SELECT id FROM items WHERE id > 3 ORDER BY COSINE_DISTANCE(emb, [1.0, 2.0, 3.0]) LIMIT 1;'])
+        lines = [line.strip() for line in res.stdout.strip().splitlines() if line.strip() and not line.startswith('-') and not line.startswith('id') and not line.startswith('(')]
+        test('topk_cosine_where', res.returncode == 0 and lines == ['4'], res.stdout)
+
         # 15h. Missing LIMIT rejected
         res = run_cmd(['query', topk_db, 'SELECT id FROM items ORDER BY L2_DISTANCE(emb, [1.0, 2.0, 3.0]);'])
         test('topk_missing_limit_rejected', res.returncode != 0 and 'vector distance ORDER BY requires LIMIT' in res.stdout, res.stdout)

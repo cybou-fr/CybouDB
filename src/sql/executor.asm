@@ -1502,7 +1502,11 @@ sql_vector_topk_execute:
 
     mov     r10, [rbp - 96]             ; search
     mov     r11, [rbp - 64]             ; bexpr
-    mov     rsi, [r11 + BEXPR_LIT_VAL]  ; query vector ptr
+    ; The query pointer lives in a stack slot, not in RSI: RSI and RDI are
+    ; volatile under the System V ABI, so the arena call below would return
+    ; into a register the callee was free to destroy.
+    mov     rax, [r11 + BEXPR_LIT_VAL]  ; query vector ptr
+    mov     [rbp - 160], rax
     cmp     qword [rbp - 104], 1        ; is_cosine?
     jne     .vtopk_query_ready
     mov     ARG1, [rbp - 24]            ; arena
@@ -1510,17 +1514,19 @@ sql_vector_topk_execute:
     call    sql_arena_alloc
     test    rax, rax
     jz      .vtopk_oom
-    mov     rdi, rax
-    mov     ARG1, rsi                   ; input
-    mov     ARG2, rdi                   ; output
+    mov     [rbp - 168], rax            ; normalized query buffer
+    mov     ARG1, [rbp - 160]           ; input
+    mov     ARG2, [rbp - 168]           ; output
     mov     ARG3, [rbp - 280]           ; dim
     call    cyboudb_vector_normalize_f32
     test    eax, eax
     jnz     .vtopk_exec_error
-    mov     rsi, rdi
+    mov     rax, [rbp - 168]
+    mov     [rbp - 160], rax            ; search the normalized copy
 .vtopk_query_ready:
     mov     r10, [rbp - 96]             ; restore search
-    mov     [r10 + VTOPK_QUERY], rsi
+    mov     rax, [rbp - 160]            ; query vector (normalized for cosine)
+    mov     [r10 + VTOPK_QUERY], rax
     mov     r11, [rbp - 64]             ; restore bexpr
     mov     rax, [r11 + BEXPR_RIGHT]    ; dimension
     mov     [r10 + VTOPK_DIM], rax
