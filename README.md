@@ -381,6 +381,8 @@ All test suites run in CI on both Linux and Windows.
 * **[docs/PAX.md](docs/PAX.md)** - PAX layout and single-page row storage.
 * **[docs/PAX_MULTI.md](docs/PAX_MULTI.md)** - multi-page table directory format.
 * **[docs/SPAN_MAP.md](docs/SPAN_MAP.md)** - paired multi-page allocation map and recycling.
+* **[docs/INDEX.md](docs/INDEX.md)** - secondary B+tree indexes: the page
+  layout, what a row id means, and when an index is rebuilt.
 
 ---
 

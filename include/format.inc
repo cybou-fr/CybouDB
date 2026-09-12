@@ -124,6 +124,16 @@
 ; a leaf holds, which is why this is an incompatible bit rather than a hint: a
 ; build without it would read those bytes as column data. See docs/TOMBSTONES.md.
 %define CybouDB_FEATURE_TOMBSTONES 4096
+; Secondary B+tree indexes - requires PAX. An index is a third page type in
+; the catalog directory, so a build without this bit would reach a directory
+; entry whose type it cannot interpret, and refusing is the only honest answer
+; to that. See docs/INDEX.md.
+;
+; The number is reserved here rather than emitted: no creator sets it and
+; db_open does not accept it yet, so a file carrying it is still refused. What
+; it buys today is that the next capability cannot quietly take 8192 and leave
+; two meanings for one bit in files written in between.
+%define CybouDB_FEATURE_INDEX 8192
 
 ; Column compression codecs (stored in bits 8..15 of leaf column flags):
 %define PAX_CODEC_RAW       0

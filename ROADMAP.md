@@ -591,6 +591,21 @@ and no encryption claim should be made without external review.
 
 ---
 
+## Secondary indexes
+
+Not implemented. The format decisions are settled and written down in
+[docs/INDEX.md](docs/INDEX.md): an index is a third page type in the catalog
+directory, its nodes are ordinary copy-on-write payload pages, and a leaf entry
+names a row by position - which is why a compacting DELETE rebuilds every index
+of the table it rewrote, in the same transaction.
+
+`CybouDB_FEATURE_INDEX` is reserved in the header so the next capability cannot
+take the same bit, but no creator emits it and `db_open` does not accept it, so
+a file claiming it is still refused. Version 1 will cover single-column INT32
+and INT64 keys, unique and not, with point and range lookup.
+
+---
+
 ## Known gaps outside the phases
 
 Small, real, and worth fixing when they are next touched:
