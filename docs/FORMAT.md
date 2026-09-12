@@ -4,7 +4,8 @@ This is the normative description of a `.cdb` file. `include/format.inc` is the
 machine-readable version of the same thing and wins on any disagreement; the
 per-structure documents ([CATALOG.md](CATALOG.md), [PAX.md](PAX.md),
 [VARLEN.md](VARLEN.md), [ZONEMAP.md](ZONEMAP.md), [SPAN_MAP.md](SPAN_MAP.md),
-[TOMBSTONES.md](TOMBSTONES.md), [COMPRESSION.md](COMPRESSION.md)) describe what
+[TOMBSTONES.md](TOMBSTONES.md), [COMPRESSION.md](COMPRESSION.md),
+[INDEX.md](INDEX.md)) describe what
 lives inside the pages this document allocates.
 
 ## Ground rules
@@ -160,6 +161,7 @@ rather than opened in a half-understood state.
 | 1024 | `VARLEN` | `PAX` |
 | 2048 | `VECTOR` | `PAX` |
 | 4096 | `TOMBSTONES` | `PAX` |
+| 8192 | `INDEX` | `PAX` |
 
 Bit 1 is unassigned and unsupported.
 
@@ -167,6 +169,12 @@ Bits are creation-time decisions. The engine does not upgrade a file in place:
 a database created without `TOMBSTONES` keeps rewriting on DELETE for its whole
 life, because the reservation those bits describe changes how many rows a leaf
 holds and every existing leaf was written to the older shape.
+
+`INDEX` is the one bit that changes no existing structure - a tree node is an
+ordinary payload page. What it changes is the catalog: a directory entry may
+name a page of a third type, so a build that does not know the type has to
+refuse the file rather than read an index page as a schema. The layout of that
+page and of the tree is in [INDEX.md](INDEX.md).
 
 ## What version 1 fixes
 

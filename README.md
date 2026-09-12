@@ -1,27 +1,30 @@
 # CybouDB
 
-**CybouDB** is an experimental embedded database engine written in assembly, close
-to the hardware, with a portable on-disk format and architecture-specific
-execution paths.
+**CybouDB** is an embedded database engine written in assembly, with a portable
+on-disk format, copy-on-write transactions, columnar execution, secondary
+indexes and native vectors. It has no libc, no CRT and no third-party
+dependency: on Linux it talks to the kernel directly, and on Windows it uses
+kernel32 and nothing else.
 
-The project explores how far a compact database engine can be pushed when its
+Relational data and vectors live in one file under one transaction model. A
+statement that writes rows, updates an index and stores an embedding either
+commits as a whole or leaves nothing behind, because there is one storage
+engine underneath rather than a database beside a vector store.
+
+The project also explores how far a compact engine can be pushed when its
 storage layout and execution model are designed directly around modern CPU and
 operating-system primitives: memory-mapped I/O, fixed-size pages,
-cache-conscious data layouts, SIMD predicate evaluation, native vector
-operations and minimal runtime dependencies.
+cache-conscious data layouts, SIMD predicate evaluation and minimal runtime
+dependencies.
 
-The long-term goal is a compact embedded engine that combines relational data,
-analytical scans and vector search while exploiting the capabilities of the
-underlying CPU.
-
-> **Project status: Phases 4, 5 & 6 core implemented.** The storage foundation,
-> COW-backed typed catalog, single- and multi-page PAX columnar storage,
-> columnar batch executor, interactive console (REPL), C library ABI
-> (`cyboudb.h`, static libraries), and AVX2 SIMD scan kernels with runtime CPUID
-> dispatch are implemented. Optional line editing/history, FMA3 and AVX-512
-> remain open. What remains ahead are
-> vector indexing, transactions, and an ARM64 backend. CybouDB is not
-> production-ready.
+> **Project status: pre-release.** The on-disk format, the transaction
+> semantics and the recovery behaviour are frozen as version 1 and written down
+> in [docs/FORMAT.md](docs/FORMAT.md), [docs/TRANSACTIONS.md](docs/TRANSACTIONS.md)
+> and [docs/RECOVERY.md](docs/RECOVERY.md). SQL, the columnar executor, exact
+> vector search, tombstoned DELETE with compaction and secondary B+tree indexes
+> are implemented and tested on Linux and Windows. No query plan uses an index
+> yet, and an ARM64 backend does not exist. There is no release, and CybouDB is
+> not production-ready.
 
 ---
 
@@ -39,7 +42,9 @@ underlying CPU.
 | Multi-page PAX tables | working; two-level directory tree (up to 28M rows per table), cross-page batches |
 | Paired multi-page allocation map | working; `create-large`, 63 GiB ceiling, page reclamation |
 | SQL engine: parser, binder, executor | working; pure x86-64 scalar and batch execution |
-| SQL statements | working; `CREATE TABLE`, `INSERT INTO` (multi-row), fixed-width flat-PAX `UPDATE ... SET literal WHERE`, `DELETE FROM ... [WHERE]`, `SELECT ... WHERE`, stable single-key `ORDER BY`, `LIMIT [OFFSET]`, correctness-first `INNER JOIN`/`LEFT JOIN` on qualified INT32/INT64 equi-keys |
+| SQL statements | working; `CREATE TABLE`, `DROP TABLE`, `INSERT INTO` (multi-row), fixed-width flat-PAX `UPDATE ... SET literal WHERE`, `DELETE FROM ... [WHERE]`, `SELECT ... WHERE`, stable single-key `ORDER BY`, `LIMIT [OFFSET]`, correctness-first `INNER JOIN`/`LEFT JOIN` on qualified INT32/INT64 equi-keys, `BEGIN`/`COMMIT`/`ROLLBACK`, `CREATE [UNIQUE] INDEX` / `DROP INDEX` |
+| Secondary indexes | working; copy-on-write B+tree on INT32/INT64 columns, unique or not, maintained by every statement that changes a table. No query plan consults one yet: see [docs/INDEX.md](docs/INDEX.md) |
+| DELETE strategy | working; truncation, per-row tombstones, or a compacting rewrite, chosen per statement from what the table already holds. No explicit `VACUUM` |
 | SQL types and semantics | fixed-width storage working for `INT32`, `INT64`, `FLOAT32`, `BOOL`; persistent `TEXT`/`BLOB` storage working for `create-large` databases |
 | CLI: `query` | working; executes statements, autocommits mutations, tabular output |
 | CLI: `create`, `info`, `check`, `alloc`, `free` | working |
@@ -47,13 +52,14 @@ underlying CPU.
 | Linux x86-64, raw syscalls, no libc | working |
 | Windows x64, kernel32 only | working |
 | Storage, fault-injection, and SQL test suites | working; 3,300+ automated tests on Linux and Windows |
-| CI on Linux and Windows | configured; local Windows baseline verified after the CybouDB rename |
+| CI on Linux and Windows | working; every push builds and runs the whole suite on both, and the two jobs run the same tests |
 | Interactive console (REPL) | working; interactive terminal (`ReadConsoleW` / stdin), piped scripts, multiline queries, meta-commands (Phase 4) |
 | Public C library ABI (`cyboudb.h`, `libcyboudb.a`, `cyboudb.lib`) | working; borrowed typed batch views, prepared statement caching (Phase 5) |
 | Hardware acceleration & SIMD | working; SSE4.2 hardware CRC-32C, BMI2 primitives (pext/pdep/bzhi), AVX2 256-bit scan kernels, CPUID detection (Phase 6) |
 | ARM64 execution backend | not started (Phase 7) |
-| Vector engine | runtime core working: caller-owned normalized arena, scalar/AVX2 dot and cosine, squared L2, filtered streaming top-K; persistent storage and SQL surface pending |
-| Multi-statement transactions, WAL, concurrency | not started (Phase 9) |
+| Vector engine | working; `VECTOR(FLOAT32, n)` columns, persistent extents, exact top-K through `ORDER BY <distance> LIMIT k` in both directions, scalar and AVX2. No ANN index |
+| Multi-statement transactions | working; `BEGIN`/`COMMIT`/`ROLLBACK` over COW staging, one writer, readers pinned against reclamation |
+| WAL, multi-writer concurrency | not started; the format defends against neither, and an advisory lock prevents the second writer |
 | Encryption | not started (Phase 10) |
 
 A database file written on one supported platform is read by the other; this

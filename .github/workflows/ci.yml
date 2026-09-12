@@ -200,6 +200,16 @@ jobs:
           if errorlevel 1 exit /b 1
           build\vector_topk_test.exe
           if errorlevel 1 exit /b 1
+          cyboudb.exe create-large build\test_ci_guard.cdb 10000 --force
+          if errorlevel 1 exit /b 1
+          build\commit_guard_test.exe build\test_ci_guard.cdb
+          if errorlevel 1 exit /b 1
+          cyboudb.exe create-tombstones build\test_ci_tomb.cdb 8000 --force
+          if errorlevel 1 exit /b 1
+          cyboudb.exe create-large build\test_ci_plain.cdb 8000 --force
+          if errorlevel 1 exit /b 1
+          build\tombstone_layout_test.exe build\test_ci_tomb.cdb build\test_ci_plain.cdb
+          if errorlevel 1 exit /b 1
           cyboudb.exe create-large build\test_ci_index.cdb 60000 --force
           if errorlevel 1 exit /b 1
           build\index_tree_test.exe build\test_ci_index.cdb

@@ -129,10 +129,10 @@
 ; entry whose type it cannot interpret, and refusing is the only honest answer
 ; to that. See docs/INDEX.md.
 ;
-; The number is reserved here rather than emitted: no creator sets it and
-; db_open does not accept it yet, so a file carrying it is still refused. What
-; it buys today is that the next capability cannot quietly take 8192 and leave
-; two meanings for one bit in files written in between.
+; Emitted by create-large and create-tombstones. A node of an index tree is an
+; ordinary payload page, so the bit changes no existing structure - what it
+; changes is that a directory entry may name a page of a third type, and that
+; a schema page's neighbour in the directory may not be a schema at all.
 %define CybouDB_FEATURE_INDEX 8192
 
 ; Column compression codecs (stored in bits 8..15 of leaf column flags):

@@ -287,10 +287,21 @@ or validate.
       the shortcut that counts a zone-accepted leaf without reading it, since
       that would count the dead too. A file without the feature never reaches
       the intersection
-* [ ] the executor's choice between marking and rewriting, and the benchmark
-      that says where the line is
-* [ ] compaction: a leaf whose rows are all dead still occupies its pages, and
-      a table that is mostly tombstones still scans every physical row
+* [x] the executor's choice between marking and rewriting. It counts what the
+      statement matched, asks the table how much of it is already dead, and
+      takes truncation when nothing would survive, marking when at most half
+      the table would be dead afterwards, and the rewrite otherwise. Half is
+      where the two costs cross: marking is proportional to what is removed
+      and the rewrite to what survives
+* [x] compaction, which is that rewrite. It leaves behind every dead row, this
+      statement's and every earlier one's, so a table reclaims its pages by
+      being written to rather than by being asked. The scan reports a leaf's
+      tombstones rather than applying them, so the rewrite masks them out
+      itself - without that, compaction resurrected everything an earlier
+      DELETE had marked
+* [ ] an explicit `VACUUM`. Nothing compacts a table that is never written to
+      again, and a leaf whose rows are all dead is reclaimed by the rewrite
+      around it rather than dropped and unlinked
 * [x] statement parser contract: single-column `UPDATE ... SET literal WHERE ...`
 * [x] binder contract for typed single-column `UPDATE`
 * [x] COW executor for flat multi-leaf, fixed-width `UPDATE`
