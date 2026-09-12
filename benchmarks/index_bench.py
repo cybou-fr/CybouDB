@@ -38,6 +38,7 @@ Three things, all of them the point of running this:
   being built over a table of any real size.
 """
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -104,7 +105,7 @@ def main():
         # Building an index inserts one row at a time, and every insert copies
         # the path it descends, so the whole build stages roughly three pages
         # per row before anything is published.
-        pages = max(20000, rows * 4 + 20000)
+        pages = int(os.environ.get("CYBOUDB_BENCH_PAGES", "0")) or max(20000, rows * 4 + 20000)
         baseline, build, one, update, delete, select = measure(binary, rows, pages)
         print(f"{rows:>9}  {baseline:>8.1f}ms  {one:>8.1f}ms  {build:>8.1f}ms  "
               f"{update:>8.1f}ms  {delete:>8.1f}ms  {select:>8.1f}ms")

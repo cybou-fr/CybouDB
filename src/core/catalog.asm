@@ -13,7 +13,7 @@ extern db_pax_validate, db_pax_check_new
 extern index_page_valid
 extern db_zone_validate
 global db_catalog_validate, db_catalog_put, db_catalog_get, db_catalog_drop
-global db_catalog_put_index, db_catalog_set_index_root
+global db_catalog_put_index, db_catalog_set_index_root, db_catalog_page
 global db_catalog_set_data, db_catalog_set_data_stats, db_catalog_replace_data
 global db_catalog_replace_data_stats
 global db_catalog_truncate_data
@@ -1196,14 +1196,14 @@ db_catalog_set_index_root:
 .located:
     mov ARG1, [rbp - 8]
     mov ARG2, [rbp - 16]
-    lea ARG3, [rbp - 40]
-    call db_catalog_get
-    test eax, eax
-    jnz .done
+    call db_catalog_page
+    test rax, rax
+    jz .state
     mov r10, [rbp - 8]
-    mov rax, [rbp - 40]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    mov rcx, rax
+    sub rcx, [r10 + DB_BASE]
+    shr rcx, CybouDB_PAGE_SHIFT
+    mov [rbp - 40], rcx
     cmp dword [rax + CAT_TYPE], CAT_INDEX
     jne .state
     ; stamp clears the reserved span on the copy, and the column and the
@@ -1296,6 +1296,47 @@ db_catalog_set_index_root:
     mov eax, CybouDB_E_FULL
 .done:
     FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  db_catalog_page(ctx, id) -> RAX: the page an entry names, mapped, or zero.
+;
+;  db_catalog_get answers the same question and validates the staged graph on
+;  the way, which is right for a caller that has just been handed an id from
+;  outside. It is wrong for a statement that is in the middle of its own
+;  transaction: the walk is proportional to the table, and doing it again per
+;  statement is what made appends cost the size of the database before
+;  current_valid learned to remember. This is the lookup without the walk, for
+;  callers whose work db_commit will prove anyway.
+; -----------------------------------------------------------------------------
+db_catalog_page:
+    mov r10, ARG1
+    mov rax, [r10 + DB_ROOT]
+    test rax, rax
+    jz .none
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
+    mov ecx, [rax + CAT_COUNT]
+    test ecx, ecx
+    jz .none
+    lea r8, [rax + CAT_DATA]
+    ; The counter goes in a register no argument aliases: ARG2 is RDX on
+    ; one of the two ABIs, and the id being looked for would go with it.
+    xor r9d, r9d
+.scan_entry:
+    cmp [r8], ARG2
+    je .found
+    add r8, 16
+    inc r9d
+    cmp r9d, ecx
+    jb .scan_entry
+.none:
+    xor eax, eax
+    ret
+.found:
+    mov rax, [r8 + 8]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
     ret
 
 %ifdef CybouDB_LINUX

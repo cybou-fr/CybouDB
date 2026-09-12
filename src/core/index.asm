@@ -18,6 +18,14 @@ global db_index_delete
 global db_index_search, db_index_validate, index_page_valid
 global db_index_node_addr, db_index_of_table, db_index_retire_tree
 
+section .data
+; Nodes this process looked at while validating. A test can prove that a
+; commit stopped at the path a transaction touched rather than walking the
+; index, which is a claim about cost that an assertion about results
+; cannot make.
+global index_nodes_walked
+index_nodes_walked: dq 0
+
 section .text
 
 ; index_node_addr(ARG1 = ctx, ARG2 = page id) -> RAX: where it is mapped.
@@ -43,15 +51,49 @@ index_stamp:
     mov [ARG1 + IDX_OWNER], ARG4
     mov dword [ARG1 + IDX_LEVEL], 0
     mov dword [ARG1 + IDX_COUNT], 0
+    mov qword [ARG1 + IDX_SUBTREE], 0
     mov qword [ARG1 + IDX_RESERVED], 0
     mov qword [ARG1 + IDX_RESERVED + 8], 0
-    mov qword [ARG1 + IDX_RESERVED + 16], 0
     ret
 
-; index_seal(ARG1 = node). Everything ahead of the checksum, as everywhere.
+; index_seal(ARG1 = node, ARG2 = ctx). Records how many entries live at or
+; below this node, then checksums everything ahead of the checksum.
+;
+; The count is what lets a commit stop at the path it changed. Under
+; copy-on-write a subtree older than the candidate generation cannot have
+; changed, so validation can take its recorded size instead of walking it -
+; and the walk is what made a one-row insert cost the size of the index.
+;
+; Recomputing it from the children rather than adjusting it as the tree is
+; edited costs at most 251 header reads on a node that is being written
+; anyway, and cannot drift.
 index_seal:
-    FRAME_BEGIN 16, 0
+    FRAME_BEGIN 32, 0
     mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov r10, ARG1
+    mov eax, [r10 + IDX_COUNT]
+    cmp dword [r10 + IDX_LEVEL], IDX_LEAF
+    je .sized
+    ; An internal node holds what its children hold.
+    xor eax, eax
+    xor ecx, ecx
+.child_sum:
+    cmp ecx, [r10 + IDX_COUNT]
+    jae .sized
+    mov rdx, rcx
+    shl rdx, 4
+    mov rdx, [r10 + IDX_ENTRIES + rdx + IDX_CHILD]
+    shl rdx, CybouDB_PAGE_SHIFT
+    mov r11, [rbp - 16]
+    add rdx, [r11 + DB_BASE]
+    add rax, [rdx + IDX_SUBTREE]
+    inc ecx
+    jmp .child_sum
+.sized:
+    mov r10, [rbp - 8]
+    mov [r10 + IDX_SUBTREE], rax
+    mov ARG1, [rbp - 8]
     mov ARG2, IDX_CRC
     call crc32c
     mov r10, [rbp - 8]
@@ -141,6 +183,8 @@ index_close:
     mov rcx, [r10 + BS_COUNT + rax * 8]
     mov [r11 + IDX_COUNT], ecx
     mov ARG1, r11
+    mov r10, [rbp - 8]
+    mov ARG2, [r10 + BS_CTX]
     call index_seal
     xor eax, eax
     FRAME_END
@@ -627,6 +671,8 @@ index_insert_node:
     mov ARG1, [rbp - 72]
     call index_tail_clear
     mov ARG1, [rbp - 72]
+    mov r10, [rbp - 8]
+    mov ARG2, [r10 + II_CTX]
     call index_seal
     mov ARG1, [rbp - 72]
     call index_node_end
@@ -640,6 +686,8 @@ index_insert_node:
     mov ARG1, [rbp - 40]
     call index_tail_clear
     mov ARG1, [rbp - 40]
+    mov r10, [rbp - 8]
+    mov ARG2, [r10 + II_CTX]
     call index_seal
     mov ARG1, [rbp - 40]
     call index_node_end
@@ -731,6 +779,8 @@ index_insert_common:
     call index_node_addr
     mov dword [rax + IDX_COUNT], 1
     mov ARG1, rax
+    lea r10, [rbp - 64]
+    mov ARG2, [r10 + II_CTX]
     call index_seal
     mov rax, [rbp - 96]
     mov r10, [rbp - 8]
@@ -784,6 +834,8 @@ index_insert_common:
     mov r10, [rbp - 152]
     mov dword [r10 + IDX_COUNT], 2
     mov ARG1, r10
+    lea r10, [rbp - 64]
+    mov ARG2, [r10 + II_CTX]
     call index_seal
     mov rax, [rbp - 96]
     mov r10, [rbp - 8]
@@ -1022,6 +1074,8 @@ index_delete_node:
     mov ARG1, [rbp - 64]
     call index_tail_clear
     mov ARG1, [rbp - 64]
+    mov r10, [rbp - 8]
+    mov ARG2, [r10 + II_CTX]
     call index_seal
     mov ARG1, [rbp - 64]
     call index_node_end
@@ -1468,6 +1522,7 @@ db_index_validate:
 ;               [rbp-64]=count, [rbp-72]=index, [rbp-80]=previous key end
 index_node_validate:
     FRAME_BEGIN 96, 2
+    inc qword [rel index_nodes_walked]
     mov [rbp - 8], ARG1
     mov [rbp - 16], ARG2
     mov [rbp - 24], ARG3
@@ -1477,6 +1532,9 @@ index_node_validate:
     mov rax, IN_ARG6
     mov [rbp - 48], rax
     mov qword [rbp - 88], 0         ; leaf entries this node holds
+    mov rax, IN_ARG6
+    mov rax, [rax]
+    mov [rbp - 96], rax             ; what the count stood at on the way in
 
     mov ARG1, [rbp - 8]
     mov ARG2, [rbp - 16]
@@ -1511,8 +1569,6 @@ index_node_validate:
     jne .bad
     cmp qword [rax + IDX_RESERVED + 8], 0
     jne .bad
-    cmp qword [rax + IDX_RESERVED + 16], 0
-    jne .bad
     mov rdx, [rbp - 40]
     cmp rdx, -1
     je .level_ok
@@ -1526,14 +1582,33 @@ index_node_validate:
     ja .bad
     mov [rbp - 64], rdx
 
-    ; The checksum, and only where the file's own rules ask for it.
+    ; The checksum, and only where the file's own rules ask for it - which is
+    ; also where this walk stops. A node older than the candidate generation
+    ; was proved when it was written and cannot have changed since: under
+    ; copy-on-write a change would have produced a new page. So its recorded
+    ; subtree size is taken rather than walked for, and a commit proves the
+    ; path a transaction touched instead of the whole index.
+    ;
+    ; `cyboudb check` sets DB_VERIFY, which makes db_bitmap_deep say yes to
+    ; everything, and then the sizes are recomputed and compared rather than
+    ; believed.
     mov ARG1, [rbp - 8]
     mov ARG2, [rbp - 16]
     mov r10, [rbp - 56]
     mov ARG3, [r10 + IDX_GENERATION]
     call db_bitmap_deep
     test eax, eax
-    jz .body
+    jnz .deep
+    mov r10, [rbp - 56]
+    mov rax, [r10 + IDX_SUBTREE]
+    test rax, rax
+    jz .bad                         ; a node that is reached holds something
+    mov rdx, [rbp - 48]
+    add [rdx], rax
+    mov eax, 1
+    FRAME_END
+    ret
+.deep:
     mov ARG1, [rbp - 56]
     mov ARG2, IDX_CRC
     call crc32c
@@ -1619,10 +1694,21 @@ index_node_validate:
 .entries_done:
     mov r8, [rbp - 56]
     cmp dword [r8 + IDX_LEVEL], IDX_LEAF
-    jne .valid
+    jne .subtree_checked
     mov rax, [rbp - 48]
     mov rdx, [rbp - 88]
     add [rax], rdx
+    mov rax, [rbp - 64]
+    cmp [r8 + IDX_SUBTREE], rax
+    jne .bad                        ; a leaf holds exactly what it says
+    jmp .valid
+.subtree_checked:
+    ; What the children reported against what this node claims.
+    mov rax, [rbp - 48]
+    mov rax, [rax]
+    sub rax, [rbp - 96]
+    cmp [r8 + IDX_SUBTREE], rax
+    jne .bad
 .valid:
     mov eax, 1
     FRAME_END

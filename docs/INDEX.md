@@ -80,7 +80,8 @@ everywhere:
 | 24 | 8 | Owner: the index id |
 | 32 | 4 | Level: 0 for a leaf, higher for an internal node |
 | 36 | 4 | Entries in this node |
-| 40 | 24 | Reserved, zero |
+| 40 | 8 | Entries at or below this node |
+| 48 | 16 | Reserved, zero |
 | 64 | 4028 | Entries |
 | 4092 | 4 | CRC-32C over bytes [0, 4092) |
 
@@ -103,6 +104,23 @@ where it belongs.
 
 Duplicate keys are allowed unless the index is unique; entries with equal keys
 are ordered by row, which keeps every entry distinct and the order total.
+
+### What a node records about its subtree
+
+Every node carries the number of entries at or below it, and that field is
+what lets a commit stop where a transaction stopped. A subtree older than the
+candidate generation cannot have changed - under copy-on-write a change would
+have produced new pages - so validation takes its recorded size instead of
+walking it. Without that, proving the staged graph means proving the whole
+index, and a one-row insert costs the size of the tree rather than the size of
+the change.
+
+`cyboudb check` sets the flag that makes every node deep, and then the sizes
+are recomputed from the children and compared rather than believed.
+
+The number is recomputed from a node's children each time it is sealed, rather
+than adjusted as the tree is edited. That costs at most 251 header reads on a
+node that is being written anyway, and it cannot drift.
 
 ### No sibling pointers
 

@@ -111,6 +111,7 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         "$CC" -O2 -no-pie -Wall -Iinclude tests/tombstone_layout_test.c build/libcyboudb.a -o build/tombstone_layout_test
         "$CC" -O2 -no-pie -Wall -Iinclude tests/vector_topk_test.c build/libcyboudb.a -o build/vector_topk_test
         "$CC" -O2 -no-pie -Wall -Iinclude tests/index_tree_test.c build/libcyboudb.a -o build/index_tree_test
+        "$CC" -O2 -no-pie -Wall -Iinclude tests/index_probe.c build/libcyboudb.a -o build/index_probe
     fi
     if [ "${1:-}" = "--c-api-bench" ]; then
         CC=gcc

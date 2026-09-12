@@ -30,6 +30,7 @@ default rel
 extern db_catalog_put, db_catalog_drop, db_catalog_truncate_data, db_pax_insert, db_pax_update_one, db_pax_capacity, db_commit, db_rollback
 extern db_pax_mark_dead, db_pax_dead_total
 extern db_catalog_put_index, db_catalog_set_index_root, db_index_of_table
+extern db_catalog_page
 extern db_index_retire_tree
 extern db_index_insert, db_index_insert_unique
 extern db_catalog_get, db_pax_scan_open_bound, db_pax_scan_batch
@@ -1201,16 +1202,17 @@ sql_execute_batch:
     jmp     .storage_done
 .exec_insert:
     ; Where the appended rows will sit, read before the append moves it.
+    ; Through db_catalog_page rather than db_catalog_get: the second validates
+    ; the whole staged graph, which is a walk proportional to the table, and
+    ; doing it per INSERT is exactly what this path used to avoid.
     mov     ARG1, [rbp - 8]
     mov     ARG2, [r10 + PLAN_TABLE_ID]
-    lea     ARG3, [rbp - 64]
-    call    db_catalog_get
-    test    eax, eax
-    jnz     .storage_done
-    mov     r10, [rbp - 8]
-    mov     rax, [rbp - 64]
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [r10 + DB_BASE]
+    call    db_catalog_page
+    test    rax, rax
+    jnz     .insert_schema_found
+    mov     eax, CybouDB_E_NOTFOUND     ; a lookup that finds nothing is
+    jmp     .storage_done               ; an error, not a quiet success
+.insert_schema_found:
     mov     [rbp - 72], rax             ; schema
     mov     rcx, [rax + CAT_TABLE_ROWS]
     mov     [rbp - 80], rcx             ; the first row this INSERT adds

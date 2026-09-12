@@ -44,7 +44,13 @@
 ; is not on the path from the root - would still name the retired one. Keeping
 ; the chain correct means copying backwards to the first leaf. A range scan
 ; descends with a path stack instead. See docs/INDEX.md.
-%define IDX_RESERVED 40                  ; 24 bytes, zero
+; Entries at or below this node. What it buys is that validation can stop
+; where a transaction stopped: under copy-on-write a subtree older than the
+; candidate generation cannot have changed, so its size can be taken rather
+; than walked for. Without it a commit proves the whole index and a one-row
+; insert costs the size of the tree.
+%define IDX_SUBTREE 40
+%define IDX_RESERVED 48                  ; 16 bytes, zero
 %define IDX_ENTRIES 64
 %define IDX_CRC 4092
 %define IDX_LEAF 0
