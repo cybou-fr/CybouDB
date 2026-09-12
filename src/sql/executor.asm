@@ -28,6 +28,7 @@ default rel
 %define DELETE_NULLS_OFF     4008                   ; LENGTHS_OFF - CELLS * 8
 
 extern db_catalog_put, db_catalog_drop, db_catalog_truncate_data, db_pax_insert, db_pax_update_one, db_pax_capacity, db_commit, db_rollback
+extern db_pax_mark_dead, db_pax_dead_total
 extern db_catalog_get, db_pax_scan_open_bound, db_pax_scan_batch
 extern db_var_write_chain, db_var_read_chain
 extern sql_select_open, sql_select_next
@@ -692,6 +693,24 @@ sql_execute_batch:
     lea     rax, [rbp - DELETE_VIEW_OFF]
     mov     [rbp - 1760], rax
     mov     qword [rbp - 1768], 0
+    ; Room to remember which rows matched, so that marking them stays one
+    ; scan rather than two. Only a file that reserved tombstone space can use
+    ; it, and a refused allocation costs the mark path, not the statement:
+    ; the rewrite below needs none of this.
+    mov     qword [rbp - 64], 0         ; span array
+    mov     qword [rbp - 72], 0         ; spans recorded
+    mov     r11, [rbp - 8]
+    test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_TOMBSTONES
+    jz      .delete_count_prep
+    mov     rax, [rbp - 1752]
+    add     rax, 63
+    shr     rax, 6
+    shl     rax, 4
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, rax
+    call    sql_arena_alloc
+    mov     [rbp - 64], rax
+.delete_count_prep:
     mov     r11, [rbp - 8]
     test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_COMPRESSION
     jz      .delete_count_open
@@ -719,6 +738,18 @@ sql_execute_batch:
     jnz     .storage_done
     test    rdx, rdx
     jz      .delete_counted
+    cmp     qword [rbp - 64], 0
+    je      .delete_count_bits_ready
+    mov     rax, [rbp - 72]
+    shl     rax, 4
+    add     rax, [rbp - 64]
+    mov     r10, [rbp - 1760]
+    mov     rcx, [rbp - 1728 + SEL_SCAN + SCAN_NEXT]
+    sub     rcx, [r10 + BATCH_VIEW_ROWS]
+    mov     [rax + UPDATE_SPAN_START], rcx
+    mov     [rax + UPDATE_SPAN_MASK], rdx
+    inc     qword [rbp - 72]
+.delete_count_bits_ready:
     mov     rax, rdx
 .delete_count_bits:
     test    rax, rax
@@ -733,14 +764,86 @@ sql_execute_batch:
     mov     [r10 + PLAN_DELETE_ROWS], rax
     test    rax, rax
     jz      .exec_delete_none
+
+    ; Three ways to remove rows, and the table decides which. Rows already
+    ; dead count towards the decision: they are what a rewrite reclaims and
+    ; what marking leaves behind.
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [rbp - 1744]
+    call    db_pax_dead_total
+    mov     [rbp - 80], rax
+    add     rax, [rbp - 1776]
     cmp     rax, [rbp - 1752]
-    jae     .exec_delete_truncate       ; everything matched: truncation is it
+    jae     .exec_delete_truncate       ; nothing would survive
+    cmp     qword [rbp - 64], 0
+    je      .delete_rewrite             ; no tombstones, or no room to record
+    shl     rax, 1
+    cmp     rax, [rbp - 1752]
+    ja      .delete_rewrite             ; past half dead: compact instead
+    jmp     .delete_mark
+
+    ; --- Marking: flip a bit per matched row, in place under COW ----------
+    ; Spans are grouped by the leaf they land in, so one leaf is copied once
+    ; however many batches selected rows inside it. This is the same grouping
+    ; an UPDATE does, for the same reason.
+.delete_mark:
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [rbp - 1744]
+    call    db_pax_capacity
+    test    rax, rax
+    jz      .delete_rewrite             ; nothing to group by
+    mov     [rbp - 88], rax             ; physical rows per leaf
+    mov     qword [rbp - 96], 0         ; spans applied
+.delete_mark_apply:
+    mov     rax, [rbp - 96]
+    cmp     rax, [rbp - 72]
+    jae     .delete_mark_done
+    shl     rax, 4
+    add     rax, [rbp - 64]
+    mov     [rbp - 104], rax            ; first span of this group
+    mov     rax, [rax + UPDATE_SPAN_START]
+    xor     edx, edx
+    div     qword [rbp - 88]
+    mov     [rbp - 112], rax            ; the leaf they share
+    mov     rcx, [rbp - 96]
+.delete_mark_group:
+    inc     rcx
+    cmp     rcx, [rbp - 72]
+    jae     .delete_mark_ready
+    mov     rax, rcx
+    shl     rax, 4
+    add     rax, [rbp - 64]
+    mov     rax, [rax + UPDATE_SPAN_START]
+    xor     edx, edx
+    div     qword [rbp - 88]
+    cmp     rax, [rbp - 112]
+    je      .delete_mark_group
+.delete_mark_ready:
+    sub     rcx, [rbp - 96]
+    mov     [rbp - 240], rcx
+    mov     rax, [rbp - 104]
+    mov     [rbp - 296], rax            ; UPDATE_GROUP_SPANS
+    mov     [rbp - 288], rcx            ; UPDATE_GROUP_COUNT
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    lea     ARG3, [rbp - 296]
+    call    db_pax_mark_dead
+    test    eax, eax
+    jnz     .storage_done
+    mov     rax, [rbp - 240]
+    add     [rbp - 96], rax
+    jmp     .delete_mark_apply
+.delete_mark_done:
+    xor     eax, eax
+    jmp     .exec_exit
 
     ; --- Pass 2: rewrite the survivors ------------------------------------
     ; The cursor is opened on the graph as it stands and keeps reading it
     ; after the truncation stages an empty root: append-only COW never
     ; overwrites a page the live generation still references, so the old
     ; leaves stay readable until this transaction commits.
+.delete_rewrite:
     mov     r11, [rbp - 1744]
     mov     ecx, [r11 + CAT_COUNT]
     mov     [rbp - 1784], rcx
@@ -812,6 +915,13 @@ sql_execute_batch:
     shr     rdx, cl
     not     rax
     and     rax, rdx
+    ; A row already marked dead is not a survivor either. The core scan
+    ; reports the leaf's tombstones rather than applying them, so the rewrite
+    ; that republishes this table has to, or a compaction would resurrect
+    ; every row an earlier DELETE marked.
+    mov     rcx, [rbp - 1984 + SCAN_DEAD]
+    not     rcx
+    and     rax, rcx
     mov     [rbp - 1856], rax
 
 .delete_rewrite_row:

@@ -7,10 +7,6 @@ Automated tests for the tombstone leaf layout.
 a bitmap with one bit per row, so capacity and the bitmap size are each
 other's input and are solved together. See docs/TOMBSTONES.md.
 
-Nothing sets a bit yet: what this suite pins is the layout those bits will
-live in, and that a database carrying the reservation is in every other way an
-ordinary one.
-
 Tests cover:
   1. `create-tombstones` produces a database that opens, and the feature bit
      is recorded in the header.
@@ -18,6 +14,10 @@ Tests cover:
   3. Tables in such a database behave normally: CREATE, INSERT across several
      leaves, SELECT with and without predicates, UPDATE, DELETE, and a whole
      file check.
+  4. Which strategy a DELETE picks: marking while the table is mostly live,
+     a compacting rewrite once it is not, and truncation when nothing would
+     survive. The leaf headers are read straight out of the file, because
+     that is where the difference between marking and rewriting shows.
 
 What the reservation costs a leaf is asserted separately, by
 tests/tombstone_layout_test.c, which can ask the engine for a capacity.
@@ -37,6 +37,29 @@ def run_cmd(args, stdin_text=None):
     proc = subprocess.run(args, input=stdin_text, capture_output=True,
                           text=True, encoding="utf-8", errors="replace")
     return proc.returncode, proc.stdout, proc.stderr
+
+
+def newest_leaf(path):
+    """Row count and dead count of the most recently written PAX leaf.
+
+    Marking leaves the physical row count alone and raises the dead count; a
+    rewrite produces a leaf holding only survivors, with nothing dead. Reading
+    the header is the only way to tell the two apart from outside, since both
+    answer a SELECT identically.
+    """
+    with open(path, "rb") as handle:
+        blob = handle.read()
+    found, best = None, -1
+    for pid in range(len(blob) // 4096):
+        off = pid * 4096
+        if blob[off:off + 4] != b"ASQP":
+            continue
+        generation = struct.unpack_from("<Q", blob, off + 16)[0]
+        if generation >= best:
+            best = generation
+            found = (struct.unpack_from("<I", blob, off + 32)[0],
+                     struct.unpack_from("<I", blob, off + 48)[0])
+    return found if found else (-1, -1)
 
 
 def feature_mask(path):
@@ -126,6 +149,60 @@ def main():
         rc, out, err = query(tomb, "DELETE FROM t WHERE id >= 1000;")
         check("delete", rc == 0 and "DELETE 1000" in out, f"out={out}, err={err}")
         check("delete left the survivors", count(tomb, "t") == 1000)
+
+        # --- which strategy a DELETE picks ----------------------------------
+        # Ten rows in one leaf, so every decision below is about that leaf and
+        # the arithmetic is visible rather than inferred.
+        query(tomb, "CREATE TABLE s (id INT64 NOT NULL, v INT32);")
+        query(tomb, "INSERT INTO s VALUES "
+                    + ", ".join(f"({i}, {i})" for i in range(1, 11)) + ";")
+        rows, dead = newest_leaf(tomb)
+        check("ten rows, none dead", (rows, dead) == (10, 0), f"{rows}/{dead}")
+
+        rc, out, _ = query(tomb, "DELETE FROM s WHERE id = 3;")
+        rows, dead = newest_leaf(tomb)
+        check("one row deleted is marked, not rewritten",
+              rc == 0 and (rows, dead) == (10, 1), f"out={out}, {rows}/{dead}")
+        check("the marked row is gone from COUNT(*)", count(tomb, "s") == 9)
+        rc, out, _ = query(tomb, "SELECT id FROM s WHERE id = 3;")
+        check("the marked row is gone from SELECT", "(0 rows)" in out, f"out={out}")
+
+        # Four more: five of ten dead is the boundary, and the boundary marks.
+        rc, out, _ = query(tomb, "DELETE FROM s WHERE id < 6 AND id <> 3;")
+        rows, dead = newest_leaf(tomb)
+        check("at exactly half the table still marks",
+              rc == 0 and (rows, dead) == (10, 5), f"out={out}, {rows}/{dead}")
+
+        # One more crosses it, and the rewrite reclaims every dead row rather
+        # than only the one this statement removed.
+        rc, out, _ = query(tomb, "DELETE FROM s WHERE id = 6;")
+        rows, dead = newest_leaf(tomb)
+        check("past half the table compacts",
+              rc == 0 and (rows, dead) == (4, 0), f"out={out}, {rows}/{dead}")
+        rc, out, _ = query(tomb, "SELECT id FROM s;")
+        survivors = [line.strip() for line in out.splitlines() if line.strip().isdigit()]
+        check("compaction kept the survivors and only them",
+              survivors == ["7", "8", "9", "10"], f"out={out}")
+
+        rc, out, err = run_cmd([str(cyboudb), "check", tomb])
+        check("check after compaction", rc == 0 and "OK" in out, f"out={out}")
+
+        # Everything left, with rows already dead, is still a truncation.
+        query(tomb, "DELETE FROM s WHERE id = 7;")
+        rc, out, _ = query(tomb, "DELETE FROM s WHERE id > 7;")
+        check("deleting the rest empties the table",
+              rc == 0 and count(tomb, "s") == 0, f"out={out}")
+
+        # A database without the reservation has nowhere to put a bit, so the
+        # same DELETE rewrites immediately.
+        query(plain, "CREATE TABLE s (id INT64 NOT NULL, v INT32);")
+        query(plain, "INSERT INTO s VALUES "
+                     + ", ".join(f"({i}, {i})" for i in range(1, 11)) + ";")
+        rc, out, _ = query(plain, "DELETE FROM s WHERE id = 3;")
+        rows, dead = newest_leaf(plain)
+        check("without the reservation a DELETE rewrites",
+              rc == 0 and (rows, dead) == (9, 0), f"out={out}, {rows}/{dead}")
+        check("and leaves the survivors", count(plain, "s") == 9)
 
         rc, out, err = run_cmd([str(cyboudb), "check", tomb])
         check("whole file check", rc == 0 and "OK" in out, f"out={out}")

@@ -1,10 +1,12 @@
 # Tombstones
 
-`DELETE ... WHERE` rewrites the rows the predicate did not select into a fresh
-graph. That is correct, and it is proportional to the survivors: removing one
-row from a million-row table copies 999,999 of them, which measures 177 ms
-where the work itself is one row. Tombstones make the cost proportional to
-what is removed instead - a bit per row, flipped in place under copy-on-write.
+Rewriting the rows a `DELETE` did not select into a fresh graph is correct, and
+it is proportional to the survivors: removing one row from a million-row table
+copies 999,999 of them, which measures 177 ms where the work itself is one row.
+Tombstones make the cost proportional to what is removed instead - a bit per
+row, flipped in place under copy-on-write. The rewrite stays, as the thing that
+reclaims what the bits leave behind; which of the two a statement uses is
+decided per table, and *Which strategy a DELETE picks* below says how.
 
 This document fixes the on-disk decisions. What is implemented against it is
 stated in [ROADMAP.md](../ROADMAP.md); this file describes the format, not the
@@ -97,12 +99,36 @@ bit is unchanged, is read by this build unchanged, and takes the rewrite path
 for `DELETE`. There is no in-place upgrade; a table gains tombstones by being
 created in a database that has the bit.
 
+## Which strategy a DELETE picks
+
+The executor chooses, and it chooses from two numbers it already has: the rows
+this statement matched, and the rows the table has marked dead already. Both
+are counted before anything is staged.
+
+* **Truncate** when `matched + dead >= rows`: nothing would survive, so the
+  table is republished at the roots `CREATE TABLE` left.
+* **Mark** when at most half the table would be dead afterwards. The cost is
+  one bit per removed row and one copy-on-write of each leaf that contains
+  one, whatever the table's size.
+* **Rewrite** otherwise, which is also what compaction is: the survivors are
+  appended into a fresh graph and every dead row - this statement's and every
+  earlier one's - is left behind. A file without the reservation has nowhere
+  to put a bit and always takes this path.
+
+Half is the threshold because that is where the two costs cross: marking is
+proportional to what is removed, the rewrite to what survives, and a table
+that is mostly dead is one whose scans have started paying for rows nobody can
+see.
+
+The rewrite reads through the ordinary scan, which reports a leaf's tombstones
+rather than applying them, so the rewrite masks them out itself. Without that
+it would copy the dead rows back in and a compaction would resurrect
+everything an earlier DELETE marked.
+
 ## What this does not solve
 
-A table that is mostly tombstones still scans every physical row, and the
-pages of a leaf whose rows are all dead are still allocated. Reclaiming them
-means compaction - rewriting a leaf run without its dead rows, or dropping it
-and relinking the directory - which is a separate piece of work with its own
-decisions about when it is worth doing. Until it exists, a workload that
-deletes most of a table repeatedly is better served by the rewrite, and the
-executor is where that choice belongs.
+A table that is mostly tombstones still scans every physical row until the
+next DELETE crosses the threshold and compacts it. Nothing compacts a table
+that is never written to again, and there is no explicit `VACUUM` to ask for
+it. Reclaiming a leaf by dropping it and relinking the directory - rather than
+rewriting the table around it - is likewise still open.

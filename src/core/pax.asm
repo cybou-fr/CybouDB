@@ -15,7 +15,7 @@ extern db_var_validate_chain, db_var_materialize_batch
 extern pax_compress_leaf, pax_decompress_leaf_old, decompress_column
 global db_pax_validate, db_pax_check_new, db_pax_insert, db_pax_read
 global db_pax_update_one, db_pax_mark_dead
-global db_pax_capacity
+global db_pax_capacity, db_pax_dead_total
 global db_pax_scan_open, db_pax_scan_open_bound, db_pax_scan_next, db_pax_scan_batch
 global db_pax_scan_batch_ex
 global pax_decode_trace, pax_decode_calls, pax_const_columns, pax_bool_columns, pax_null_columns
@@ -30,6 +30,86 @@ pax_bool_columns: resq 1
 pax_null_columns: resq 1
 pax_for_columns:  resq 1
 section .text
+
+; db_pax_dead_total(ctx, validated_schema) -> RAX: rows of this table marked
+; dead, summed from the leaf headers.
+;
+; PAX_DEAD is what each leaf already records, and validation has proved it
+; equals the population count of that leaf's bitmap, so the sum costs one
+; dword per leaf and no column page is touched. A file without the tombstone
+; reservation has no dead rows by construction and answers zero without
+; walking anything.
+db_pax_dead_total:
+    FRAME_BEGIN 32, 0
+    mov [rbp - 8], ARG1
+    mov qword [rbp - 16], 0         ; total
+    mov qword [rbp - 24], 0         ; child index, tree layout only
+    mov r10, ARG1
+    mov r11, ARG2
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_TOMBSTONES
+    jz .done
+    mov rcx, [r11 + CAT_DATA_ROOT]
+    test rcx, rcx
+    jz .done
+    shl rcx, CybouDB_PAGE_SHIFT
+    add rcx, [r10 + DB_BASE]
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_PAX_MULTI
+    jz .single
+    cmp dword [rcx + PAX_DIR_LEVEL], PAX_DIR_ROOT
+    je .tree
+    mov r8, rcx                     ; one flat directory of leaves
+    call pax_dead_flat
+    mov [rbp - 16], rax
+    jmp .done
+
+.single:
+    mov eax, [rcx + PAX_DEAD]       ; the data root is the only leaf
+    mov [rbp - 16], rax
+    jmp .done
+
+.tree:
+    mov rax, [rbp - 24]
+    mov edx, [rcx + PAX_COLUMNS]
+    cmp rax, rdx
+    jae .done
+    shl rax, 4
+    mov r8, [rcx + PAX_DIRECTORY + rax]
+    shl r8, CybouDB_PAGE_SHIFT
+    add r8, [r10 + DB_BASE]
+    mov [rbp - 32], rcx             ; the loop below reuses rcx and r10
+    call pax_dead_flat
+    add [rbp - 16], rax
+    mov rcx, [rbp - 32]
+    mov r10, [rbp - 8]
+    inc qword [rbp - 24]
+    jmp .tree
+
+.done:
+    mov rax, [rbp - 16]
+    FRAME_END
+    ret
+
+; pax_dead_flat(R8 = level-0 directory, R10 = ctx) -> RAX: dead rows in the
+; leaves it names. Internal to the sum above, which is why it takes its
+; arguments where it already has them rather than through the ABI registers.
+pax_dead_flat:
+    xor eax, eax
+    xor r9d, r9d
+.leaf:
+    mov edx, [r8 + PAX_COLUMNS]
+    cmp r9, rdx
+    jae .done
+    mov r11, r9
+    shl r11, 4
+    mov r11, [r8 + PAX_DIRECTORY + r11]
+    shl r11, CybouDB_PAGE_SHIFT
+    add r11, [r10 + DB_BASE]
+    mov edx, [r11 + PAX_DEAD]
+    add rax, rdx
+    inc r9
+    jmp .leaf
+.done:
+    ret
 
 ; db_pax_capacity(ctx, validated_schema) -> rows per logical leaf.
 db_pax_capacity:
