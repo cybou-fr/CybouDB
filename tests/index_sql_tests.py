@@ -243,6 +243,24 @@ def main():
         check("emptying the table", r.returncode == 0, r.stdout)
         check("empties its indexes", read_tree(db, "idx_v") == [])
 
+        # --- an index is not a table ------------------------------------------
+        # The catalog directory holds both, and one resolver used to answer for
+        # both, which made every statement that takes a table name a way to
+        # reach an index page and read it as a schema.
+        for statement, what in (
+                ("SELECT * FROM idx_v;", "SELECT"),
+                ("INSERT INTO idx_v VALUES (1, 1, 1);", "INSERT"),
+                ("UPDATE idx_v SET v = 1 WHERE v = 2;", "UPDATE"),
+                ("DELETE FROM idx_v;", "DELETE"),
+                ("DROP TABLE idx_v;", "DROP TABLE"),
+                ("SELECT a.id FROM t a JOIN idx_v b ON a.id = b.id;", "JOIN")):
+            r = query(statement)
+            check(f"{what} refuses an index name", r.returncode != 0 and
+                  "table not found" in r.stdout, r.stdout)
+        r = run("check", db)
+        check("and none of that touched the file", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
+
         # --- dropping --------------------------------------------------------
         r = query("DROP INDEX idx_v;")
         check("dropping an index", r.returncode == 0 and
@@ -266,6 +284,29 @@ def main():
         r = query("CREATE INDEX i ON t (a);", plain)
         check("a file created without the bit says so",
               r.returncode != 0 and "index support" in r.stdout, r.stdout)
+
+        # --- a key a marking DELETE freed can be used again -------------------
+        # A marked row stays where it is, so an index entry that outlived it
+        # would have a unique index refusing a key the table no longer holds.
+        marked = str(Path(tmp) / "marked.cdb")
+        run("create-tombstones", marked, "20000", "--force")
+        query("CREATE TABLE users (id INT64 NOT NULL);", marked)
+        query("INSERT INTO users VALUES (42), (1), (2), (3);", marked)
+        query("CREATE UNIQUE INDEX u_id ON users (id);", marked)
+        r = query("DELETE FROM users WHERE id = 42;", marked)
+        check("a marking DELETE of an indexed row", r.returncode == 0, r.stdout)
+        check("takes its key out of the index",
+              [k for k, _ in read_tree(marked, "u_id")] == [1, 2, 3],
+              str(read_tree(marked, "u_id")))
+        r = query("INSERT INTO users VALUES (42);", marked)
+        check("so the key can be used again", r.returncode == 0, r.stdout)
+        rows = query("SELECT id FROM users;", marked).stdout
+        check("and the row is back",
+              [l.strip() for l in rows.splitlines() if l.strip().isdigit()]
+              == ["1", "2", "3", "42"], rows)
+        r = run("check", marked)
+        check("with a file that checks out", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
 
     print(f"\nIndex SQL suite: {passed} passed, {run_count - passed} failed")
     sys.exit(0 if passed == run_count else 1)

@@ -10,7 +10,8 @@ BITS 64
 default rel
 
 extern sql_arena_alloc, sql_kernel_resolve, vector_l2sq_f32_resolve, vector_cosine_normalized_f32_resolve
-global sql_bind, catalog_find_table, schema_find_col
+global sql_bind, catalog_find_table, catalog_find_index
+global catalog_find_object, schema_find_col
 
 section .data
     align 8
@@ -74,8 +75,22 @@ set_binder_error:
 ; -----------------------------------------------------------------------------
 ;  catalog_find_table(db_ctx, name_ptr, name_len, out_table_id) -> RAX: schema_ptr or 0
 ; -----------------------------------------------------------------------------
+; catalog_find_object finds a directory entry by name whatever it is, which is
+; what a name-is-free check wants: tables and indexes share one namespace.
+; catalog_find_table and catalog_find_index find one of a kind, which is what
+; every other caller wants - a resolver that can hand a SELECT an index page
+; is not a resolver, it is a hole in the type boundary.
+catalog_find_object:
+    xor     r11d, r11d                  ; any type
+    jmp     catalog_find_common
+catalog_find_index:
+    mov     r11d, CAT_INDEX
+    jmp     catalog_find_common
 catalog_find_table:
-    FRAME_BEGIN 64, 0
+    mov     r11d, CAT_SCHEMA
+catalog_find_common:
+    FRAME_BEGIN 80, 0
+    mov     [rbp - 72], r11             ; the type this caller will accept
     mov     [rbp - 8], ARG1             ; db_ctx
     mov     [rbp - 16], ARG2            ; name_ptr
     mov     [rbp - 24], ARG3            ; name_len
@@ -145,7 +160,13 @@ catalog_find_table:
     cmp     byte [r8], 0               ; table name in schema must end with NUL
     jne     .next_tbl
 
-    ; Found table!
+    ; The name matches. Whether the object does is the caller's question.
+    cmp     qword [rbp - 72], 0
+    je      .type_ok
+    mov     eax, [r10 + CAT_TYPE]
+    cmp     rax, [rbp - 72]
+    jne     .not_found                  ; the name is taken, but not by this
+.type_ok:
     mov     r11, [rbp - 32]
     test    r11, r11
     jz      .found
@@ -979,12 +1000,12 @@ sql_bind:
     cmp     rcx, 31
     ja      .bad_tbl_len
 
-    ; Check if table already exists in catalog
+    ; The name has to be free of every object, not only of tables.
     mov     ARG1, [rbp - 8]             ; db_ctx
     mov     ARG2, [r10 + STMT_NAME_PTR]
     mov     ARG3, [r10 + STMT_NAME_LEN]  ; ARG1 aliases rcx on Windows
     xor     ARG4, ARG4
-    call    catalog_find_table
+    call    catalog_find_object
     test    rax, rax
     jnz     .dup_table
 
@@ -1650,7 +1671,7 @@ sql_bind:
     mov     ARG2, [r10 + STMT_NAME_PTR]
     mov     ARG3, [r10 + STMT_NAME_LEN]
     xor     ARG4, ARG4
-    call    catalog_find_table
+    call    catalog_find_object
     test    rax, rax
     jnz     .dup_table
 
@@ -1664,8 +1685,6 @@ sql_bind:
     test    rax, rax
     jz      .tbl_not_found
     mov     [rbp - 64], rax
-    cmp     dword [rax + CAT_TYPE], CAT_SCHEMA
-    jne     .tbl_not_found
 
     ; The column it is on, which has to be one this version can order.
     mov     r10, [rbp - 16]
@@ -1773,11 +1792,9 @@ sql_bind:
     mov     ARG2, [r10 + DROP_TABLE_NAME_PTR]
     mov     ARG3, [r10 + DROP_TABLE_NAME_LEN]
     lea     ARG4, [rbp - 56]
-    call    catalog_find_table
+    call    catalog_find_index
     test    rax, rax
     jz      .index_not_found
-    cmp     dword [rax + CAT_TYPE], CAT_INDEX
-    jne     .index_not_found            ; DROP INDEX does not drop a table
     mov     r10, [rbp - 48]
     mov     rdx, [rbp - 56]
     mov     [r10 + PLAN_TABLE_ID], rdx

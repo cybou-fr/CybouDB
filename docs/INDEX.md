@@ -137,9 +137,12 @@ exactly as long as the table's rows do not move, and
 [docs/TOMBSTONES.md](TOMBSTONES.md) is what decides when they do:
 
 * **Appends** never move anything, so an insert adds one entry.
-* **Marking a row dead** does not move anything either. The index entry stays,
-  and the lookup drops it when it reads the row and finds it dead — the same
-  masking a scan does, applied at the point where the row is fetched.
+* **Marking a row dead** does not move anything, but the row stops existing
+  as far as anything above the storage layer is concerned, and the index has
+  to agree. An entry that outlived its row would have a unique index refusing
+  a key the table no longer holds: delete a row and the key it carried could
+  never be used again. So a marking DELETE takes the entries with it, and an
+  index names live rows only.
 * **A compacting rewrite moves every surviving row**, and so invalidates every
   entry in every index of that table. The index is rebuilt from the new graph
   as part of the same transaction, and the rebuild is published with it.
@@ -161,7 +164,7 @@ new root publishes the index's, or neither is published.
 | `INSERT` | one entry per row, after the uniqueness check |
 | `UPDATE` of the indexed column | remove the old key, add the new one |
 | `UPDATE` of another column | nothing; the row did not move |
-| `DELETE` by marking | nothing; the entry is filtered at lookup |
+| `DELETE` by marking | the entries go, so the index describes live rows |
 | `DELETE` by rewrite | rebuild |
 | `DELETE` by truncation | empty |
 | `DROP TABLE` | the table's indexes are dropped with it |
@@ -169,16 +172,40 @@ new root publishes the index's, or neither is published.
 Uniqueness is enforced where the insert happens, not by a later check, so a
 violating statement fails before it has staged a row.
 
-Where a statement cannot patch the index it rebuilds it, and the two cases are
-the ones where the old keys are not something the statement has: a compacting
-DELETE has already visited every surviving row, and an UPDATE knows the value
-it wrote but not the one it replaced. An UPDATE rebuilds only the indexes over
-the column it changed; the rest are untouched, because the rows did not move.
+Where a statement cannot patch the index it rebuilds it, and the cases are the
+ones where the old keys are not something the statement has: a compacting
+DELETE has already visited every surviving row, an UPDATE knows the value it
+wrote but not the one it replaced, and a marking DELETE knows which rows
+matched but not what keys they carried - pass one counts them and throws the
+values away. An UPDATE rebuilds only the indexes over the column it changed;
+the rest are untouched, because the rows did not move.
+
+That makes a marking DELETE on an indexed table cost a scan of the table where
+the marking itself costs the rows removed. Deleting the entries directly would
+be proportional to the deletion, and it is the obvious next thing to do - after
+it is measured rather than before.
 
 A tree that stops being named is retired node by node. Retirement is recorded
 rather than derived - the allocator counts what the map says - so a rebuild, an
 emptied index and a dropped one each give their old tree back instead of
 leaving pages nobody will hand out again.
+
+## An index is not a table
+
+Both are reached through the catalog directory, and an index keeps its name
+where a schema keeps the table's, which is what makes the namespace one. The
+same property makes a name-based resolver dangerous: one that answers with
+whatever it finds hands a `SELECT` an index page to read as a schema.
+
+So there are three resolvers over one walk. `catalog_find_object` answers with
+anything, which is what a name-is-free check wants. `catalog_find_table` and
+`catalog_find_index` answer only with their own kind, and every statement that
+takes a table name uses the first of those. `DROP INDEX` does not drop a table,
+`DROP TABLE` does not drop an index, and `SELECT`, `INSERT`, `UPDATE`, `DELETE`
+and `JOIN` refuse an index name with "table not found".
+
+The console follows the same rule: `.tables` and `.schema` list tables,
+`.indexes` lists indexes, and `.indexes <table>` lists one table's.
 
 ## Copy-on-write
 

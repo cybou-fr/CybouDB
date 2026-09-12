@@ -848,6 +848,39 @@ sql_execute_batch:
     add     [rbp - 96], rax
     jmp     .delete_mark_apply
 .delete_mark_done:
+    ; The rows did not move, so the entries still name the right rows - but
+    ; they name rows nobody can see any more, and a unique index would go on
+    ; refusing a key the table no longer holds. An index describes live rows.
+    ;
+    ; Rebuilding costs a scan of the table where deleting the entries by hand
+    ; would cost the rows removed. What makes the cheap version harder is that
+    ; this statement knows which rows matched but not what keys they carried,
+    ; and pass one threw the values away. Measuring that is the next thing,
+    ; not guessing at it.
+    ; The schema this statement started from is a generation behind: marking
+    ; republished the leaves, and a scan through the old one would not see a
+    ; single tombstone.
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    lea     ARG3, [rbp - 1744]
+    call    db_catalog_get
+    test    eax, eax
+    jnz     .storage_done
+    mov     r10, [rbp - 8]
+    mov     rax, [rbp - 1744]
+    shl     rax, CybouDB_PAGE_SHIFT
+    add     rax, [r10 + DB_BASE]
+    mov     ARG3, rax
+    mov     ARG1, r10
+    mov     r11, [rbp - 16]
+    mov     ARG2, [r11 + PLAN_TABLE_ID]
+    mov     ARG4, [rbp - 24]
+    mov     rax, -1
+    PASS_ARG5 rax
+    call    sql_index_rebuild_all
+    test    eax, eax
+    jnz     .storage_done
     xor     eax, eax
     jmp     .exec_exit
 

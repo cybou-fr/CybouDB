@@ -147,6 +147,48 @@ def run(db_path):
         expected_in_out=["1 row"],
     )
 
+    # An index reaches the REPL through the same catalog directory a table
+    # does, and the meta-commands answer for tables. .indexes is where an
+    # index is supposed to show up. Its own database, because the fixture
+    # above is created without index support on purpose.
+    indexed = Path(str(db_path).replace("test.cdb", "test_indexed.cdb"))
+    subprocess.run([str(BINARY), "create-large", str(indexed), "10000",
+                    "--force"], capture_output=True, text=True)
+    check(
+        "repl_indexes_are_not_tables",
+        [str(indexed)],
+        "CREATE TABLE users (id INT64 NOT NULL);\n"
+        "CREATE INDEX repl_idx ON users (id);\n.tables\n.quit\n",
+        rc=0,
+        expected_in_out=["Index created.", "users"],
+        forbidden_in_out=["repl_idx"],
+    )
+
+    check(
+        "repl_schema_skips_indexes",
+        [str(indexed)],
+        ".schema\n.quit\n",
+        rc=0,
+        expected_in_out=["CREATE TABLE users"],
+        forbidden_in_out=["repl_idx"],
+    )
+
+    check(
+        "repl_indexes_lists_them",
+        [str(indexed)],
+        ".indexes\n.quit\n",
+        rc=0,
+        expected_in_out=["repl_idx on users (id)"],
+    )
+
+    check(
+        "repl_indexes_of_one_table",
+        [str(indexed)],
+        ".indexes users\n.indexes nosuch\nDROP INDEX repl_idx;\n.quit\n",
+        rc=0,
+        expected_in_out=["repl_idx on users", "Index dropped."],
+    )
+
     check(
         "repl_create_and_drop_table",
         [str(db_path)],

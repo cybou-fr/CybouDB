@@ -53,6 +53,7 @@ str_help_text:          db "Available meta-commands:", 10
                         db "  .info           Show database metadata", 10
                         db "  .schema [TABLE] Show CREATE TABLE statement(s)", 10
                         db "  .tables         List all tables", 10
+                        db "  .indexes [TABLE] List indexes, or one table's", 10
                         db "  .quit           Exit the console", 10
                         db "  .exit           Exit the console", 10, 0
 
@@ -62,6 +63,11 @@ str_meta_help:          db ".help", 0
 str_meta_info:          db ".info", 0
 str_meta_tables:        db ".tables", 0
 str_meta_schema:        db ".schema", 0
+str_meta_indexes:       db ".indexes", 0
+str_idx_unique:         db "unique ", 0
+str_idx_on:             db " on ", 0
+str_idx_lparen:         db " (", 0
+str_idx_rparen:         db ")", 0
 
 str_err_unknown_meta:   db 'Error: unknown command: "', 0
 str_err_unknown_suffix: db '". Enter ".help" for a list of commands.', 10, 0
@@ -733,6 +739,15 @@ repl_handle_meta:
     test    rax, rax
     jnz     .meta_schema
 
+    ; 7. Check .indexes
+    mov     ARG1, [rbp - 16]
+    mov     ARG2, [rbp - 32]
+    lea     ARG3, [str_meta_indexes]
+    mov     ARG4, 8
+    call    str_eq_exact
+    test    rax, rax
+    jnz     .meta_indexes
+
     ; Unknown command
     PUTS    str_err_unknown_meta
     mov     r10, [rbp - 16]
@@ -776,6 +791,42 @@ repl_handle_meta:
 .meta_tables:
     mov     ARG1, [rbp - 8]
     call    repl_meta_tables
+    xor     eax, eax
+    FRAME_END
+    ret
+
+.meta_indexes:
+    ; The same optional argument .schema takes, meaning the same thing.
+    mov     rsi, [rbp - 32]             ; past the command word
+    mov     r10, [rbp - 16]
+    mov     rcx, [rbp - 24]
+.skip_idx_ws:
+    cmp     rsi, rcx
+    jae     .no_index_arg
+    movzx   eax, byte [r10 + rsi]
+    cmp     al, ' '
+    je      .inc_idx_ws
+    cmp     al, 9
+    je      .inc_idx_ws
+    jmp     .have_index_arg
+.inc_idx_ws:
+    inc     rsi
+    jmp     .skip_idx_ws
+.have_index_arg:
+    mov     rax, rcx
+    sub     rax, rsi
+    mov     ARG3, rax
+    lea     ARG2, [r10 + rsi]
+    mov     ARG1, [rbp - 8]
+    call    repl_meta_indexes
+    xor     eax, eax
+    FRAME_END
+    ret
+.no_index_arg:
+    mov     ARG1, [rbp - 8]
+    xor     ARG2, ARG2
+    xor     ARG3, ARG3
+    call    repl_meta_indexes
     xor     eax, eax
     FRAME_END
     ret
@@ -886,16 +937,155 @@ repl_meta_tables:
     mov     r8, [rbp - 8]
     add     rax, [r8 + DB_BASE]         ; rax = schema_ptr
 
+    cmp     dword [rax + CAT_TYPE], CAT_SCHEMA
+    jne     .next_table                 ; an index is not a table
+
     lea     ARG1, [rax + CAT_TABLE_NAME]
     call    puts_asciiz
     PUTS    str_repl_nl
 
+.next_table:
     inc     rbx
     cmp     rbx, [rbp - 24]
     jb      .tbl_loop
 
 .no_tables:
     mov     rbx, [rbp - 32]
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  repl_meta_indexes(ARG1 = db_ctx, ARG2 = filter_str, ARG3 = filter_len)
+;
+;  Every index, or every index of one table when a name is given. The table an
+;  index is on is a field of the index page, so naming it means resolving that
+;  id back through the directory - the same walk, done once per index.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=filter, [rbp-24]=filter len,
+;               [rbp-40]=directory, [rbp-48]=entries, [rbp-56]=index page,
+;               [rbp-64]=rbx, [rbp-72]=the table's page
+; -----------------------------------------------------------------------------
+repl_meta_indexes:
+    FRAME_BEGIN 80, 0
+    mov     [rbp - 8], ARG1
+    mov     [rbp - 16], ARG2
+    mov     [rbp - 24], ARG3
+    mov     [rbp - 64], rbx
+
+    test    qword [ARG1 + DB_FEATURES], CybouDB_FEATURE_CATALOG
+    jz      .done
+    mov     rax, [ARG1 + DB_ROOT]
+    test    rax, rax
+    jz      .done
+    mov     r10, [ARG1 + DB_BASE]
+    shl     rax, CybouDB_PAGE_SHIFT
+    add     r10, rax
+    mov     [rbp - 40], r10
+    cmp     dword [r10 + CAT_MAGIC], CAT_MAGIC_VALUE
+    jne     .done
+    cmp     dword [r10 + CAT_TYPE], CAT_DIRECTORY
+    jne     .done
+    mov     ecx, [r10 + CAT_COUNT]
+    test    ecx, ecx
+    jz      .done
+    mov     [rbp - 48], rcx
+
+    xor     rbx, rbx
+.entry:
+    mov     r10, [rbp - 40]
+    mov     r11, rbx
+    shl     r11, 4
+    lea     r11, [r10 + CAT_DATA + r11]
+    mov     rax, [r11 + 8]
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     r8, [rbp - 8]
+    add     rax, [r8 + DB_BASE]
+    mov     [rbp - 56], rax
+    cmp     dword [rax + CAT_TYPE], CAT_INDEX
+    jne     .next
+
+    ; The table it is on, by the id it carries.
+    mov     qword [rbp - 72], 0
+    mov     r9, [rax + IDX_TABLE]
+    mov     r10, [rbp - 40]
+    mov     ecx, [r10 + CAT_COUNT]
+    xor     edx, edx
+.find_table:
+    cmp     edx, ecx
+    jae     .table_known
+    mov     rax, rdx
+    shl     rax, 4
+    cmp     [r10 + CAT_DATA + rax], r9
+    jne     .next_candidate
+    mov     rax, [r10 + CAT_DATA + rax + 8]
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     r8, [rbp - 8]
+    add     rax, [r8 + DB_BASE]
+    mov     [rbp - 72], rax
+    jmp     .table_known
+.next_candidate:
+    inc     edx
+    jmp     .find_table
+.table_known:
+
+    ; With a filter, only the indexes of that table.
+    mov     rcx, [rbp - 24]
+    test    rcx, rcx
+    jz      .print
+    cmp     qword [rbp - 72], 0
+    je      .next
+    mov     ARG3, [rbp - 24]
+    mov     ARG2, [rbp - 16]
+    mov     rax, [rbp - 72]
+    lea     ARG1, [rax + CAT_TABLE_NAME]
+    call    table_name_matches
+    test    rax, rax
+    jz      .next
+
+.print:
+    mov     rax, [rbp - 56]
+    mov     ecx, [rax + IDX_FLAGS]
+    test    ecx, IDX_UNIQUE
+    jz      .name
+    PUTS    str_idx_unique
+.name:
+    mov     rax, [rbp - 56]
+    lea     ARG1, [rax + IDX_NAME]
+    call    puts_asciiz
+    cmp     qword [rbp - 72], 0
+    je      .column
+    PUTS    str_idx_on
+    mov     rax, [rbp - 72]
+    lea     ARG1, [rax + CAT_TABLE_NAME]
+    call    puts_asciiz
+.column:
+    PUTS    str_idx_lparen
+    mov     rax, [rbp - 56]
+    mov     ecx, [rax + IDX_COLUMN]
+    cmp     qword [rbp - 72], 0
+    je      .column_number
+    mov     r10, [rbp - 72]
+    cmp     ecx, [r10 + CAT_COUNT]
+    jae     .column_number
+    imul    rcx, CAT_COLUMN_SIZE
+    lea     ARG1, [r10 + CAT_COLUMNS + rcx + 8]
+    call    puts_asciiz
+    jmp     .column_done
+.column_number:
+    mov     rax, [rbp - 56]
+    mov     ecx, [rax + IDX_COLUMN]
+    mov     ARG1, rcx
+    call    put_u64
+.column_done:
+    PUTS    str_idx_rparen
+    PUTS    str_repl_nl
+
+.next:
+    inc     rbx
+    cmp     rbx, [rbp - 48]
+    jb      .entry
+.done:
+    mov     rbx, [rbp - 64]
     FRAME_END
     ret
 
@@ -943,6 +1133,8 @@ repl_meta_schema:
     mov     r8, [rbp - 8]
     add     rax, [r8 + DB_BASE]         ; schema_ptr
     mov     [rbp - 56], rax
+    cmp     dword [rax + CAT_TYPE], CAT_SCHEMA
+    jne     .next_schema_table          ; an index has no CREATE TABLE to show
 
     ; Check filter if provided
     mov     rcx, [rbp - 24]             ; filter_len
