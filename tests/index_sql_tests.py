@@ -400,6 +400,59 @@ def main():
             check(f"{label}: leaving no index behind",
                   "d_idx" not in listing, listing)
 
+        # --- a lookup answers what a scan would ------------------------------
+        # The index decides where to look and never what the answer is, so the
+        # test is two tables with the same rows, one indexed and one not, and
+        # every question asked of both.
+        lookup = str(Path(tmp) / "lookup.cdb")
+        plain2 = str(Path(tmp) / "lookup_plain.cdb")
+        for path in (lookup, plain2):
+            run("create-large", path, "40000", "--force")
+            query("CREATE TABLE t (id INT64 NOT NULL, v INT32);", path)
+            script = []
+            for base in range(0, 2000, 200):
+                values = ", ".join(f"({i}, {i * 2})" for i in range(base, base + 200))
+                script.append(f"INSERT INTO t VALUES {values};")
+            subprocess.run([str(cyboudb), "console", path],
+                           input="\n".join(script) + "\n", capture_output=True,
+                           text=True, encoding="utf-8", errors="replace")
+        r = query("CREATE UNIQUE INDEX u ON t (id);", lookup)
+        check("a unique index to look through", r.returncode == 0, r.stdout)
+
+        same = True
+        detail = ""
+        for key in (0, 1, 7, 63, 64, 65, 447, 448, 449, 1234, 1998, 1999,
+                    2000, -1):
+            sql = f"SELECT id, v FROM t WHERE id = {key};"
+            a = query(sql, lookup).stdout
+            b = query(sql, plain2).stdout
+            if a != b:
+                same = False
+                detail = f"id={key}: {a!r} vs {b!r}"
+                break
+        check("every lookup matches the scan that would have run", same, detail)
+
+        # And it keeps matching while the table changes underneath it.
+        query("DELETE FROM t WHERE id = 64;", lookup)
+        query("DELETE FROM t WHERE id = 64;", plain2)
+        query("UPDATE t SET id = 5000 WHERE id = 7;", lookup)
+        query("UPDATE t SET id = 5000 WHERE id = 7;", plain2)
+        query("INSERT INTO t VALUES (2500, 5000);", lookup)
+        query("INSERT INTO t VALUES (2500, 5000);", plain2)
+        same = True
+        for key in (7, 64, 63, 65, 2500, 5000, 1234):
+            sql = f"SELECT id, v FROM t WHERE id = {key};"
+            a = query(sql, lookup).stdout
+            b = query(sql, plain2).stdout
+            if a != b:
+                same = False
+                detail = f"id={key}: {a!r} vs {b!r}"
+                break
+        check("and after the rows move under it", same, detail)
+        r = run("check", lookup)
+        check("with a file that checks out", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
+
     print(f"\nIndex SQL suite: {passed} passed, {run_count - passed} failed")
     sys.exit(0 if passed == run_count else 1)
 

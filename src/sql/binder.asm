@@ -10,6 +10,7 @@ BITS 64
 default rel
 
 extern sql_arena_alloc, sql_kernel_resolve, vector_l2sq_f32_resolve, vector_cosine_normalized_f32_resolve
+extern db_index_of_table
 global sql_bind, catalog_find_table, catalog_find_index
 global catalog_find_object, schema_find_col
 
@@ -2396,6 +2397,22 @@ sql_bind:
     mov     qword [r10 + PLAN_DATA4], 0
 
 .select_done:
+    ; An ORDER BY, a LIMIT or a COUNT(*) all read the rows in a way this
+    ; lookup does not produce, so the index is only chosen for a plain SELECT
+    ; with a predicate.
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + PLAN_INDEX_ID], 0
+    mov     rax, [r10 + PLAN_FLAGS]
+    test    rax, PLAN_FLAG_COUNT_STAR | PLAN_FLAG_LIMIT | PLAN_FLAG_ORDER | PLAN_FLAG_VECTOR_TOPK
+    jnz     .index_not_chosen
+    cmp     qword [r10 + PLAN_JOIN_TYPE], 0
+    jne     .index_not_chosen
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, r10
+    mov     ARG3, [r10 + PLAN_DATA4]
+    call    plan_index_eq
+.index_not_chosen:
+
     mov     r10, [rbp - 48]
     mov     ARG1, [r10 + PLAN_DATA4]
     call    required_expr_columns
@@ -2640,6 +2657,84 @@ sql_bind:
     ret
 
 ; Return the union of physical column references in a successfully bound tree.
+; --- CHOOSE AN INDEX ---------------------------------------------------------
+; A SELECT whose whole predicate is one equality over a uniquely indexed column
+; can find its row through the tree instead of by reading the table.
+;
+; Unique only, for now. Equal keys are ordered by the row they name and a leaf
+; keeps no pointer to the next one, so continuing past a leaf's end means
+; descending again from a (key, row) pair the search cannot yet take. A unique
+; index has at most one answer and never needs to continue.
+;
+; Nothing here changes what the query returns. The row the tree names is read
+; and the predicate is evaluated against it exactly as a scan would: an index
+; is an access path, and a wrong one has to cost time rather than answers.
+;
+; [rbp-48] is the plan, [rbp-8] the ctx, [rbp-64] the schema.
+plan_index_eq:
+    FRAME_BEGIN 64, 0
+    mov [rbp - 8], ARG1                 ; ctx
+    mov [rbp - 16], ARG2                ; plan
+    mov [rbp - 24], ARG3                ; bound predicate, or zero
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_INDEX
+    jz .no
+    mov r11, ARG3
+    test r11, r11
+    jz .no
+    cmp qword [r11 + BEXPR_KIND], BEXPR_COMPARE_COL_LIT
+    jne .no
+    cmp qword [r11 + BEXPR_OP], OP_EQ
+    jne .no
+    mov rax, [r11 + BEXPR_COL_TYPE]
+    cmp rax, CAT_INT32
+    je .type_ok
+    cmp rax, CAT_INT64
+    jne .no
+.type_ok:
+
+    ; An index of this table, over this column, that is unique.
+    mov r10, [rbp - 16]
+    mov qword [rbp - 32], 0             ; the id walked past so far
+.next_index:
+    mov ARG1, [rbp - 8]
+    mov r11, [rbp - 16]
+    mov ARG2, [r11 + PLAN_TABLE_ID]
+    mov ARG3, [rbp - 32]
+    lea ARG4, [rbp - 40]
+    call db_index_of_table
+    test rax, rax
+    jz .no
+    mov r11, [rbp - 24]
+    mov ecx, [rax + IDX_COLUMN]
+    cmp rcx, [r11 + BEXPR_COL_IDX]
+    jne .skip
+    test dword [rax + IDX_FLAGS], IDX_UNIQUE
+    jz .skip
+
+    ; The key, sign-extended the way the tree orders it.
+    mov rdx, [r11 + BEXPR_LIT_VAL]
+    cmp qword [r11 + BEXPR_COL_TYPE], CAT_INT32
+    jne .key_ready
+    movsxd rdx, edx
+.key_ready:
+    mov r10, [rbp - 16]
+    mov rax, [rbp - 40]
+    mov [r10 + PLAN_INDEX_ID], rax
+    mov [r10 + PLAN_INDEX_KEY], rdx
+    or qword [r10 + PLAN_FLAGS], PLAN_FLAG_INDEX_EQ
+    mov eax, 1
+    FRAME_END
+    ret
+.skip:
+    mov rax, [rbp - 40]
+    mov [rbp - 32], rax
+    jmp .next_index
+.no:
+    xor eax, eax
+    FRAME_END
+    ret
+
 ; The binder has already checked indices (0..63) and node kinds.
 required_expr_columns:
     FRAME_BEGIN 32, 0

@@ -646,8 +646,22 @@ has the numbers:
 * **CREATE INDEX stages about three pages per row**, because it builds by
   inserting one row at a time. A sort and a bulk build would stage the tree
   itself and nothing else.
-* **No plan consults an index.** Every query still scans, so the work so far
-  buys an index that is correct and maintained rather than one that is used.
+* **A plan consults an index for one shape: `column = literal` over a unique
+  index.** The tree names the row, the scan is put where it said, and the
+  predicate runs over that batch exactly as it would have anywhere else - so
+  the index decides where to look and never what the answer is, and a stale
+  entry costs a page read rather than a wrong row. The suite asks the same
+  questions of two tables with the same rows, one indexed and one not, and
+  requires the answers to be identical.
+
+  Unique only, because equal keys are ordered by the row they name and a leaf
+  keeps no pointer to the next one: continuing past a leaf's end needs a search
+  that takes a (key, row) pair, which is the next piece of work. Ranges need
+  that too, and a seek to a leaf boundary rather than to a row.
+
+  A prepared plan is cached by its statement text, so a statement first bound
+  before an index existed keeps scanning until it is prepared again. That is
+  worth fixing and is not a wrong answer.
 
 Also open: TEXT keys and multi-column keys.
 

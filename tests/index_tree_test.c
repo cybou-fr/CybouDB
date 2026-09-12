@@ -535,6 +535,7 @@ extern int db_catalog_set_index_root(void *ctx, uint64_t index_id,
                                      uint64_t root, uint64_t rows);
 extern int db_catalog_get(void *ctx, uint64_t id, uint64_t *out_page);
 extern int db_catalog_drop(void *ctx, uint64_t id);
+extern unsigned long long index_lookups;
 extern int db_commit(void *ctx);
 extern int db_index_retire_tree(void *ctx, uint64_t root);
 extern void *catalog_find_index(void *ctx, const char *name, uint64_t len,
@@ -573,6 +574,7 @@ static void catalog_suite(void *ctx, const char *path) {
         entries[i].key = (int64_t)(i * 3) - 4000;
         entries[i].row = i;
     }
+
 
     /* A real table, because open proves that the table an index names exists,
        is a table, has that column and that the column is a type this version
