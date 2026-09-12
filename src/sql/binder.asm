@@ -32,6 +32,7 @@ err_join_key_type: db "JOIN keys currently require INT32 or INT64", 0
 err_order_pending: db "ORDER BY execution is not implemented yet", 0
 err_varlen_pending: db "TEXT/BLOB storage extents are not implemented yet", 0
 err_vector_pending: db "VECTOR storage extents are not implemented yet", 0
+err_vector_order_limit: db "vector distance ORDER BY requires LIMIT", 0
 err_oom:             db "memory arena capacity exceeded", 0
 
 section .text
@@ -1587,6 +1588,7 @@ sql_bind:
     mov     qword [r10 + PLAN_ORDER_ORDINAL], 0
     mov     qword [r10 + PLAN_ORDER_TYPE], 0
     mov     qword [r10 + PLAN_ORDER_DESC], 0
+    mov     qword [r10 + PLAN_VECTOR_TOPK_EXPR], 0
     mov     r11, [rbp - 16]
     cmp     qword [r11 + SELECT_LIMIT_VALUE], -1
     je      .select_limit_bound
@@ -1947,12 +1949,45 @@ sql_bind:
     mov     rax, [rbp - 88]
     mov     [r10 + PLAN_DATA3], rax     ; proj_types
 
-    ; ORDER BY currently names one projected result column. Resolve it to the
-    ; compact result ordinal so materialization no longer depends on schemas.
+    ; ORDER BY can be a vector distance expression or a projected result column.
     mov     r11, [rbp - 16]
+    mov     r12, [r11 + SELECT_ORDER_EXPR]
+    test    r12, r12
+    jnz     .bind_order_vector_expr
     mov     r12, [r11 + SELECT_ORDER_NAME]
     test    r12, r12
     jz      .order_bound
+    jmp     .order_name_bind
+
+.bind_order_vector_expr:
+    mov     r10, [rbp - 48]             ; plan
+    test    qword [r10 + PLAN_FLAGS], PLAN_FLAG_LIMIT
+    jz      .err_vector_order_limit
+    cmp     qword [r10 + PLAN_LIMIT_VALUE], 0
+    jle     .err_vector_order_limit
+
+    mov     ARG1, r12                   ; expr
+    mov     ARG2, [rbp - 64]            ; schema_ptr
+    mov     ARG3, [rbp - 24]            ; arena
+    mov     ARG4, [rbp - 40]            ; out_err
+    call    bind_expr
+    test    rax, rax
+    jz      .fail
+
+    mov     r10, [rbp - 48]             ; plan
+    mov     [r10 + PLAN_VECTOR_TOPK_EXPR], rax
+    or      qword [r10 + PLAN_FLAGS], PLAN_FLAG_VECTOR_TOPK
+
+    mov     r11, [rbp - 16]             ; ast_select
+    mov     rdx, [r11 + SELECT_ORDER_DESC]
+    mov     [r10 + PLAN_ORDER_DESC], rdx
+
+    mov     rcx, [rax + BEXPR_COL_IDX]
+    bts     qword [r10 + PLAN_REQUIRED_COLS], rcx
+    bts     qword [r10 + PLAN_REQUIRED_VALUES], rcx
+    jmp     .order_bound
+
+.order_name_bind:
     test    qword [r10 + PLAN_FLAGS], PLAN_FLAG_COUNT_STAR
     jnz     .order_pending
     cmp     qword [r11 + SELECT_PROJ_COUNT], 0
@@ -2096,12 +2131,28 @@ sql_bind:
     cmp     rcx, [r10 + PLAN_DATA1]
     jb      .required_projection
 .count_star_req_done:
+    test    qword [r10 + PLAN_FLAGS], PLAN_FLAG_VECTOR_TOPK
+    jz      .req_vector_done
+    mov     r11, [r10 + PLAN_VECTOR_TOPK_EXPR]
+    mov     rcx, [r11 + BEXPR_COL_IDX]
+    bts     rax, rcx
+    bts     r8, rcx
+.req_vector_done:
     mov     [r10 + PLAN_REQUIRED_COLS], rax
     mov     [r10 + PLAN_REQUIRED_VALUES], r8
     xor     eax, eax
     jmp     .binder_exit
 
 ; --- Error Dispatches --------------------------------------------------------
+.err_vector_order_limit:
+    mov     ARG1, [rbp - 40]
+    mov     ARG2, SQL_ERR_SYNTAX
+    xor     ARG3, ARG3
+    lea     ARG4, [err_vector_order_limit]
+    call    set_binder_error
+    mov     eax, SQL_ERR_SYNTAX
+    jmp     .binder_exit
+
 .join_pending:
     mov     ARG1, [rbp - 40]
     mov     ARG2, SQL_ERR_SYNTAX

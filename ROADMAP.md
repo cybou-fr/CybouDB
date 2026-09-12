@@ -43,7 +43,7 @@ filter comparison outright and change nothing on materialization. Per-scenario r
 conditions are recorded in [benchmarks/README.md](benchmarks/README.md);
 performance depends on the query, execution mode and hardware.
 
-Persistent vector storage and SQL vector types, SQL transactions, `DELETE`, and an ARM64 backend remain
+SQL transactions, `DELETE`, and an ARM64 backend remain
 unimplemented. `UPDATE` supports single-column assignments with a mandatory
 predicate across flat and tree-directory PAX tables, including fixed-width and
 persisted variable-width TEXT/BLOB columns. `DROP TABLE` drops tables and
@@ -427,16 +427,18 @@ The scalar and AVX2 FLOAT32 dot-product and squared-L2 kernels are implemented,
 tested, and benchmarked; ABI and rounding contracts are documented in
 [docs/VECTOR.md](docs/VECTOR.md).
 
-Persistent vector storage and SQL column types (`VECTOR(FLOAT32, n)`) are fully
-implemented and validated for `CREATE TABLE`, `INSERT`, `SELECT`, `WHERE ... IS [NOT] NULL`,
+Persistent vector storage, SQL column types (`VECTOR(FLOAT32, n)`), and
+distance expression query execution (`ORDER BY <distance_expr> LIMIT k` with
+`L2_DISTANCE`, `COSINE_DISTANCE`, `<->`, `<=>`) are fully implemented and
+validated for `CREATE TABLE`, `INSERT`, `SELECT`, `WHERE ... IS [NOT] NULL`,
 and public C APIs (`cyboudb_column_vector_dimensions`, `cyboudb_column_vector_f32`,
-`cyboudb_batch_vector_f32`). Distance expression query execution (`ORDER BY <distance_expr> LIMIT k`)
-remains gated on executor integration as part of finalizing Phase 8.
+`cyboudb_batch_vector_f32`), with deterministic streaming top-K execution
+and O(K) memory overhead.
 
 * [x] runtime-native raw and normalized `FLOAT32` vectors
 * [x] caller-owned contiguous vector arena with raw and normalized appends
 * [x] persistent vector extents
-* [x] SQL surface for vector columns (storage and types complete; distance expression query execution ORDER BY ... LIMIT remains gated on executor integration)
+* [x] SQL surface for vector columns (`VECTOR(FLOAT32, n)`) and distance query execution (`ORDER BY ... LIMIT k`)
 * [x] scalar and AVX2 dot products and squared L2 distances with runtime dispatch
 * [x] normalized cosine similarity and raw/normalized L2 Top-K
 * [x] deterministic filtered streaming Top-K with batch feed API

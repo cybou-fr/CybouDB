@@ -451,10 +451,35 @@ sql_tok_next:
     cmp     rdx, r9
     jae     .emit_lt
     movzx   edx, byte [r8 + rdx]
+    cmp     dl, '-'
+    jne     .check_lt_eq
+    lea     rax, [rsi + 2]
+    cmp     rax, r9
+    jae     .emit_lt
+    cmp     byte [r8 + rax], '>'
+    jne     .emit_lt
+    add     rsi, 3
+    add     ecx, 3
+    mov     rdi, TOK_L2_OP
+    jmp     .finish_token
+
+.check_lt_eq:
     cmp     dl, '='
-    je      .emit_lte
+    jne     .check_lt_gt
+    lea     rax, [rsi + 2]
+    cmp     rax, r9
+    jae     .emit_lte
+    cmp     byte [r8 + rax], '>'
+    jne     .emit_lte
+    add     rsi, 3
+    add     ecx, 3
+    mov     rdi, TOK_COSINE_OP
+    jmp     .finish_token
+
+.check_lt_gt:
     cmp     dl, '>'
     je      .emit_neq
+
 .emit_lt:
     inc     rsi
     inc     ecx

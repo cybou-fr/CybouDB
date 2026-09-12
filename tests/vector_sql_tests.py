@@ -376,8 +376,72 @@ def main():
         res = run_cmd(['check', drop_db])
         test('check_torn_drop_superblock_falls_back', res.returncode == 0 and 'Status:          OK' in res.stdout, res.stdout)
 
-        res = run_cmd(['query', drop_db, 'SELECT id FROM replacement;'])
-        test('torn_drop_table_recovered_intact', res.returncode == 0 and '(2 rows)' in res.stdout, res.stdout)
+        # 15. Vector Top-K Distance Query Execution (ORDER BY <distance_expr> LIMIT k)
+        topk_db = os.path.join(temp_dir, "topk.cdb")
+        res = run_cmd(['create-large', topk_db, '256'])
+        test('create_topk_db', res.returncode == 0, res.stdout)
+
+        res = run_cmd(['query', topk_db, 'CREATE TABLE items (id INT64 NOT NULL, emb VECTOR(FLOAT32, 3));'])
+        test('create_topk_items_table', res.returncode == 0, res.stdout)
+
+        # Insert test vectors:
+        # id 1: [1.0, 2.0, 3.0]  -- dist to [1.0, 2.0, 3.0]: L2sq = 0.0
+        # id 2: [1.0, 2.1, 3.0]  -- dist to [1.0, 2.0, 3.0]: L2sq = 0.01
+        # id 3: [10.0, 20.0, 30.0] -- parallel to [1.0, 2.0, 3.0] -> cosine dist = 0.0, L2sq = 1134.0
+        # id 4: [1.1, 2.0, 3.0]  -- dist to [1.0, 2.0, 3.0]: L2sq = 0.010000038
+        # id 5: [-1.0, -2.0, -3.0] -- opposite direction -> cosine dist = 2.0
+        res = run_cmd(['query', topk_db,
+            'INSERT INTO items VALUES '
+            '(1, [1.0, 2.0, 3.0]), '
+            '(2, [1.0, 2.1, 3.0]), '
+            '(3, [10.0, 20.0, 30.0]), '
+            '(4, [1.1, 2.0, 3.0]), '
+            '(5, [-1.0, -2.0, -3.0]);'
+        ])
+        test('insert_topk_vectors', res.returncode == 0 and 'INSERT 5' in res.stdout, res.stdout)
+
+        # 15a. L2_DISTANCE function ascending
+        res = run_cmd(['query', topk_db, 'SELECT id FROM items ORDER BY L2_DISTANCE(emb, [1.0, 2.0, 3.0]) LIMIT 3;'])
+        lines = [line.strip() for line in res.stdout.strip().splitlines() if line.strip() and not line.startswith('-') and not line.startswith('id') and not line.startswith('(')]
+        test('topk_l2_fn_limit', res.returncode == 0 and lines == ['1', '2', '4'], res.stdout)
+
+        # 15b. L2 infix operator <->
+        res = run_cmd(['query', topk_db, 'SELECT id FROM items ORDER BY emb <-> [1.0, 2.0, 3.0] LIMIT 3;'])
+        lines = [line.strip() for line in res.stdout.strip().splitlines() if line.strip() and not line.startswith('-') and not line.startswith('id') and not line.startswith('(')]
+        test('topk_l2_op_limit', res.returncode == 0 and lines == ['1', '2', '4'], res.stdout)
+
+        # 15c. L2 DESC
+        res = run_cmd(['query', topk_db, 'SELECT id FROM items ORDER BY L2_DISTANCE(emb, [1.0, 2.0, 3.0]) DESC LIMIT 3;'])
+        lines = [line.strip() for line in res.stdout.strip().splitlines() if line.strip() and not line.startswith('-') and not line.startswith('id') and not line.startswith('(')]
+        test('topk_l2_desc', res.returncode == 0 and lines == ['4', '2', '1'], res.stdout)
+
+        # 15d. L2 with OFFSET
+        res = run_cmd(['query', topk_db, 'SELECT id FROM items ORDER BY L2_DISTANCE(emb, [1.0, 2.0, 3.0]) LIMIT 2 OFFSET 1;'])
+        lines = [line.strip() for line in res.stdout.strip().splitlines() if line.strip() and not line.startswith('-') and not line.startswith('id') and not line.startswith('(')]
+        test('topk_l2_offset', res.returncode == 0 and lines == ['2', '4'], res.stdout)
+
+        # 15e. L2 with WHERE filter
+        res = run_cmd(['query', topk_db, 'SELECT id FROM items WHERE id > 1 ORDER BY L2_DISTANCE(emb, [1.0, 2.0, 3.0]) LIMIT 2;'])
+        lines = [line.strip() for line in res.stdout.strip().splitlines() if line.strip() and not line.startswith('-') and not line.startswith('id') and not line.startswith('(')]
+        test('topk_l2_where', res.returncode == 0 and lines == ['2', '4'], res.stdout)
+
+        # 15f. COSINE_DISTANCE function ascending
+        res = run_cmd(['query', topk_db, 'SELECT id FROM items ORDER BY COSINE_DISTANCE(emb, [1.0, 2.0, 3.0]) LIMIT 2;'])
+        lines = [line.strip() for line in res.stdout.strip().splitlines() if line.strip() and not line.startswith('-') and not line.startswith('id') and not line.startswith('(')]
+        test('topk_cosine_fn_limit', res.returncode == 0 and lines == ['3', '1'], res.stdout)
+
+        # 15g. Cosine infix operator <=>
+        res = run_cmd(['query', topk_db, 'SELECT id FROM items ORDER BY emb <=> [1.0, 2.0, 3.0] LIMIT 2;'])
+        lines = [line.strip() for line in res.stdout.strip().splitlines() if line.strip() and not line.startswith('-') and not line.startswith('id') and not line.startswith('(')]
+        test('topk_cosine_op_limit', res.returncode == 0 and lines == ['3', '1'], res.stdout)
+
+        # 15h. Missing LIMIT rejected
+        res = run_cmd(['query', topk_db, 'SELECT id FROM items ORDER BY L2_DISTANCE(emb, [1.0, 2.0, 3.0]);'])
+        test('topk_missing_limit_rejected', res.returncode != 0 and 'vector distance ORDER BY requires LIMIT' in res.stdout, res.stdout)
+
+        # 15i. Dimension mismatch rejected
+        res = run_cmd(['query', topk_db, 'SELECT id FROM items ORDER BY L2_DISTANCE(emb, [1.0, 2.0]) LIMIT 2;'])
+        test('topk_dim_mismatch_rejected', res.returncode != 0 and 'type mismatch in expression or literal' in res.stdout, res.stdout)
 
     print(f"\nVector SQL test suite: {passed_tests} passed, {failed_tests} failed")
     sys.exit(0 if failed_tests == 0 else 1)

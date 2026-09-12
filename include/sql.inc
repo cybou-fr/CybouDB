@@ -55,6 +55,8 @@
 %define TOK_RBRACKET        77          ; ]
 %define TOK_L2_DISTANCE     78
 %define TOK_COSINE_DISTANCE 79
+%define TOK_L2_OP           80          ; <->
+%define TOK_COSINE_OP       81          ; <=>
 
 ; Types
 %define TOK_TYPE_INT32      30
@@ -125,7 +127,7 @@
 %define STMT_EXTRA2         24          ; qword: columns / projections array ptr
 %define STMT_EXTRA3         32          ; qword: row_count / where_expr ptr
 %define STMT_EXTRA4         40          ; qword: rows array ptr
-%define AST_STMT_PAYLOAD_SIZE 96
+%define AST_STMT_PAYLOAD_SIZE 104
 
 ; Statement-specific payload field names. Their layouts may evolve
 ; independently even though the initial arena allocation size is shared.
@@ -166,7 +168,8 @@
 %define SELECT_OFFSET_VALUE    72       ; qword, zero when absent
 %define SELECT_ORDER_NAME      80       ; AST_NAME* or 0
 %define SELECT_ORDER_DESC      88       ; qword boolean
-%define SELECT_PAYLOAD_SIZE    96
+%define SELECT_ORDER_EXPR      96       ; AST_EXPR* or 0
+%define SELECT_PAYLOAD_SIZE    104
 
 ; JOIN descriptors are arena-owned and chained from a future SELECT payload
 ; extension without changing AST_STMT.
@@ -326,10 +329,12 @@
 %define PLAN_UPDATE_VALUE   248         ; qword normalized scalar or varlen pointer
 %define PLAN_UPDATE_LENGTH  256         ; qword TEXT/BLOB byte length, otherwise zero
 %define PLAN_UPDATE_IS_NULL 264         ; qword boolean
-%define BOUND_PLAN_SIZE     272
+%define PLAN_VECTOR_TOPK_EXPR 272       ; qword: bound vector distance expr
+%define BOUND_PLAN_SIZE     280
 %define PLAN_PROJ_RIGHT_BIT 0x80000000  ; u32 projection index belongs to RHS
 %define PLAN_FLAG_LIMIT     2           ; bit 1: LIMIT clause is present
 %define PLAN_FLAG_ORDER     4           ; bit 2: ORDER BY is present
+%define PLAN_FLAG_VECTOR_TOPK 8         ; bit 3: vector streaming top-K ORDER BY
 
 ; Projection descriptor passed to batch result sinks (aliases PLAN_DATA1..3).
 %define RESULT_PROJ_COUNT   0           ; qword: projection count, 1..64

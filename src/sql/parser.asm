@@ -2124,6 +2124,7 @@ sql_parse:
     mov     qword [r10 + SELECT_OFFSET_VALUE], 0
     mov     qword [r10 + SELECT_ORDER_NAME], 0
     mov     qword [r10 + SELECT_ORDER_DESC], 0
+    mov     qword [r10 + SELECT_ORDER_EXPR], 0
 
     ; Peek projection
     lea     ARG1, [rbp - 160]
@@ -2510,16 +2511,38 @@ sql_parse:
     call    sql_tok_next
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_BY
     jne     .bad_syntax
+    ; Check if distance function
     lea     ARG1, [rbp - 160]
     lea     ARG2, [rbp - 192]
-    call    sql_tok_next
+    call    sql_tok_peek
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_L2_DISTANCE
+    je      .order_dist_fn
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_COSINE_DISTANCE
+    je      .order_dist_fn
+
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
     jne     .bad_col_name
+
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next                ; consume IDENT
+
     mov     rax, [rbp - 192 + TOK_OFFSET]
     add     rax, [rbp - 8]
     mov     [rbp - 200], rax
     mov     rax, [rbp - 192 + TOK_LEN]
     mov     [rbp - 208], rax
+
+    ; Check infix operator <-> or <=>
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_peek
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_L2_OP
+    je      .order_dist_op
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_COSINE_OP
+    je      .order_dist_op
+
+    ; Normal scalar column name
     mov     ARG1, [rbp - 24]
     mov     ARG2, AST_NAME_SIZE
     call    sql_arena_alloc
@@ -2532,6 +2555,7 @@ sql_parse:
     mov     [rax + AST_NAME_LEN], rdx
     mov     qword [rax + AST_NAME_QUAL_PTR], 0
     mov     qword [rax + AST_NAME_QUAL_LEN], 0
+
     lea     ARG1, [rbp - 160]
     lea     ARG2, [rbp - 192]
     call    sql_tok_peek
@@ -2539,10 +2563,10 @@ sql_parse:
     jne     .order_name_ready
     lea     ARG1, [rbp - 160]
     lea     ARG2, [rbp - 192]
-    call    sql_tok_next
+    call    sql_tok_next                ; consume '.'
     lea     ARG1, [rbp - 160]
     lea     ARG2, [rbp - 192]
-    call    sql_tok_next
+    call    sql_tok_next                ; consume column IDENT
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
     jne     .bad_col_name
     mov     r10, [rbp - 216]
@@ -2559,6 +2583,71 @@ sql_parse:
     mov     r10, [rbp - 48]
     mov     rax, [rbp - 216]
     mov     [r10 + SELECT_ORDER_NAME], rax
+    jmp     .order_check_direction
+
+.order_dist_fn:
+    lea     ARG1, [rbp - 160]
+    mov     ARG2, [rbp - 8]
+    mov     ARG3, [rbp - 24]
+    mov     ARG4, [rbp - 40]
+    call    parse_primary
+    test    rax, rax
+    jz      .fail
+    mov     r10, [rbp - 48]
+    mov     [r10 + SELECT_ORDER_EXPR], rax
+    jmp     .order_check_direction
+
+.order_dist_op:
+    mov     rax, OP_L2_DISTANCE
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_L2_OP
+    je      .dist_op_consume
+    mov     rax, OP_COSINE_DISTANCE
+.dist_op_consume:
+    mov     [rbp - 216], rax
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next                ; consume operator
+
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, AST_EXPR_SIZE
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+    mov     [rbp - 224], rax
+    mov     qword [rax + EXPR_KIND], EXPR_COLUMN
+    mov     rdx, [rbp - 200]
+    mov     [rax + EXPR_NAME_PTR], rdx
+    mov     rdx, [rbp - 208]
+    mov     [rax + EXPR_NAME_LEN], rdx
+    mov     qword [rax + EXPR_QUAL_PTR], 0
+    mov     qword [rax + EXPR_QUAL_LEN], 0
+
+    lea     ARG1, [rbp - 160]
+    mov     ARG2, [rbp - 8]
+    mov     ARG3, [rbp - 24]
+    mov     ARG4, [rbp - 40]
+    call    parse_primary
+    test    rax, rax
+    jz      .fail
+    mov     [rbp - 232], rax
+
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, AST_EXPR_SIZE
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+    mov     qword [rax + EXPR_KIND], EXPR_BINARY
+    mov     rdx, [rbp - 216]
+    mov     [rax + EXPR_OP], rdx
+    mov     rdx, [rbp - 224]
+    mov     [rax + EXPR_LEFT], rdx
+    mov     rdx, [rbp - 232]
+    mov     [rax + EXPR_RIGHT], rdx
+
+    mov     r10, [rbp - 48]
+    mov     [r10 + SELECT_ORDER_EXPR], rax
+
+.order_check_direction:
     lea     ARG1, [rbp - 160]
     lea     ARG2, [rbp - 192]
     call    sql_tok_peek

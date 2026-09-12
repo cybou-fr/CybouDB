@@ -35,7 +35,7 @@ sql_select_open:
     mov qword [r12 + SEL_LIMIT_LEFT], -1
     test qword [r10 + PLAN_FLAGS], PLAN_FLAG_LIMIT
     jz .limit_state_ready
-    test qword [r10 + PLAN_FLAGS], PLAN_FLAG_ORDER
+    test qword [r10 + PLAN_FLAGS], (PLAN_FLAG_ORDER | PLAN_FLAG_VECTOR_TOPK)
     jnz .limit_state_ready
     mov rax, [r10 + PLAN_OFFSET_VALUE]
     mov [r12 + SEL_LIMIT_SKIP], rax
@@ -229,6 +229,12 @@ sql_select_next:
     jmp     .scan_loop
 .projection_only:
     mov     rax, [r12 + SEL_PROJECTION]
+    test    qword [r10 + PLAN_FLAGS], PLAN_FLAG_VECTOR_TOPK
+    jz      .proj_only_store
+    mov     r11, [r10 + PLAN_VECTOR_TOPK_EXPR]
+    mov     rcx, [r11 + BEXPR_COL_IDX]
+    bts     rax, rcx
+.proj_only_store:
     mov     [r12 + SEL_REQUIRED], rax
 .read_batch:
     cmp     dword [sql_zone_trace], 0

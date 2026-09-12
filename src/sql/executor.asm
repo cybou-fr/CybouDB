@@ -7,16 +7,21 @@
 %include "sql.inc"
 %include "order_executor.inc"
 %include "select_cursor.inc"
+%include "vector.inc"
 
 BITS 64
 default rel
 
 extern db_catalog_put, db_catalog_drop, db_pax_insert, db_pax_update_one, db_pax_capacity, db_commit
-extern db_var_write_chain
+extern db_var_write_chain, db_var_read_chain
 extern sql_select_open, sql_select_next
 extern sql_arena_alloc
 extern sql_join_execute
 extern sql_order_init, sql_order_collect, sql_order_emit
+extern vector_topk_init
+extern vector_topk_cosine_begin, vector_topk_cosine_feed, vector_topk_cosine_finish
+extern vector_topk_l2sq_begin, vector_topk_l2sq_feed, vector_topk_l2sq_finish
+extern cyboudb_vector_normalize_f32
 extern for8_eq, for8_ne, for8_lt, for8_le, for8_gt, for8_ge
 extern for16_eq, for16_ne, for16_lt, for16_le, for16_gt, for16_ge
 global sql_execute_batch
@@ -708,6 +713,8 @@ sql_execute_batch:
     cmp qword [rbp - 32], 0
     je .missing_sink
     mov r10, [rbp - 16]
+    test qword [r10 + PLAN_FLAGS], PLAN_FLAG_VECTOR_TOPK
+    jnz .exec_vector_topk
     mov rax, [r10 + PLAN_OFFSET_VALUE]
     mov [rbp - 144], rax              ; rows still to skip
     mov rax, [r10 + PLAN_LIMIT_VALUE]
@@ -820,6 +827,30 @@ sql_execute_batch:
     cmp eax, SQL_ERR_NO_STORAGE
     je .oom
     jmp .storage_done
+
+.exec_vector_topk:
+    mov ARG1, [rbp - 8]                 ; db
+    mov ARG2, [rbp - 16]                ; plan
+    mov ARG3, [rbp - 24]                ; arena
+    mov ARG4, [rbp - 32]                ; batch_cb
+    mov rax, [rbp - 40]                 ; cb_ctx
+    PASS_ARG5 rax
+    mov rax, [rbp - 128]                ; out_err
+    PASS_ARG6 rax
+    call sql_vector_topk_execute
+    test eax, eax
+    jz .success
+    cmp eax, SQL_ERR_NO_STORAGE
+    je .oom
+    cmp eax, SQL_ERR_SINK
+    je .sink_failed
+    cmp eax, SQL_ERR_EXEC
+    je .vector_exec_fail
+    jmp .storage_done
+.vector_exec_fail:
+    mov qword [rbp - 136], SQL_DOMAIN_SQL
+    mov eax, SQL_ERR_EXEC
+    jmp .exec_exit
 
 ; Adapter for LIMIT/OFFSET. ARG1 is the parent executor frame; other arguments
 ; match the result-sink ABI. It preserves the lowest selected lanes in row order.
@@ -937,6 +968,542 @@ sql_execute_batch:
 .return:
     FRAME_END
     ret
+
+; -----------------------------------------------------------------------------
+;  sql_vector_topk_execute(db, plan, arena, batch_cb, cb_ctx, out_err)
+;  Executes streaming Top-K vector search with O(K) memory overhead.
+; -----------------------------------------------------------------------------
+sql_vector_topk_execute:
+    FRAME_BEGIN 2048, 2
+    mov     [rbp - 8], ARG1             ; db
+    mov     [rbp - 16], ARG2            ; plan
+    mov     [rbp - 24], ARG3            ; arena
+    mov     [rbp - 32], ARG4            ; batch_cb
+    mov     rax, IN_ARG5
+    mov     [rbp - 40], rax             ; cb_ctx
+    mov     rax, IN_ARG6
+    mov     [rbp - 48], rax             ; out_err
+
+    mov     [rbp - 224], rbx
+    mov     [rbp - 232], r12
+    mov     [rbp - 240], r13
+    mov     [rbp - 248], r14
+    mov     [rbp - 256], r15
+    mov     [rbp - 264], rsi
+    mov     [rbp - 272], rdi
+
+    mov     r10, [rbp - 16]             ; plan
+    mov     rax, [r10 + PLAN_VECTOR_TOPK_EXPR]
+    mov     [rbp - 64], rax             ; bexpr
+    mov     rdx, [rax + BEXPR_COL_IDX]
+    mov     [rbp - 72], rdx             ; col_idx
+    mov     rdx, [rax + BEXPR_RIGHT]    ; dimension in floats
+    mov     [rbp - 280], rdx            ; dim
+    shl     rdx, 2
+    mov     [rbp - 80], rdx             ; dim_bytes = dim * 4
+    xor     edx, edx
+    cmp     qword [rax + BEXPR_OP], OP_COSINE_DISTANCE
+    sete    dl
+    mov     [rbp - 104], rdx            ; is_cosine
+
+    mov     r10, [rbp - 16]             ; plan
+    mov     rax, [r10 + PLAN_LIMIT_VALUE]
+    add     rax, [r10 + PLAN_OFFSET_VALUE]
+    mov     [rbp - 128], rax            ; K = limit + offset
+
+    ; Optional compression scratch storage
+    mov     qword [rbp - 56], 0
+    mov     r11, [rbp - 8]              ; db
+    test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_COMPRESSION
+    jz      .vtopk_alloc_search
+    mov     ARG1, [rbp - 24]            ; arena
+    mov     ARG2, PAX_DECODE_MAX_BYTES
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .vtopk_oom
+    mov     [rbp - 56], rax             ; decode_storage
+
+.vtopk_alloc_search:
+    mov     ARG1, [rbp - 24]            ; arena
+    mov     ARG2, VTOPK_STATE_SIZE
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .vtopk_oom
+    mov     [rbp - 96], rax             ; search state
+
+    ; Initialize vector_topk state
+    mov     ARG1, rax
+    call    vector_topk_init
+    test    eax, eax
+    jnz     .vtopk_exec_error
+
+    ; Allocate out_ids: K * 8 bytes
+    mov     rax, [rbp - 128]
+    shl     rax, 3
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, rax
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .vtopk_oom
+    mov     r10, [rbp - 96]
+    mov     [r10 + VTOPK_OUT_IDS], rax
+
+    ; Allocate out_scores: K * 4 bytes
+    mov     rax, [rbp - 128]
+    shl     rax, 2
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, rax
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .vtopk_oom
+    mov     r10, [rbp - 96]
+    mov     [r10 + VTOPK_OUT_SCORES], rax
+
+    ; Allocate batch_vec_buf: 64 * dim_bytes
+    mov     rax, [rbp - 80]             ; dim_bytes
+    shl     rax, 6                      ; * 64
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, rax
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .vtopk_oom
+    mov     [rbp - 88], rax             ; batch_vec_buf
+
+    ; Allocate batch_view: CybouDB_BATCH_VIEW_SIZE
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, CybouDB_BATCH_VIEW_SIZE
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .vtopk_oom
+    mov     [rbp - 120], rax            ; batch_view
+
+    ; Allocate emit_batch_view: CybouDB_BATCH_VIEW_SIZE
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, CybouDB_BATCH_VIEW_SIZE
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .vtopk_oom
+    mov     [rbp - 152], rax            ; emit_batch_view
+
+    ; Allocate order_nodes: K * 1088 bytes
+    mov     rax, [rbp - 128]
+    imul    rax, 1088
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, rax
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .vtopk_oom
+    mov     [rbp - 144], rax            ; order_nodes
+
+    mov     r10, [rbp - 96]             ; search
+    mov     r11, [rbp - 64]             ; bexpr
+    mov     rsi, [r11 + BEXPR_LIT_VAL]  ; query vector ptr
+    cmp     qword [rbp - 104], 1        ; is_cosine?
+    jne     .vtopk_query_ready
+    mov     ARG1, [rbp - 24]            ; arena
+    mov     ARG2, [rbp - 80]            ; dim_bytes
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .vtopk_oom
+    mov     rdi, rax
+    mov     ARG1, rsi                   ; input
+    mov     ARG2, rdi                   ; output
+    mov     ARG3, [rbp - 280]           ; dim
+    call    cyboudb_vector_normalize_f32
+    test    eax, eax
+    jnz     .vtopk_exec_error
+    mov     rsi, rdi
+.vtopk_query_ready:
+    mov     r10, [rbp - 96]             ; restore search
+    mov     [r10 + VTOPK_QUERY], rsi
+    mov     r11, [rbp - 64]             ; restore bexpr
+    mov     rax, [r11 + BEXPR_RIGHT]    ; dimension
+    mov     [r10 + VTOPK_DIM], rax
+    mov     rax, [rbp - 80]             ; dim_bytes
+    mov     [r10 + VTOPK_STRIDE], rax
+    mov     rax, [rbp - 128]            ; K
+    mov     [r10 + VTOPK_K], rax
+
+    mov     ARG1, r10
+    cmp     qword [rbp - 104], 1        ; is_cosine
+    je      .vtopk_init_cosine
+    call    vector_topk_l2sq_begin
+    jmp     .vtopk_begin_done
+.vtopk_init_cosine:
+    call    vector_topk_cosine_begin
+.vtopk_begin_done:
+    test    eax, eax
+    jnz     .vtopk_exec_error
+
+    ; Pass 1: Streaming candidate feed
+    mov     rax, [rbp - 56]             ; decode_storage
+    PASS_ARG5 rax
+    lea     ARG1, [rbp - 1728]          ; cursor
+    mov     ARG2, [rbp - 8]             ; db
+    mov     ARG3, [rbp - 16]            ; plan
+    mov     ARG4, [rbp - 120]           ; batch_view
+    call    sql_select_open
+    test    eax, eax
+    jnz     .vtopk_storage_error
+
+.vtopk_pass1_loop:
+    lea     ARG1, [rbp - 1728]
+    call    sql_select_next
+    test    eax, eax
+    jnz     .vtopk_storage_error
+    test    rdx, rdx
+    jz      .vtopk_pass1_done
+    mov     r15, rdx                    ; selection mask
+
+    ; Filter out NULL vectors
+    mov     r10, [rbp - 120]            ; batch_view
+    mov     rax, [rbp - 72]             ; col_idx
+    imul    rax, CybouDB_COLVIEW_SIZE
+    lea     r14, [r10 + BATCH_VIEW_COLUMNS + rax]
+    mov     rax, [r14 + COLVIEW_NULL_MASK]
+    not     rax
+    and     r15, rax
+    test    r15, r15
+    jz      .vtopk_pass1_loop
+
+    ; base_row = cursor->SCAN_NEXT - batch_view->rows
+    mov     rcx, [rbp - 1728 + SEL_SCAN + SCAN_NEXT]
+    sub     rcx, [r10 + BATCH_VIEW_ROWS]
+    mov     [rbp - 184], rcx            ; base_row
+
+    ; Read vector extents for active lanes
+    mov     r12, r15
+.vtopk_read_lane:
+    test    r12, r12
+    jz      .vtopk_feed_batch
+    tzcnt   rbx, r12
+    btr     r12, rbx
+
+    mov     rax, [r14 + COLVIEW_VALUES_PTR]
+    mov     rcx, rbx
+    shl     rcx, 4
+    add     rax, rcx
+    mov     [rbp - 192], rax            ; desc_ptr
+
+    mov     rax, rbx
+    imul    rax, [rbp - 80]             ; dim_bytes
+    add     rax, [rbp - 88]             ; batch_vec_buf
+    mov     [rbp - 200], rax            ; dst_ptr
+
+    mov     r10, [rbp - 8]              ; db
+    mov     ARG1, r10
+    mov     ARG2, [r10 + DB_SB_PTR]
+    mov     ARG3, [rbp - 192]
+    mov     r11, [rbp - 16]             ; plan
+    mov     ARG4, [r11 + PLAN_TABLE_ID]
+    mov     rax, [rbp - 200]
+    PASS_ARG5 rax
+    mov     rax, [rbp - 80]
+    PASS_ARG6 rax
+    call    db_var_read_chain
+    test    eax, eax
+    jnz     .vtopk_storage_error
+
+    cmp     qword [rbp - 104], 1        ; is_cosine?
+    jne     .vtopk_read_lane
+    mov     ARG1, [rbp - 200]           ; dst_ptr
+    mov     ARG2, [rbp - 200]           ; dst_ptr (in-place)
+    mov     ARG3, [rbp - 280]           ; dim
+    call    cyboudb_vector_normalize_f32
+    test    eax, eax
+    jz      .vtopk_read_lane
+    btr     r15, rbx                    ; clear invalid candidate lane from mask
+    jmp     .vtopk_read_lane
+
+.vtopk_feed_batch:
+    mov     ARG1, [rbp - 96]            ; search
+    mov     ARG2, [rbp - 184]           ; base_row
+    mov     ARG3, [rbp - 88]            ; batch_vec_buf
+    mov     r10, [rbp - 120]            ; batch_view
+    mov     ARG4, [r10 + BATCH_VIEW_ROWS]
+    mov     rax, r15                    ; candidate_mask
+    PASS_ARG5 rax
+    cmp     qword [rbp - 104], 1
+    je      .vtopk_feed_cosine
+    call    vector_topk_l2sq_feed
+    jmp     .vtopk_feed_done
+.vtopk_feed_cosine:
+    call    vector_topk_cosine_feed
+.vtopk_feed_done:
+    test    eax, eax
+    jnz     .vtopk_exec_error
+    jmp     .vtopk_pass1_loop
+
+.vtopk_pass1_done:
+    mov     ARG1, [rbp - 96]            ; search
+    cmp     qword [rbp - 104], 1
+    je      .vtopk_finish_cosine
+    call    vector_topk_l2sq_finish
+    jmp     .vtopk_finish_done
+.vtopk_finish_cosine:
+    call    vector_topk_cosine_finish
+.vtopk_finish_done:
+    test    eax, eax
+    jnz     .vtopk_exec_error
+
+    mov     r10, [rbp - 96]
+    mov     rax, [r10 + VTOPK_OUT_COUNT]
+    mov     [rbp - 112], rax            ; out_count
+    test    rax, rax
+    jz      .vtopk_success
+
+    ; Reverse out_ids if PLAN_ORDER_DESC
+    mov     r11, [rbp - 16]
+    cmp     qword [r11 + PLAN_ORDER_DESC], 0
+    jz      .vtopk_order_ready
+    mov     r8, [r10 + VTOPK_OUT_IDS]
+    xor     ecx, ecx
+    mov     rdx, [rbp - 112]
+    dec     rdx
+.vtopk_reverse_loop:
+    cmp     rcx, rdx
+    jae     .vtopk_order_ready
+    mov     r12, [r8 + rcx * 8]
+    mov     r13, [r8 + rdx * 8]
+    mov     [r8 + rcx * 8], r13
+    mov     [r8 + rdx * 8], r12
+    inc     rcx
+    dec     rdx
+    jmp     .vtopk_reverse_loop
+.vtopk_order_ready:
+
+    ; Pass 2: Re-open scan to materialize winning rows
+    mov     qword [rbp - 208], 0        ; found_count = 0
+    mov     rax, [rbp - 56]
+    PASS_ARG5 rax
+    lea     ARG1, [rbp - 1728]
+    mov     ARG2, [rbp - 8]
+    mov     ARG3, [rbp - 16]
+    mov     ARG4, [rbp - 120]
+    call    sql_select_open
+    test    eax, eax
+    jnz     .vtopk_storage_error
+
+.vtopk_pass2_loop:
+    lea     ARG1, [rbp - 1728]
+    call    sql_select_next
+    test    eax, eax
+    jnz     .vtopk_storage_error
+    test    rdx, rdx
+    jz      .vtopk_pass2_done
+
+    mov     r10, [rbp - 120]            ; batch_view
+    mov     rcx, [rbp - 1728 + SEL_SCAN + SCAN_NEXT]
+    sub     rcx, [r10 + BATCH_VIEW_ROWS]
+    mov     [rbp - 184], rcx            ; base_row
+
+    xor     ebx, ebx                    ; lane = 0
+.vtopk_lane_check:
+    mov     r10, [rbp - 120]            ; batch_view
+    cmp     rbx, [r10 + BATCH_VIEW_ROWS]
+    jae     .vtopk_pass2_loop
+
+    mov     rax, [rbp - 184]
+    add     rax, rbx                    ; row_id = base_row + lane
+
+    ; Search if row_id is in out_ids[0..out_count-1]
+    mov     r11, [rbp - 96]             ; search
+    mov     r8, [r11 + VTOPK_OUT_IDS]
+    xor     ecx, ecx                    ; rank = 0
+.vtopk_find_rank:
+    cmp     rcx, [rbp - 112]            ; out_count
+    jae     .vtopk_lane_next
+    cmp     rax, [r8 + rcx * 8]
+    je      .vtopk_row_match
+    inc     rcx
+    jmp     .vtopk_find_rank
+
+.vtopk_row_match:
+    mov     rax, rcx
+    imul    rax, 1088
+    add     rax, [rbp - 144]
+    mov     [rbp - 216], rax            ; node_ptr
+
+    mov     r10, [rbp - 16]             ; plan
+    mov     r14, [r10 + PLAN_DATA1]     ; proj_count
+    xor     edi, edi                    ; p = 0
+.vtopk_mat_col:
+    cmp     rdi, r14
+    jae     .vtopk_mat_done
+    mov     r10, [rbp - 16]             ; plan
+    mov     rax, [r10 + PLAN_DATA2]
+    mov     eax, [rax + rdi * 4]        ; col_idx
+    imul    rax, CybouDB_COLVIEW_SIZE
+    mov     r11, [rbp - 120]
+    lea     rsi, [r11 + BATCH_VIEW_COLUMNS + rax]
+
+    mov     r12, [rbp - 216]            ; node_ptr
+    bt      qword [rsi + COLVIEW_NULL_MASK], rbx
+    setc    al
+    mov     [r12 + 1024 + rdi], al
+    test    al, al
+    jnz     .vtopk_mat_null
+
+    mov     rax, rdi
+    shl     rax, 4
+    lea     rcx, [r12 + rax]
+
+    mov     r13, [rsi + COLVIEW_VALUES_PTR]
+    mov     edx, [rsi + COLVIEW_WIDTH]
+    cmp     edx, 16
+    je      .vtopk_mat_varlen
+    cmp     edx, 8
+    je      .vtopk_mat_8
+    cmp     edx, 1
+    je      .vtopk_mat_1
+    mov     eax, [r13 + rbx * 4]
+    mov     [rcx], rax
+    mov     qword [rcx + 8], 0
+    jmp     .vtopk_mat_col_next
+.vtopk_mat_8:
+    mov     rax, [r13 + rbx * 8]
+    mov     [rcx], rax
+    mov     qword [rcx + 8], 0
+    jmp     .vtopk_mat_col_next
+.vtopk_mat_1:
+    movzx   eax, byte [r13 + rbx]
+    mov     [rcx], rax
+    mov     qword [rcx + 8], 0
+    jmp     .vtopk_mat_col_next
+.vtopk_mat_varlen:
+    mov     rax, rbx
+    shl     rax, 4
+    add     rax, r13
+    mov     rdx, [rax]
+    mov     [rcx], rdx
+    mov     rdx, [rax + 8]
+    mov     [rcx + 8], rdx
+    jmp     .vtopk_mat_col_next
+.vtopk_mat_null:
+    mov     rax, rdi
+    shl     rax, 4
+    lea     rcx, [r12 + rax]
+    mov     qword [rcx], 0
+    mov     qword [rcx + 8], 0
+.vtopk_mat_col_next:
+    inc     rdi
+    jmp     .vtopk_mat_col
+
+.vtopk_mat_done:
+    inc     qword [rbp - 208]
+    mov     rax, [rbp - 208]
+    cmp     rax, [rbp - 112]            ; found_count == out_count?
+    je      .vtopk_pass2_done
+
+.vtopk_lane_next:
+    inc     rbx
+    jmp     .vtopk_lane_check
+
+.vtopk_pass2_done:
+    ; Emit rows
+    mov     r10, [rbp - 16]             ; plan
+    mov     r12, [r10 + PLAN_OFFSET_VALUE] ; rank = offset
+.vtopk_emit_loop:
+    cmp     r12, [rbp - 112]            ; rank >= out_count?
+    jae     .vtopk_success
+    mov     r10, [rbp - 16]
+    mov     rax, [r10 + PLAN_OFFSET_VALUE]
+    add     rax, [r10 + PLAN_LIMIT_VALUE]
+    cmp     r12, rax                    ; rank >= offset + limit?
+    jae     .vtopk_success
+
+    mov     rax, r12
+    imul    rax, 1088
+    add     rax, [rbp - 144]
+    mov     [rbp - 216], rax            ; node_ptr
+
+    mov     r14, [rbp - 152]            ; emit_batch_view
+    mov     qword [r14 + BATCH_VIEW_ROWS], 1
+    mov     r10, [rbp - 16]             ; plan
+    mov     r15, [r10 + PLAN_DATA1]     ; proj_count
+    xor     ebx, ebx                    ; p = 0
+.vtopk_emit_col:
+    cmp     rbx, r15
+    jae     .vtopk_emit_call
+    mov     r10, [rbp - 16]
+    mov     rax, [r10 + PLAN_DATA2]
+    mov     eax, [rax + rbx * 4]        ; col_idx
+    imul    rax, CybouDB_COLVIEW_SIZE
+    lea     rdx, [r14 + BATCH_VIEW_COLUMNS + rax]
+
+    mov     rcx, [rbp - 216]            ; node_ptr
+    mov     rax, rbx
+    shl     rax, 4
+    add     rax, rcx
+    mov     [rdx + COLVIEW_VALUES_PTR], rax
+    movzx   eax, byte [rcx + 1024 + rbx]
+    mov     [rdx + COLVIEW_NULL_MASK], rax
+    mov     r10, [rbp - 16]
+    mov     rax, [r10 + PLAN_DATA3]
+    mov     eax, [rax + rbx * 4]
+    mov     [rdx + COLVIEW_TYPE], eax
+
+    mov     ecx, 4
+    cmp     eax, CAT_INT64
+    jne     .vtopk_not_i64
+    mov     ecx, 8
+.vtopk_not_i64:
+    cmp     eax, CAT_BOOL
+    jne     .vtopk_not_bool
+    mov     ecx, 1
+.vtopk_not_bool:
+    cmp     eax, CAT_TEXT
+    je      .vtopk_is_varlen
+    cmp     eax, CAT_BLOB
+    je      .vtopk_is_varlen
+    cmp     eax, CAT_VECTOR
+    je      .vtopk_is_varlen
+    jmp     .vtopk_store_width
+.vtopk_is_varlen:
+    mov     ecx, 16
+.vtopk_store_width:
+    mov     [rdx + COLVIEW_WIDTH], ecx
+    inc     rbx
+    jmp     .vtopk_emit_col
+
+.vtopk_emit_call:
+    mov     ARG1, [rbp - 40]            ; cb_ctx
+    mov     ARG2, r14                   ; emit_batch_view
+    mov     r10, [rbp - 16]             ; plan
+    lea     ARG3, [r10 + PLAN_DATA1]    ; projection descriptor
+    mov     ARG4, 1                     ; selection_mask = 1
+    call    [rbp - 32]                  ; batch_cb
+    cmp     eax, CybouDB_SINK_STOP
+    je      .vtopk_success
+    cmp     eax, CybouDB_SINK_ERROR
+    je      .vtopk_sink_failed
+    inc     r12
+    jmp     .vtopk_emit_loop
+
+.vtopk_success:
+    xor     eax, eax
+    jmp     .vtopk_done
+.vtopk_oom:
+    mov     eax, SQL_ERR_NO_STORAGE
+    jmp     .vtopk_done
+.vtopk_storage_error:
+    jmp     .vtopk_done
+.vtopk_exec_error:
+    mov     eax, SQL_ERR_EXEC
+    jmp     .vtopk_done
+.vtopk_sink_failed:
+    mov     eax, SQL_ERR_SINK
+.vtopk_done:
+    mov     rbx, [rbp - 224]
+    mov     r12, [rbp - 232]
+    mov     r13, [rbp - 240]
+    mov     r14, [rbp - 248]
+    mov     r15, [rbp - 256]
+    mov     rsi, [rbp - 264]
+    mov     rdi, [rbp - 272]
+    FRAME_END
+    ret
+
 section .rodata
 exec_error_message: db "invalid bound plan", 0
 exec_oom_message: db "memory arena capacity exceeded", 0
