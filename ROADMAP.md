@@ -58,6 +58,30 @@ predicate across flat and tree-directory PAX tables, including fixed-width and
 persisted variable-width TEXT/BLOB columns. `DROP TABLE` drops tables and
 stages new catalog roots atomically across both CLI and REPL.
 
+---
+
+## Core v1 is frozen
+
+The storage format, the transaction semantics, the page and copy-on-write
+rules, and the error and recovery behaviour are settled and written down:
+
+* [docs/FORMAT.md](docs/FORMAT.md) - the on-disk format, version 1
+* [docs/TRANSACTIONS.md](docs/TRANSACTIONS.md) - commit protocol and failure outcomes
+* [docs/RECOVERY.md](docs/RECOVERY.md) - generation selection and what survives a crash
+
+What this commits to: work built after this point uses the existing
+transaction and storage layer rather than reopening it. A new capability
+arrives as a new incompatible feature bit, not as a change to what the bits
+already there mean.
+
+Within the 0.5.x series a file written by any 0.5.x build opens in any later
+0.5.x build, and the format version stays 1. A newer file may be refused by an
+older build, which is the feature-bit mechanism working as designed. Nothing is
+promised yet across 0.5 to 0.6 or up to 1.0; format stability across major
+versions is a 1.0 commitment.
+
+---
+
 ## How the phases are ordered
 
 Three constraints decide the sequence, and they are worth stating because the

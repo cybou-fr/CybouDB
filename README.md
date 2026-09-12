@@ -368,6 +368,12 @@ All test suites run in CI on both Linux and Windows.
   format, the commit protocol, the allocator, and how one format is meant to
   serve several hardware-native execution engines.
 * **[ROADMAP.md](ROADMAP.md)** - the phases, and what is actually done.
+* **[docs/FORMAT.md](docs/FORMAT.md)** - the on-disk format, version 1, and the
+  compatibility promise that goes with it.
+* **[docs/TRANSACTIONS.md](docs/TRANSACTIONS.md)** - what a transaction is, the
+  commit protocol, and what a failed commit leaves behind.
+* **[docs/RECOVERY.md](docs/RECOVERY.md)** - how opening a database selects a
+  generation, and what survives a crash.
 * **[docs/SQL.md](docs/SQL.md)** - SQL dialect, statement syntax, 3VL logic,
   error domains, and limits.
 * **[docs/CATALOG.md](docs/CATALOG.md)** - typed catalog specification and schema pages.
