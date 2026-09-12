@@ -214,7 +214,10 @@ parse_cmdline:
     jae     .trunc_0
     mov     word [rdi], ax
     add     rdi, 2
+    jmp     .adv_q0
 .trunc_0:
+    mov     qword [cmdline_ok], 0
+.adv_q0:
     add     rsi, 2
     jmp     .scan_quoted_0
 .close_quote_0:
@@ -234,7 +237,10 @@ parse_cmdline:
     jae     .trunc_unq_0
     mov     word [rdi], ax
     add     rdi, 2
+    jmp     .adv_unq0
 .trunc_unq_0:
+    mov     qword [cmdline_ok], 0
+.adv_unq0:
     add     rsi, 2
     jmp     .unquoted_0
 
@@ -302,7 +308,10 @@ parse_cmdline:
     jae     .skip_hs
     mov     word [rdi], CH_BACKSLASH
     add     rdi, 2
+    jmp     .adv_hs
 .skip_hs:
+    mov     qword [cmdline_ok], 0
+.adv_hs:
     dec     eax
     jmp     .emit_half_slashes
 
@@ -315,7 +324,10 @@ parse_cmdline:
     jae     .skip_odd_q
     mov     word [rdi], CH_QUOTE
     add     rdi, 2
+    jmp     .adv_odd_q
 .skip_odd_q:
+    mov     qword [cmdline_ok], 0
+.adv_odd_q:
     add     rsi, 2                      ; consumed quote
     jmp     .scan_arg
 
@@ -331,7 +343,10 @@ parse_cmdline:
     jae     .skip_cons_q
     mov     word [rdi], CH_QUOTE
     add     rdi, 2
+    jmp     .adv_cons_q
 .skip_cons_q:
+    mov     qword [cmdline_ok], 0
+.adv_cons_q:
     add     rsi, 4                      ; skip both quotes
     jmp     .scan_arg
 
@@ -349,7 +364,10 @@ parse_cmdline:
     jae     .skip_as
     mov     word [rdi], CH_BACKSLASH
     add     rdi, 2
+    jmp     .adv_as
 .skip_as:
+    mov     qword [cmdline_ok], 0
+.adv_as:
     dec     r13d
     jmp     .emit_all_slashes
 
@@ -370,7 +388,10 @@ parse_cmdline:
     jae     .skip_cc
     mov     word [rdi], ax
     add     rdi, 2
+    jmp     .adv_cc
 .skip_cc:
+    mov     qword [cmdline_ok], 0
+.adv_cc:
     add     rsi, 2
     jmp     .scan_arg
 
