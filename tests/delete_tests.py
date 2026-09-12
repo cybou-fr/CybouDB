@@ -33,6 +33,7 @@ Tests cover:
  12. Unknown tables and bad syntax are rejected.
 """
 
+import os
 import re
 import subprocess
 import sys
@@ -406,6 +407,27 @@ def main():
 
         rc, out, err = run_cmd([str(cyboudb), "check", db])
         check("check_after_rejections", rc == 0 and "OK" in out, f"out={out}")
+
+        # A four-byte cell is INT32 or FLOAT32, and the rewrite used to carry
+        # both across zero-extended. A negative INT32 came back as a number
+        # far outside the column, so a table holding one could not have a row
+        # deleted at all.
+        negative = os.path.join(tmpdir, "negative.cdb")
+        run_cmd([str(cyboudb), "create-large", negative, "20000", "--force"])
+        run_cmd([str(cyboudb), "query", negative,
+                 "CREATE TABLE n (id INT64 NOT NULL, v INT32, f FLOAT32);"])
+        run_cmd([str(cyboudb), "query", negative,
+                 "INSERT INTO n VALUES (0, -1, -1.5), (1, 1, 1.5), "
+                 "(2, -2147483648, 0.0), (3, 2147483647, 2.5);"])
+        rc, out, _ = run_cmd([str(cyboudb), "query", negative,
+                              "DELETE FROM n WHERE id = 1;"])
+        check("delete_beside_negative_int32", rc == 0, out)
+        rc, out, _ = run_cmd([str(cyboudb), "query", negative,
+                              "SELECT id, v, f FROM n;"])
+        check("negative_int32_survives_the_rewrite",
+             "-1" in out and "-2147483648" in out and
+             "2147483647" in out and "-1.5" in out, out)
+
 
     print(f"\nDELETE test suite: {tests_passed} passed, {tests_run - tests_passed} failed")
     if tests_passed != tests_run:

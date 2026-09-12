@@ -609,9 +609,24 @@ where they are because the rows did not move, a compacting DELETE rebuilds
 every index because they did, an UPDATE rebuilds the indexes over the column it
 wrote, and DROP TABLE takes its indexes with it.
 
-Not done: **no plan consults an index**. Every query still scans, so what the
-work so far buys is an index that is correct and maintained rather than one
-that is used. Also open: TEXT keys and multi-column keys.
+Not done, and measured rather than guessed at - `benchmarks/index_bench.py`
+has the numbers:
+
+* **A commit validates the whole index tree**, so an INSERT into an indexed
+  table grows with the table instead of with the change. The engine already
+  solved this shape for PAX: only pages carrying the candidate's own generation
+  can be half-written. An index node is no different, and a subtree that is
+  older than the candidate cannot have changed under copy-on-write.
+* **UPDATE and DELETE rebuild** where they could patch, which makes both linear
+  in the table. The statement has the rows that matched but not the keys they
+  carried, and that is what would have to change.
+* **CREATE INDEX stages about three pages per row**, because it builds by
+  inserting one row at a time. A sort and a bulk build would stage the tree
+  itself and nothing else.
+* **No plan consults an index.** Every query still scans, so the work so far
+  buys an index that is correct and maintained rather than one that is used.
+
+Also open: TEXT keys and multi-column keys.
 
 ---
 

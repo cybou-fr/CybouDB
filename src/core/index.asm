@@ -1303,9 +1303,14 @@ db_index_retire_tree:
 ;
 ;  The catalog directory has already proved this page is payload of the
 ;  candidate, checksums, and carries the id that names it. What is left is what
-;  only an index knows: a column that exists, no flag bit nobody defined, a
-;  table to belong to, a zero tail, and a tree that is the tree this page says
-;  it is.
+;  only an index knows: a zero tail, a tree that is the tree this page says it
+;  is, and a table it actually belongs to.
+;
+;  The last one is a cross-object check, and open has to make it rather than
+;  trusting that the writer did. CREATE INDEX proves the table exists, is a
+;  table, has that column and that the column is a type this version orders -
+;  but a file arrives from a disk, not from this build's binder, and every one
+;  of those four facts is a page id or an offset something else will follow.
 ; -----------------------------------------------------------------------------
 index_page_valid:
     FRAME_BEGIN 32, 2
@@ -1316,14 +1321,60 @@ index_page_valid:
     test qword [r10 + DB_FEATURES], CybouDB_FEATURE_INDEX
     jz .bad
     mov r11, ARG3
-    mov eax, [r11 + IDX_COLUMN]
-    cmp eax, CAT_MAX_COLUMNS
-    jae .bad
     mov eax, [r11 + IDX_FLAGS]
     cmp eax, IDX_UNIQUE
     ja .bad
     cmp qword [r11 + IDX_TABLE], 0
     je .bad
+
+    ; The table this index is on, found where every other object is found.
+    mov r10, ARG2
+    mov rax, [r10 + SB_ROOT_PAGE]
+    test rax, rax
+    jz .bad                         ; an index with no catalog to belong to
+    mov r10, ARG1
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
+    mov r8, rax
+    mov ecx, [r8 + CAT_COUNT]
+    mov r9, [r11 + IDX_TABLE]
+    xor edx, edx
+.find_table:
+    cmp edx, ecx
+    jae .bad                        ; it names a table the catalog does not have
+    mov rax, rdx
+    shl rax, 4
+    cmp [r8 + CAT_DATA + rax], r9
+    je .table_entry
+    inc edx
+    jmp .find_table
+.table_entry:
+    mov rax, [r8 + CAT_DATA + rax + 8]
+    mov [rbp - 32], rax
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, rax
+    call db_bitmap_candidate_payload
+    test eax, eax
+    jz .bad
+    mov r10, [rbp - 8]
+    mov rax, [rbp - 32]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
+    cmp dword [rax + CAT_TYPE], CAT_SCHEMA
+    jne .bad                        ; and what it names has to be a table
+    mov r11, [rbp - 24]
+    mov ecx, [r11 + IDX_COLUMN]
+    cmp ecx, [rax + CAT_COUNT]
+    jae .bad                        ; a column that table does not have
+    imul rcx, CAT_COLUMN_SIZE
+    mov ecx, [rax + CAT_COLUMNS + rcx]
+    cmp ecx, CAT_INT32
+    je .column_ok
+    cmp ecx, CAT_INT64
+    jne .bad                        ; or one this version cannot order
+.column_ok:
+    mov r11, [rbp - 24]
 
     ; Everything past the table it names is zero, as every tail in this format.
     lea r8, [r11 + IDX_TABLE + 8]

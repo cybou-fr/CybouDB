@@ -536,6 +536,8 @@ extern int db_catalog_set_index_root(void *ctx, uint64_t index_id,
 extern int db_catalog_get(void *ctx, uint64_t id, uint64_t *out_page);
 extern int db_catalog_drop(void *ctx, uint64_t id);
 extern int db_commit(void *ctx);
+extern void *catalog_find_table(void *ctx, const char *name, uint64_t len,
+                                uint64_t *out_id);
 
 #define CAT_TYPE_OFF   32
 #define CAT_INDEX_TYPE 3
@@ -569,14 +571,25 @@ static void catalog_suite(void *ctx, const char *path) {
         entries[i].row = i;
     }
 
-    index_image(image, "idx_on_a", 1, 0, 77);
+    /* A real table, because open proves that the table an index names exists,
+       is a table, has that column and that the column is a type this version
+       orders - a made-up id is exactly what that check is there to refuse. */
+    {
+        uint64_t table_id = 0;
+        check("a table to index",
+              cyboudb_exec((cyboudb_db *)ctx,
+                           "CREATE TABLE idx_host (a INT64, b INT64)")
+              == CybouDB_OK);
+        check("found", catalog_find_table(ctx, "idx_host", 8, &table_id) != 0);
+        index_image(image, "idx_on_a", 1, 0, table_id);
+    }
     check("an index goes into the catalog",
           db_catalog_put_index(ctx, 900001, image) == 0);
     check("and is found there",
           db_catalog_get(ctx, 900001, &page) == 0 && page != 0);
     mapped = db_index_node_addr(ctx, page);
     check("as an index page", u32(mapped, CAT_TYPE_OFF) == CAT_INDEX_TYPE);
-    check("naming its table", u64(mapped, IDX_TABLE_OFF) == 77);
+    check("naming its table", u64(mapped, IDX_TABLE_OFF) != 0);
     check("and its column", u32(mapped, IDX_COLUMN_OFF) == 1);
 
     check("an empty index commits", db_commit(ctx) == CybouDB_OK);
@@ -598,7 +611,7 @@ static void catalog_suite(void *ctx, const char *path) {
     check("with the tree it was given",
           u64(mapped, IDX_ROOT_OFF) != 0 && u64(mapped, IDX_ROWS_OFF) == 4000);
     check("and the column it was created with",
-          u32(mapped, IDX_COLUMN_OFF) == 1 && u64(mapped, IDX_TABLE_OFF) == 77);
+          u32(mapped, IDX_COLUMN_OFF) == 1 && u64(mapped, IDX_TABLE_OFF) != 0);
     {
         uint64_t stored = u64(mapped, IDX_ROOT_OFF);
         int ok = 1;

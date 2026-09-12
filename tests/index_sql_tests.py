@@ -16,11 +16,15 @@ are one, and that the answers a query gives do not change.
 See docs/INDEX.md.
 """
 
+import os
 import struct
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from corrupt import crc32c
 
 FEATURE_INDEX = 8192
 
@@ -81,6 +85,42 @@ def read_tree(path, name):
             visit(tree_root)
         return entries
     return None
+
+
+
+def damage_index(path, name, offset, value, width=8):
+    """Write one field of an index page and reseal it.
+
+    An index page is reached through the catalog directory, and the directory's
+    checksum does not cover what the page says, so resealing this one page is
+    all it takes to produce a file that is internally consistent and wrong.
+    That is exactly the file open has to refuse.
+    """
+    with open(path, "r+b") as handle:
+        blob = bytearray(handle.read())
+        page_size = 4096
+        best, root = -1, 0
+        for sb in (1, 2):
+            generation = struct.unpack_from("<Q", blob, sb * page_size + 8)[0]
+            if generation > best:
+                best, root = generation, struct.unpack_from(
+                    "<Q", blob, sb * page_size + 40)[0]
+        count = struct.unpack_from("<I", blob, root * page_size + 36)[0]
+        for i in range(count):
+            entry = root * page_size + 64 + i * 16
+            page = struct.unpack_from("<Q", blob, entry + 8)[0] * page_size
+            if struct.unpack_from("<I", blob, page + 32)[0] != 3:
+                continue
+            if bytes(blob[page + 64:page + 96]).split(bytes(1))[0].decode() != name:
+                continue
+            fmt = "<Q" if width == 8 else "<I"
+            struct.pack_into(fmt, blob, page + offset, value)
+            struct.pack_into("<I", blob, page + 4092,
+                             crc32c(bytes(blob[page:page + 4092])))
+            handle.seek(0)
+            handle.write(blob)
+            return True
+    return False
 
 
 def main():
@@ -307,6 +347,58 @@ def main():
         r = run("check", marked)
         check("with a file that checks out", r.returncode == 0 and
               "Status:          OK" in r.stdout, r.stdout)
+
+        # --- a file arrives from a disk, not from this build's binder ---------
+        # CREATE INDEX proves the table exists, is a table, has that column and
+        # that the column is a type this version orders. Every one of those is
+        # a page id or an offset something else will follow, so open proves
+        # them again rather than trusting whoever wrote the file.
+        #
+        # What a refusal looks like is a fallback, not an error: the damaged
+        # generation stops being selectable and the one before it - the one
+        # without the index - is what opens. That is recovery working.
+        def generation(path):
+            """The generation the engine selected, not the highest one written.
+
+            A read does not change the file, so the difference between a
+            refused generation and an accepted one is only visible in what
+            opening the file picks.
+            """
+            out = run("info", path).stdout
+            for line in out.splitlines():
+                if "Generation:" in line:
+                    return int(line.split(":")[1].strip())
+            return -1
+
+        for label, offset, value, width in (
+                ("a table the catalog does not have", 96, 999, 8),
+                ("a column that table does not have", 48, 40, 4),
+                ("a column this version cannot order", 48, 1, 4)):
+            damaged = str(Path(tmp) / "damaged.cdb")
+            run("create-large", damaged, "20000", "--force")
+            query("CREATE TABLE d (id INT64 NOT NULL, txt TEXT, n INT32);",
+                  damaged)
+            query("INSERT INTO d VALUES (1, 'x', 5);", damaged)
+            query("CREATE INDEX d_idx ON d (n);", damaged)
+            before = generation(damaged)
+            check(f"{label}: sound before the damage",
+                  read_tree(damaged, "d_idx") == [(5, 0)],
+                  str(read_tree(damaged, "d_idx")))
+            check(f"{label}: the field was reachable",
+                  damage_index(damaged, "d_idx", offset, value, width))
+            r = query("SELECT id FROM d;", damaged)
+            check(f"{label}: the generation holding it is refused",
+                  r.returncode == 0 and generation(damaged) < before,
+                  f"{generation(damaged)} vs {before}: {r.stdout}")
+            # Asked through the engine, which selects a generation; read_tree
+            # reads the newest one written and would still find the damage.
+            listing = subprocess.run(
+                [str(cyboudb), "console", damaged], input=".indexes\n.quit\n",
+
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace").stdout
+            check(f"{label}: leaving no index behind",
+                  "d_idx" not in listing, listing)
 
     print(f"\nIndex SQL suite: {passed} passed, {run_count - passed} failed")
     sys.exit(0 if passed == run_count else 1)

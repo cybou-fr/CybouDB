@@ -1041,6 +1041,16 @@ sql_execute_batch:
     cmp     edx, 1
     je      .delete_rewrite_w1
     mov     ecx, [r11]
+    ; A four-byte cell is INT32 or FLOAT32, and only one of them is a
+    ; signed number. An INT32 that arrives zero-extended is out of range
+    ; for the column it came from, so a table holding a negative one
+    ; could not have a row deleted at all.
+    mov     rdx, r8
+    imul    rdx, CAT_COLUMN_SIZE
+    add     rdx, [rbp - 1744]
+    cmp     dword [rdx + CAT_COLUMNS], CAT_INT32
+    jne     .delete_rewrite_store
+    movsxd  rcx, ecx
     jmp     .delete_rewrite_store
 .delete_rewrite_w8:
     mov     rcx, [r11]
