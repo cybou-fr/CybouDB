@@ -17,6 +17,22 @@ sh build.sh --bench          # Windows: build.bat --bench
 python3 benchmarks/run_benchmarks.py ./cyboudb ./build/bench_harness
 ```
 
+For DELETE:
+
+```sh
+sh build.sh --bench && sh build.sh --delete-bench
+python3 benchmarks/run_delete_benchmark.py --rows 1000000 --repeats 1 --headroom 6
+```
+
+`delete_bench.c` exists because a DELETE cannot be timed the way a SELECT
+plan is: it runs once and the state it ran against is gone. The runner
+restores a fresh copy of the seeded database before each measurement, and the
+harness runs the statement inside an explicit transaction so that the commit -
+a flush of the whole mapping, and the larger number on a large file - is timed
+separately rather than folded into the statement. Results and what they say
+about the rewrite's scaling are in
+[results/2026-09-12-delete.md](results/2026-09-12-delete.md).
+
 ## What is measured
 
 `bench_harness.asm` opens the database once, parses and binds the statement

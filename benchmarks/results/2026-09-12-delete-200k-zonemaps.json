@@ -1,0 +1,199 @@
+{
+  "rows": 200000,
+  "repeats": 1,
+  "file_bytes": 53002240,
+  "results": [
+    {
+      "scenario": "delete 1%",
+      "sql": "DELETE FROM events WHERE amount >= 594000",
+      "median_ms": 5026.3274,
+      "median_commit_ms": 108.8417,
+      "deleted": 2000,
+      "survivors": 198000,
+      "ns_per_survivor": 25385.491919191918,
+      "ns_per_deleted": 2513163.7,
+      "pages_staged": 8443,
+      "table_pages": 1849,
+      "runs": [
+        {
+          "exec_ns": 5026327400,
+          "commit_ns": 108841700,
+          "rows_before": 200000,
+          "rows_after": 198000,
+          "deleted": 2000,
+          "pages_before": 1849,
+          "pages_after": 10292,
+          "pages_staged": 8443
+        }
+      ]
+    },
+    {
+      "scenario": "delete 10%",
+      "sql": "DELETE FROM events WHERE amount >= 540000",
+      "median_ms": 4191.1228,
+      "median_commit_ms": 114.5981,
+      "deleted": 20000,
+      "survivors": 180000,
+      "ns_per_survivor": 23284.015555555554,
+      "ns_per_deleted": 209556.14,
+      "pages_staged": 7641,
+      "table_pages": 1849,
+      "runs": [
+        {
+          "exec_ns": 4191122800,
+          "commit_ns": 114598100,
+          "rows_before": 200000,
+          "rows_after": 180000,
+          "deleted": 20000,
+          "pages_before": 1849,
+          "pages_after": 9490,
+          "pages_staged": 7641
+        }
+      ]
+    },
+    {
+      "scenario": "delete 50%",
+      "sql": "DELETE FROM events WHERE amount >= 300000",
+      "median_ms": 1276.0704,
+      "median_commit_ms": 192.8627,
+      "deleted": 100000,
+      "survivors": 100000,
+      "ns_per_survivor": 12760.704,
+      "ns_per_deleted": 12760.704,
+      "pages_staged": 4098,
+      "table_pages": 1849,
+      "runs": [
+        {
+          "exec_ns": 1276070400,
+          "commit_ns": 192862700,
+          "rows_before": 200000,
+          "rows_after": 100000,
+          "deleted": 100000,
+          "pages_before": 1849,
+          "pages_after": 5947,
+          "pages_staged": 4098
+        }
+      ]
+    },
+    {
+      "scenario": "delete 90%",
+      "sql": "DELETE FROM events WHERE amount >= 60000",
+      "median_ms": 54.954,
+      "median_commit_ms": 113.6954,
+      "deleted": 180000,
+      "survivors": 20000,
+      "ns_per_survivor": 2747.7,
+      "ns_per_deleted": 305.3,
+      "pages_staged": 791,
+      "table_pages": 1849,
+      "runs": [
+        {
+          "exec_ns": 54954000,
+          "commit_ns": 113695400,
+          "rows_before": 200000,
+          "rows_after": 20000,
+          "deleted": 180000,
+          "pages_before": 1849,
+          "pages_after": 2640,
+          "pages_staged": 791
+        }
+      ]
+    },
+    {
+      "scenario": "delete 99%",
+      "sql": "DELETE FROM events WHERE amount >= 6000",
+      "median_ms": 2.1095,
+      "median_commit_ms": 109.227,
+      "deleted": 198000,
+      "survivors": 2000,
+      "ns_per_survivor": 1054.75,
+      "ns_per_deleted": 10.654040404040405,
+      "pages_staged": 82,
+      "table_pages": 1849,
+      "runs": [
+        {
+          "exec_ns": 2109500,
+          "commit_ns": 109227000,
+          "rows_before": 200000,
+          "rows_after": 2000,
+          "deleted": 198000,
+          "pages_before": 1849,
+          "pages_after": 1931,
+          "pages_staged": 82
+        }
+      ]
+    },
+    {
+      "scenario": "delete all (predicate)",
+      "sql": "DELETE FROM events WHERE amount >= 0",
+      "median_ms": 0.4795,
+      "median_commit_ms": 122.3812,
+      "deleted": 200000,
+      "survivors": 0,
+      "ns_per_survivor": 0.0,
+      "ns_per_deleted": 2.3975,
+      "pages_staged": 2,
+      "table_pages": 1849,
+      "runs": [
+        {
+          "exec_ns": 479500,
+          "commit_ns": 122381200,
+          "rows_before": 200000,
+          "rows_after": 0,
+          "deleted": 200000,
+          "pages_before": 1849,
+          "pages_after": 1851,
+          "pages_staged": 2
+        }
+      ]
+    },
+    {
+      "scenario": "delete none",
+      "sql": "DELETE FROM events WHERE amount >= 800000",
+      "median_ms": 0.1171,
+      "median_commit_ms": 111.5724,
+      "deleted": 0,
+      "survivors": 200000,
+      "ns_per_survivor": 0.5855,
+      "ns_per_deleted": 0.0,
+      "pages_staged": 0,
+      "table_pages": 1849,
+      "runs": [
+        {
+          "exec_ns": 117100,
+          "commit_ns": 111572400,
+          "rows_before": 200000,
+          "rows_after": 200000,
+          "deleted": 0,
+          "pages_before": 1849,
+          "pages_after": 1849,
+          "pages_staged": 0
+        }
+      ]
+    },
+    {
+      "scenario": "delete all (unqualified)",
+      "sql": "DELETE FROM events",
+      "median_ms": 0.2634,
+      "median_commit_ms": 118.6808,
+      "deleted": 200000,
+      "survivors": 0,
+      "ns_per_survivor": 0.0,
+      "ns_per_deleted": 1.317,
+      "pages_staged": 2,
+      "table_pages": 1849,
+      "runs": [
+        {
+          "exec_ns": 263400,
+          "commit_ns": 118680800,
+          "rows_before": 200000,
+          "rows_after": 0,
+          "deleted": 200000,
+          "pages_before": 1849,
+          "pages_after": 1851,
+          "pages_staged": 2
+        }
+      ]
+    }
+  ]
+}

@@ -201,10 +201,26 @@ cyboudb query demo.cdb "SELECT id, score FROM runs WHERE score > 90"
 * [x] persisted TEXT, BLOB and VECTOR cells carried across that rewrite by
       their extent root, under a batch flag that tells the append the varlen
       slots already hold roots rather than pointers to bytes
-* [ ] incremental deletion: the rewrite is proportional to the table, not to
-      the rows removed, and stages a second copy of what survives. Row
+* [x] a benchmark for the rewrite, at 100 000 and 1 000 000 rows and across
+      selectivities - see
+      [benchmarks/results/2026-09-12-delete.md](benchmarks/results/2026-09-12-delete.md).
+      Truncation is 1-3 ms whatever the table holds. The rewrite costs 1.4 us
+      per surviving row at 10 000 survivors and 126 us at 990 000, so the
+      total is quadratic, and it stages up to 4.8x the table's own pages
+* [ ] the per-append cost that makes it quadratic. It is not the DELETE path:
+      a plain INSERT staging the same rows in one transaction has the same
+      shape, it does not depend on the table's size, it is not the zone maps,
+      and it goes away when the work is split across commits. Something on
+      the append path costs time proportional to what the open transaction
+      has already staged. Worth fixing on its own account - it slows every
+      large single-transaction INSERT by the same rule - and a prerequisite
+      for any DELETE performance work, since a better constant factor is
+      worth nothing against a quadratic term
+* [ ] incremental deletion: the rewrite is proportional to the survivors, not
+      to the rows removed, and stages a second copy of what survives. Row
       tombstones or in-place leaf compaction would fix that, and neither
-      should be written before the rewrite has a benchmark to beat
+      should be written before the quadratic term above is gone and the
+      rewrite has an honest number to beat
 * [x] statement parser contract: single-column `UPDATE ... SET literal WHERE ...`
 * [x] binder contract for typed single-column `UPDATE`
 * [x] COW executor for flat multi-leaf, fixed-width `UPDATE`
