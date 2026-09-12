@@ -179,7 +179,10 @@ sql_tok_peek:
 ;  sql_tok_next(ARG1=tok_ctx, ARG2=out_token) -> EAX: SQL_OK
 ; -----------------------------------------------------------------------------
 sql_tok_next:
-    FRAME_BEGIN 112, 0
+    FRAME_BEGIN 128, 0
+    ; [rbp-56] through [rbp-104] hold the callee-saved registers for the
+    ; whole of this function. Nothing else may use them: a literal keeps
+    ; its pending token type in [rbp-112] for exactly that reason.
     mov     [rbp - 56], rbx
     mov     [rbp - 64], r12
     mov     [rbp - 72], r13
@@ -353,7 +356,7 @@ sql_tok_next:
 .check_string:
     cmp     al, "'"
     jne     .unknown_char
-    mov     qword [rbp - 56], TOK_STRING_LIT
+    mov     qword [rbp - 112], TOK_STRING_LIT
     jmp     .lex_string
 
     ; Unknown character
@@ -369,7 +372,7 @@ sql_tok_next:
     jae     .lex_ident
     cmp     byte [r8 + rdx], "'"
     jne     .lex_ident
-    mov     qword [rbp - 56], TOK_BLOB_LIT
+    mov     qword [rbp - 112], TOK_BLOB_LIT
     inc     rsi                         ; leave RSI on the opening quote
     inc     ecx
     jmp     .lex_string
@@ -668,7 +671,7 @@ sql_tok_next:
     jmp     .str_loop
 
 .str_done:
-    mov     rdi, [rbp - 56]
+    mov     rdi, [rbp - 112]
     jmp     .finish_token
 
 .str_unterminated:

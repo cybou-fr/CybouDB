@@ -273,7 +273,9 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     call "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
     lib.exe /nologo /out:build\cyboudb.lib !OBJS!
     if errorlevel 1 goto :fail
-    cl.exe /O2 /W3 /nologo /DCybouDB_API_TEST_ALLOC=1 /Iinclude tests\c_api_test.c /Febuild\c_api_test.exe /Fobuild\c_api_test.obj /link build\cyboudb.lib kernel32.lib
+    "!NASM!" -f win64 !INC! tests\abi_probe.asm -o build\abi_probe.obj
+    if errorlevel 1 goto :fail
+    cl.exe /O2 /W3 /nologo /DCybouDB_API_TEST_ALLOC=1 /Iinclude tests\c_api_test.c build\abi_probe.obj /Febuild\c_api_test.exe /Fobuild\c_api_test.obj /link build\cyboudb.lib kernel32.lib
     if errorlevel 1 goto :fail
     echo.
     echo Build OK -^> build\c_api_test.exe

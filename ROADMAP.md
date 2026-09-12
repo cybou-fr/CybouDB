@@ -49,9 +49,11 @@ publishing a schema page whose data root, statistics root and row count are
 back where `CREATE TABLE` left them. `DELETE ... WHERE` counts the matching
 rows first, then rewrites the ones that survive into a fresh graph through
 the ordinary append path, truncation and rewrite staged as one COW
-transaction; it is correctness-first rather than incremental, and is
-currently limited to tables without TEXT, BLOB or VECTOR columns. An ARM64
-backend remains unimplemented. `UPDATE` supports single-column assignments with a mandatory
+transaction. A surviving TEXT, BLOB or VECTOR cell keeps the extent chain it
+already points at rather than having its payload copied out and back, the
+same way an UPDATE carries an untouched cell through the leaf it rewrites.
+It is correctness-first rather than incremental. An ARM64 backend remains
+unimplemented. `UPDATE` supports single-column assignments with a mandatory
 predicate across flat and tree-directory PAX tables, including fixed-width and
 persisted variable-width TEXT/BLOB columns. `DROP TABLE` drops tables and
 stages new catalog roots atomically across both CLI and REPL.
@@ -191,14 +193,14 @@ cyboudb query demo.cdb "SELECT id, score FROM runs WHERE score > 90"
 * [x] statement parser, binder and COW executor: whole-table `DELETE FROM`,
       published as the state `CREATE TABLE` leaves a table in, with the
       affected row count reported and an empty table publishing nothing
-* [x] `DELETE ... WHERE` over fixed-width columns: the predicate is bound
-      exactly as the equivalent `SELECT` binds it, matching rows are counted
-      before anything is staged, and the survivors are rewritten through the
-      append path so that leaf runs, directories and zone maps are rebuilt by
-      the code that already writes them
-* [ ] `DELETE ... WHERE` over TEXT, BLOB and VECTOR columns: the rewrite
-      would have to rebuild the extent chain behind every surviving cell;
-      refused at bind time until it does
+* [x] `DELETE ... WHERE`: the predicate is bound exactly as the equivalent
+      `SELECT` binds it, matching rows are counted before anything is staged,
+      and the survivors are rewritten through the append path so that leaf
+      runs, directories and zone maps are rebuilt by the code that already
+      writes them
+* [x] persisted TEXT, BLOB and VECTOR cells carried across that rewrite by
+      their extent root, under a batch flag that tells the append the varlen
+      slots already hold roots rather than pointers to bytes
 * [ ] incremental deletion: the rewrite is proportional to the table, not to
       the rows removed, and stages a second copy of what survives. Row
       tombstones or in-place leaf compaction would fix that, and neither
@@ -514,3 +516,9 @@ Small, real, and worth fixing when they are next touched:
 * [ ] the double-free guard is a heuristic and will need a real allocation
       bitmap once pages carry data
 * [x] no `NOTICE` file and no per-file licence headers
+* [x] the tokenizer kept a pending literal token type in the same frame slot
+      as saved `RBX`, so any statement containing a TEXT or BLOB literal
+      returned to its caller with that register changed. Invisible to a C
+      test unless the compiler happened to keep something live there;
+      `tests/abi_probe.asm` now checks every callee-saved register across a
+      library call so the next one is an ordinary failing assertion

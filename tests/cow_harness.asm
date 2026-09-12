@@ -39,7 +39,7 @@ schema_page: resq 1
 zone_entry: resq 1
 zone_mxcsr_saved: resd 1
 zone_mxcsr_after: resd 1
-batch: resq 3
+batch: resb CybouDB_BATCH_SIZE
 row_out: resq 2
 row_values: resq 64
 row_nulls: resb 64

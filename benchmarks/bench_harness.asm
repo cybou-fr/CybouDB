@@ -101,7 +101,7 @@ trace:          resq 1
 arena_mark:     resq 1
 sink_context:   resq 1
 
-seed_batch:     resb 24
+seed_batch:     resb CybouDB_BATCH_SIZE
 seed_table_id:  resq 1
 seed_target:    resq 1
 seed_dataset:   resq 1

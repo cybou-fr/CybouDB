@@ -33,7 +33,6 @@ err_order_pending: db "ORDER BY execution is not implemented yet", 0
 err_varlen_pending: db "TEXT/BLOB storage extents are not implemented yet", 0
 err_vector_pending: db "VECTOR storage extents are not implemented yet", 0
 err_vector_order_limit: db "vector distance ORDER BY requires LIMIT", 0
-err_delete_varlen: db "DELETE WHERE cannot rewrite TEXT, BLOB or VECTOR columns yet", 0
 err_oom:             db "memory arena capacity exceeded", 0
 
 section .text
@@ -1226,6 +1225,7 @@ sql_bind:
     mov     [rax + BATCH_NULLS], r10
     mov     r10, [rbp - 128]
     mov     [rax + BATCH_VAR_LENGTHS], r10
+    mov     qword [rax + BATCH_FLAGS], 0    ; VALUES carries bytes, not roots
 
     ; Fill batch cells
     mov     r10, [rbp - 16]
@@ -1549,7 +1549,8 @@ sql_bind:
 ; --- BIND DELETE -------------------------------------------------------------
 ; Without a predicate the whole table goes; with one, DELETE is bound exactly
 ; like the SELECT that decides which rows match, and the executor rewrites the
-; survivors. The row count is left to execution time: a prepared plan may be
+; survivors - TEXT, BLOB and VECTOR cells included, by carrying their extent
+; roots across rather than rebuilding the chains. The row count is left to execution time: a prepared plan may be
 ; stepped again after other statements have changed the table.
 .bind_delete:
     mov     r10, [rbp - 48]
@@ -1595,27 +1596,6 @@ sql_bind:
     test    ARG1, ARG1
     jz      .delete_bound               ; whole-table DELETE needs nothing more
 
-    ; A predicated DELETE rewrites the surviving rows through the ordinary
-    ; append path, which would have to rebuild every extent chain a TEXT,
-    ; BLOB or VECTOR cell points at. Refuse rather than copy a descriptor
-    ; whose payload the new table does not own.
-    mov     r11, [rbp - 64]
-    xor     ecx, ecx
-.delete_scan_types:
-    cmp     ecx, [r11 + CAT_COUNT]
-    jae     .delete_bind_where
-    mov     rax, rcx
-    shl     rax, 5
-    mov     eax, [r11 + CAT_COLUMNS + rax]
-    cmp     eax, CAT_TEXT
-    je      .delete_varlen_pending
-    cmp     eax, CAT_BLOB
-    je      .delete_varlen_pending
-    cmp     eax, CAT_VECTOR
-    je      .delete_varlen_pending
-    inc     ecx
-    jmp     .delete_scan_types
-
 .delete_bind_where:
     mov     r10, [rbp - 16]
     mov     ARG1, [r10 + DELETE_WHERE_EXPR]
@@ -1635,15 +1615,6 @@ sql_bind:
 
 .delete_bound:
     xor     eax, eax
-    jmp     .binder_exit
-
-.delete_varlen_pending:
-    mov     ARG1, [rbp - 40]
-    mov     ARG2, SQL_ERR_SYNTAX
-    xor     ARG3, ARG3
-    lea     ARG4, [err_delete_varlen]
-    call    set_binder_error
-    mov     eax, SQL_ERR_SYNTAX
     jmp     .binder_exit
 
 ; --- BIND DROP TABLE ---------------------------------------------------------

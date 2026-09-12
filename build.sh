@@ -103,7 +103,8 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         CC=gcc
         command -v gcc >/dev/null 2>&1 || CC=clang
         echo "[cc]   tests/c_api_test.c -> build/c_api_test"
-        "$CC" -O2 -no-pie -Wall -DCybouDB_API_TEST_ALLOC=1 -Iinclude tests/c_api_test.c build/libcyboudb.a -o build/c_api_test
+        nasm -f elf64 $INC tests/abi_probe.asm -o build/abi_probe.o
+        "$CC" -O2 -no-pie -Wall -DCybouDB_API_TEST_ALLOC=1 -Iinclude tests/c_api_test.c build/abi_probe.o build/libcyboudb.a -o build/c_api_test
         echo "Build OK -> build/c_api_test"
         "$CC" -O2 -no-pie -Wall tests/compress_harness.c build/libcyboudb.a -o build/compress_harness
         "$CC" -O2 -no-pie -Wall -Iinclude tests/vector_topk_test.c build/libcyboudb.a -o build/vector_topk_test

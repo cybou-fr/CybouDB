@@ -13,16 +13,19 @@ BITS 64
 default rel
 
 ; Frame storage a predicated DELETE stages surviving rows in, below every
-; other local. Nine bytes per cell - eight of value, one of NULL - so the
-; whole region divides once and both arrays are fixed addresses. The borrowed
+; other local. Seventeen bytes per cell - eight of value, eight of varlen
+; length, one of NULL - so the whole region divides once and every array is a
+; fixed address. A fixed-width table never reads the lengths, and pays for
+; them in staged rows per append rather than in correctness. The borrowed
 ; batch views sit in the same region. Deliberately not arena storage: an
 ; embedder's statement arena is small, and how many rows a DELETE can stage at
 ; a time should not depend on how much of it the plan happened to use.
 %define DELETE_SCRATCH_BASE  36864                  ; lowest frame offset used
 %define DELETE_VIEW_OFF      DELETE_SCRATCH_BASE    ; borrowed batch views
 %define DELETE_VALUES_OFF    35320                  ; DELETE_VIEW_OFF - 1544
-%define DELETE_SCRATCH_CELLS 3696                   ; (35320 - 2052) / 9
-%define DELETE_NULLS_OFF     5752                   ; VALUES_OFF - CELLS * 8
+%define DELETE_SCRATCH_CELLS 1957                   ; (35320 - 2052) / 17
+%define DELETE_LENGTHS_OFF   19664                  ; VALUES_OFF - CELLS * 8
+%define DELETE_NULLS_OFF     4008                   ; LENGTHS_OFF - CELLS * 8
 
 extern db_catalog_put, db_catalog_drop, db_catalog_truncate_data, db_pax_insert, db_pax_update_one, db_pax_capacity, db_commit, db_rollback
 extern db_catalog_get, db_pax_scan_open_bound, db_pax_scan_batch
@@ -632,7 +635,8 @@ sql_execute_batch:
 ;   [rbp-1840] rows in the buffer
 ;   [rbp-1848] rows in the batch [rbp-1856] surviving lanes
 ;   [rbp-1864] lane being copied [rbp-1872] first cell of that row
-;   [rbp-1984] scan cursor (80)  [rbp-2016] insert batch descriptor (32)
+;   [rbp-1880] varlen length scratch
+;   [rbp-1984] scan cursor (80)  [rbp-2048] insert batch descriptor (40)
 .exec_delete:
     ; The row count comes from the catalog rather than the plan: a prepared
     ; DELETE may be stepped again after other statements changed the table.
@@ -753,6 +757,8 @@ sql_execute_batch:
     mov     [rbp - 1824], rax
     lea     rax, [rbp - DELETE_NULLS_OFF]
     mov     [rbp - 1832], rax
+    lea     rax, [rbp - DELETE_LENGTHS_OFF]
+    mov     [rbp - 1880], rax
 
     mov     ARG1, [rbp - 8]
     mov     ARG2, [rbp - 1744]
@@ -800,16 +806,19 @@ sql_execute_batch:
     cmp     rax, [rbp - 1808]
     jb      .delete_rewrite_pick
     ; The buffer is full: append it and start the next chunk.
-    mov     [rbp - 2016 + BATCH_ROWS], rax
+    mov     [rbp - 2048 + BATCH_ROWS], rax
     mov     rax, [rbp - 1824]
-    mov     [rbp - 2016 + BATCH_VALUES], rax
+    mov     [rbp - 2048 + BATCH_VALUES], rax
     mov     rax, [rbp - 1832]
-    mov     [rbp - 2016 + BATCH_NULLS], rax
-    mov     qword [rbp - 2016 + BATCH_VAR_LENGTHS], 0
+    mov     [rbp - 2048 + BATCH_NULLS], rax
+    mov     rax, [rbp - 1880]
+    mov     [rbp - 2048 + BATCH_VAR_LENGTHS], rax
+    ; The varlen slots hold the roots the surviving cells already point at.
+    mov     qword [rbp - 2048 + BATCH_FLAGS], BATCH_VARLEN_PERSISTED
     mov     ARG1, [rbp - 8]
     mov     r10, [rbp - 16]
     mov     ARG2, [r10 + PLAN_TABLE_ID]
-    lea     ARG3, [rbp - 2016]
+    lea     ARG3, [rbp - 2048]
     call    db_pax_insert
     test    eax, eax
     jnz     .storage_done
@@ -842,6 +851,9 @@ sql_execute_batch:
     mov     byte [r11 + r10], 0
     mov     rax, [rbp - 1824]
     mov     qword [rax + r10 * 8], 0
+    mov     r11, [rbp - 1880]
+    mov     qword [r11 + r10 * 8], 0
+    mov     r11, [rbp - 1832]
     mov     rcx, [rbp - 1864]
     mov     rdx, [r9 + COLVIEW_NULL_MASK]
     bt      rdx, rcx
@@ -853,6 +865,8 @@ sql_execute_batch:
     mov     r11, [r9 + COLVIEW_VALUES_PTR]
     imul    rcx, rdx
     add     r11, rcx
+    cmp     edx, VAR_CELL_SIZE
+    je      .delete_rewrite_w16
     cmp     edx, 8
     je      .delete_rewrite_w8
     cmp     edx, 1
@@ -864,6 +878,21 @@ sql_execute_batch:
     jmp     .delete_rewrite_store
 .delete_rewrite_w1:
     movzx   ecx, byte [r11]
+    jmp     .delete_rewrite_store
+.delete_rewrite_w16:
+    ; TEXT, BLOB and VECTOR: carry the extent root and its length across
+    ; rather than reading the payload out and writing it back. The chain is
+    ; owned by this table and is not retired by the republication, which is
+    ; the same reason an UPDATE may copy an untouched cell through the leaf
+    ; it rewrites.
+    mov     rdx, [r11 + VAR_CELL_LENGTH]
+    mov     r11, [rbp - 1880]
+    mov     [r11 + r10 * 8], rdx
+    mov     r11, [r9 + COLVIEW_VALUES_PTR]
+    mov     rcx, [rbp - 1864]
+    imul    rcx, VAR_CELL_SIZE
+    add     r11, rcx
+    mov     rcx, [r11 + VAR_CELL_ROOT]
 .delete_rewrite_store:
     mov     [rax + r10 * 8], rcx
 .delete_rewrite_cell_next:
@@ -877,16 +906,19 @@ sql_execute_batch:
     mov     rax, [rbp - 1840]
     test    rax, rax
     jz      .delete_rewrite_done
-    mov     [rbp - 2016 + BATCH_ROWS], rax
+    mov     [rbp - 2048 + BATCH_ROWS], rax
     mov     rax, [rbp - 1824]
-    mov     [rbp - 2016 + BATCH_VALUES], rax
+    mov     [rbp - 2048 + BATCH_VALUES], rax
     mov     rax, [rbp - 1832]
-    mov     [rbp - 2016 + BATCH_NULLS], rax
-    mov     qword [rbp - 2016 + BATCH_VAR_LENGTHS], 0
+    mov     [rbp - 2048 + BATCH_NULLS], rax
+    mov     rax, [rbp - 1880]
+    mov     [rbp - 2048 + BATCH_VAR_LENGTHS], rax
+    ; The varlen slots hold the roots the surviving cells already point at.
+    mov     qword [rbp - 2048 + BATCH_FLAGS], BATCH_VARLEN_PERSISTED
     mov     ARG1, [rbp - 8]
     mov     r10, [rbp - 16]
     mov     ARG2, [r10 + PLAN_TABLE_ID]
-    lea     ARG3, [rbp - 2016]
+    lea     ARG3, [rbp - 2048]
     call    db_pax_insert
     test    eax, eax
     jnz     .storage_done

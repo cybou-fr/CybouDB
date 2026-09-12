@@ -27,7 +27,10 @@ Tests cover:
   9. Three-valued logic: a row whose predicate is UNKNOWN is kept.
  10. Predicated DELETE across several leaves, inside transactions, and with
      compound predicates.
- 11. Unknown tables, bad syntax and TEXT/VECTOR tables are rejected.
+ 11. Predicated DELETE over TEXT, BLOB and VECTOR columns: surviving cells
+     keep their bytes, including multi-extent values, empty values and NULL,
+     and stay readable after the retired graph becomes reclaimable.
+ 12. Unknown tables and bad syntax are rejected.
 """
 
 import re
@@ -326,11 +329,69 @@ def main():
         rc, out, err = run_cmd([str(cyboudb), "check", db])
         check("check_after_chained_rollback", rc == 0 and "OK" in out, f"out={out}")
 
-        # --- 11. rejected shapes ----------------------------------------------
-        rc, out, err = query(db, "DELETE FROM v WHERE msg = 'again';")
-        check("delete_where_varlen_rejected",
-              rc != 0 and "TEXT, BLOB or VECTOR" in out + err,
-              f"rc={rc}, out={out}, err={err}")
+        # --- 11. predicated DELETE over TEXT, BLOB and VECTOR ----------------
+        # A surviving varlen cell keeps the extent chain it already points at
+        # rather than having its payload read out and written back, so the
+        # checks below are about the bytes still being there afterwards.
+        query(db, "CREATE TABLE pv (id INT32, msg TEXT NULL, raw BLOB NULL,"
+                  " vec VECTOR(FLOAT32, 3) NULL);")
+        long_text = "y" * 3900          # spans more than one extent page
+        query(db, "INSERT INTO pv VALUES "
+                  "(1, 'alpha', X'0102', [1.0, 2.0, 3.0]), "
+                  "(2, 'beta', X'AABB', [4.0, 5.0, 6.0]), "
+                  "(3, NULL, NULL, NULL), "
+                  "(4, '', X'', [7.0, 8.0, 9.0]);")
+        query(db, f"INSERT INTO pv VALUES (5, '{long_text}', X'FF', [1.5, 2.5, 3.5]);")
+        check("seed_varlen_predicate", count(db, "pv") == 5)
+
+        rc, out, err = query(db, "DELETE FROM pv WHERE id = 2;")
+        check("delete_varlen_predicate", rc == 0 and "DELETE 1" in out,
+              f"out={out}, err={err}")
+        check("delete_varlen_predicate_rows", count(db, "pv") == 4)
+
+        rc, out, _ = query(db, "SELECT id, msg, raw, vec FROM pv WHERE id < 5;")
+        check("varlen_survivors_intact",
+              "1 | alpha | X'0102' | [1.00, 2.00, 3.00]" in out
+              and "3 | NULL | NULL | NULL" in out
+              and "beta" not in out and "AABB" not in out, f"out={out}")
+        check("varlen_empty_survives", "4 |  | X'' | [7.00, 8.00, 9.00]" in out,
+              f"out={out}")
+
+        rc, out, _ = query(db, "SELECT msg FROM pv WHERE id = 5;")
+        body = [ln.strip() for ln in out.splitlines() if ln.strip().startswith("y")]
+        check("multi_extent_text_survives",
+              len(body) == 1 and body[0] == long_text, f"len={len(body)}")
+
+        rc, out, err = run_cmd([str(cyboudb), "check", db])
+        check("check_after_varlen_predicate", rc == 0 and "OK" in out, f"out={out}")
+
+        # The retired graph only becomes reclaimable once neither recoverable
+        # superblock references it, so the carried-over extents are worth
+        # re-reading after enough generations have gone by to free them.
+        for i in range(6, 14):
+            query(db, f"INSERT INTO pv VALUES ({i}, 'filler', X'00', NULL);")
+            query(db, f"DELETE FROM pv WHERE id = {i};")
+        rc, out, _ = query(db, "SELECT id, msg, raw, vec FROM pv WHERE id < 5;")
+        check("varlen_survives_reclamation",
+              count(db, "pv") == 4
+              and "1 | alpha | X'0102' | [1.00, 2.00, 3.00]" in out, f"out={out}")
+        rc, out, _ = query(db, "SELECT msg FROM pv WHERE id = 5;")
+        body = [ln.strip() for ln in out.splitlines() if ln.strip().startswith("y")]
+        check("multi_extent_text_survives_reclamation",
+              len(body) == 1 and body[0] == long_text, f"len={len(body)}")
+        rc, out, err = run_cmd([str(cyboudb), "check", db])
+        check("check_after_varlen_reclamation", rc == 0 and "OK" in out, f"out={out}")
+
+        # Rolling a varlen deletion back must leave every chain where it was.
+        rc, out, err = run_cmd([str(cyboudb), "console", db],
+                               stdin_text="BEGIN;\nDELETE FROM pv WHERE id = 1;\nROLLBACK;\n")
+        check("varlen_delete_rollback", rc == 0 and "ROLLBACK" in out, f"out={out}")
+        rc, out, _ = query(db, "SELECT id, msg, raw FROM pv WHERE id = 1;")
+        check("varlen_delete_rollback_restores", "1 | alpha | X'0102'" in out, f"out={out}")
+        rc, out, err = run_cmd([str(cyboudb), "check", db])
+        check("check_after_varlen_rollback", rc == 0 and "OK" in out, f"out={out}")
+
+        # --- 12. rejected shapes ----------------------------------------------
 
         rc, out, err = query(db, "DELETE FROM nosuch;")
         check("delete_unknown_table", rc != 0 and "table not found" in out + err,

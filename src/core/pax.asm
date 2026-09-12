@@ -580,6 +580,9 @@ pax_tree_insert:
     mov ARG4, [rbp - 32]
     call db_zone_reserve
     add [rbp - 160], rax
+    mov r11, [rbp - 24]
+    test qword [r11 + BATCH_FLAGS], BATCH_VARLEN_PERSISTED
+    jnz .flat_materialized                  ; roots carried over, nothing to build
     mov ARG1, [rbp - 8]
     mov ARG2, [rbp - 16]
     mov ARG3, [rbp - 24]
@@ -590,6 +593,7 @@ pax_tree_insert:
     call db_var_materialize_batch
     test eax, eax
     jnz .done
+.flat_materialized:
     mov ARG1, [rbp - 8]
     call db_bitmap_headroom
     cmp rax, [rbp - 160]
@@ -963,6 +967,9 @@ pax_multi_insert:
     mov rcx, [rbp - 160]
     add rcx, rax
     mov [rbp - 160], rcx
+    mov r11, [rbp - 24]
+    test qword [r11 + BATCH_FLAGS], BATCH_VARLEN_PERSISTED
+    jnz .tree_materialized                  ; roots carried over, nothing to build
     mov ARG1, [rbp - 8]
     mov ARG2, [rbp - 16]
     mov ARG3, [rbp - 24]
@@ -973,6 +980,7 @@ pax_multi_insert:
     call db_var_materialize_batch
     test eax, eax
     jnz .done
+.tree_materialized:
     mov ARG1, [rbp - 8]
     call db_bitmap_headroom
     cmp rax, [rbp - 160]

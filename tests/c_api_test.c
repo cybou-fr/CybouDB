@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -27,6 +27,27 @@
                 msg, __LINE__, actual ? actual : "NULL", expected); \
         exit(1); \
     } \
+} while (0)
+
+/* tests/abi_probe.asm: run one library call with every callee-saved register
+   carrying a marker, and report which markers came back changed. */
+extern long long cyboudb_abi_probe(void *fn, void *a1, void *a2, int *out_mask);
+
+static const char *abi_reg_names[7] = { "rbx", "r12", "r13", "r14", "r15", "rsi", "rdi" };
+
+static void abi_report(const char *what, int mask) {
+    int i;
+    fprintf(stderr, "FAIL: %s left callee-saved registers changed:", what);
+    for (i = 0; i < 7; i++) {
+        if (mask & (1 << i)) fprintf(stderr, " %s", abi_reg_names[i]);
+    }
+    fprintf(stderr, "\n");
+}
+
+#define ASSERT_ABI_CLEAN(fn, a1, a2, what) do { \
+    int abi_mask = 0; \
+    (void)cyboudb_abi_probe((void *)(fn), (void *)(a1), (void *)(a2), &abi_mask); \
+    if (abi_mask) { abi_report(what, abi_mask); exit(1); } \
 } while (0)
 
 static int total_tests = 0;
@@ -1020,18 +1041,78 @@ static void test_varlen_accessors(const char *db_path, int enabled) {
     printf("ok   test_varlen_accessors\n");
 }
 
-static void test_delete_varlen_gate(const char *db_path) {
+/* A library call must give back every callee-saved register it borrowed.
+   Nothing else in this suite would notice if one came back changed: the
+   damage lands in whatever the caller happened to keep there, which depends
+   on the compiler. TEXT and BLOB literals are covered explicitly because
+   their tokenizer path is where this last went wrong. */
+static void test_calling_convention(const char *db_path) {
+    cyboudb_db *db = NULL;
+    ASSERT_EQ(cyboudb_open(db_path, CybouDB_OPEN_READWRITE, &db), CybouDB_OK, "open ABI fixture");
+    ASSERT_ABI_CLEAN(cyboudb_exec, db,
+                     "CREATE TABLE abi_t (id INT32, msg TEXT NULL, raw BLOB NULL)",
+                     "CREATE TABLE");
+    ASSERT_ABI_CLEAN(cyboudb_exec, db,
+                     "INSERT INTO abi_t VALUES (1, 'text literal', X'0102AABB')",
+                     "INSERT with TEXT and BLOB literals");
+    ASSERT_ABI_CLEAN(cyboudb_exec, db,
+                     "INSERT INTO abi_t VALUES (2, NULL, NULL)",
+                     "INSERT with NULL varlen literals");
+    ASSERT_ABI_CLEAN(cyboudb_exec, db, "SELECT id, msg, raw FROM abi_t", "SELECT over varlen");
+    ASSERT_ABI_CLEAN(cyboudb_exec, db, "SELECT id FROM abi_t WHERE id > 1", "SELECT with predicate");
+    ASSERT_ABI_CLEAN(cyboudb_exec, db, "UPDATE abi_t SET id = 3 WHERE id = 2", "UPDATE");
+    ASSERT_ABI_CLEAN(cyboudb_exec, db, "DELETE FROM abi_t WHERE id = 3", "DELETE with predicate");
+    ASSERT_ABI_CLEAN(cyboudb_exec, db, "DELETE FROM abi_t", "DELETE whole table");
+    ASSERT_ABI_CLEAN(cyboudb_exec, db, "DROP TABLE abi_t", "DROP TABLE");
+    ASSERT_EQ(cyboudb_close(db), CybouDB_OK, "close ABI fixture");
+    total_tests++;
+    printf("ok   test_calling_convention\n");
+}
+
+static void test_delete_varlen_predicate(const char *db_path) {
     cyboudb_db *db = NULL;
     cyboudb_stmt *stmt = NULL;
+    unsigned char buf[64];
+    float vec[3];
+    uint64_t len = 0;
+    uint64_t dim = 0;
     ASSERT_EQ(cyboudb_open(db_path, CybouDB_OPEN_READWRITE, &db), CybouDB_OK, "open varlen delete fixture");
-    ASSERT_EQ(cyboudb_exec(db, "CREATE TABLE del_text (id INT32, msg TEXT)"), CybouDB_OK, "create varlen delete table");
-    ASSERT_EQ(cyboudb_exec(db, "INSERT INTO del_text VALUES (1, 'keep'), (2, 'drop')"), CybouDB_OK, "seed varlen delete table");
+    ASSERT_EQ(cyboudb_exec(db, "CREATE TABLE del_text (id INT32, msg TEXT NULL,"
+                               " raw BLOB NULL, vec VECTOR(FLOAT32, 3) NULL)"),
+              CybouDB_OK, "create varlen delete table");
+    ASSERT_EQ(cyboudb_exec(db, "INSERT INTO del_text VALUES "
+                               "(1, 'keep', X'0102', [1.0, 2.0, 3.0]), "
+                               "(2, 'drop', X'AABB', [4.0, 5.0, 6.0]), "
+                               "(3, NULL, NULL, NULL)"),
+              CybouDB_OK, "seed varlen delete table");
 
-    /* A predicated DELETE rewrites surviving rows through the append path,
-       which would have to rebuild every extent chain a TEXT cell points at.
-       Refused; removing the whole table's rows is still supported. */
-    ASSERT_EQ(cyboudb_prepare(db, "DELETE FROM del_text WHERE id = 2", &stmt), CybouDB_ERROR, "predicated DELETE over TEXT rejected");
-    ASSERT_EQ(cyboudb_exec(db, "DELETE FROM del_text"), CybouDB_OK, "whole-table DELETE over TEXT allowed");
+    /* A surviving TEXT, BLOB or VECTOR cell keeps the extent chain it already
+       points at, so the payload has to read back byte for byte afterwards. */
+    ASSERT_EQ(cyboudb_exec(db, "DELETE FROM del_text WHERE id = 2"), CybouDB_OK, "predicated DELETE over varlen");
+
+    ASSERT_EQ(cyboudb_prepare(db, "SELECT id, msg, raw, vec FROM del_text", &stmt), CybouDB_OK, "prepare varlen survivors");
+    ASSERT_EQ(cyboudb_step(stmt), CybouDB_ROW, "first varlen survivor");
+    ASSERT_EQ(cyboudb_column_int64(stmt, 0), 1, "first survivor id");
+    ASSERT_EQ(cyboudb_column_bytes(stmt, 1, buf, sizeof(buf), &len), CybouDB_OK, "copy carried TEXT");
+    ASSERT_EQ(len, 4, "carried TEXT length");
+    ASSERT_EQ(memcmp(buf, "keep", 4) == 0, 1, "carried TEXT bytes");
+    ASSERT_EQ(cyboudb_column_bytes(stmt, 2, buf, sizeof(buf), &len), CybouDB_OK, "copy carried BLOB");
+    ASSERT_EQ(len, 2, "carried BLOB length");
+    ASSERT_EQ(buf[0] == 0x01 && buf[1] == 0x02, 1, "carried BLOB bytes");
+    ASSERT_EQ(cyboudb_column_vector_dimensions(stmt, 3), 3, "carried vector dimensions");
+    ASSERT_EQ(cyboudb_column_vector_f32(stmt, 3, vec, 3, &dim), CybouDB_OK, "copy carried vector");
+    ASSERT_EQ(dim, 3, "carried vector dimension count");
+    ASSERT_EQ(vec[0] == 1.0f && vec[1] == 2.0f && vec[2] == 3.0f, 1, "carried vector components");
+
+    ASSERT_EQ(cyboudb_step(stmt), CybouDB_ROW, "second varlen survivor");
+    ASSERT_EQ(cyboudb_column_int64(stmt, 0), 3, "NULL row survived");
+    ASSERT_EQ(cyboudb_column_is_null(stmt, 1), 1, "NULL TEXT stayed NULL");
+    ASSERT_EQ(cyboudb_column_is_null(stmt, 2), 1, "NULL BLOB stayed NULL");
+    ASSERT_EQ(cyboudb_column_is_null(stmt, 3), 1, "NULL vector stayed NULL");
+    ASSERT_EQ(cyboudb_step(stmt), CybouDB_DONE, "only two varlen survivors");
+    cyboudb_finalize(stmt);
+
+    ASSERT_EQ(cyboudb_exec(db, "DELETE FROM del_text"), CybouDB_OK, "whole-table DELETE over varlen");
     ASSERT_EQ(cyboudb_prepare(db, "SELECT COUNT(*) FROM del_text", &stmt), CybouDB_OK, "prepare varlen delete count");
     ASSERT_EQ(cyboudb_step(stmt), CybouDB_ROW, "varlen delete count row");
     ASSERT_EQ(cyboudb_column_int64(stmt, 0), 0, "varlen table emptied");
@@ -1039,7 +1120,7 @@ static void test_delete_varlen_gate(const char *db_path) {
     ASSERT_EQ(cyboudb_exec(db, "DROP TABLE del_text"), CybouDB_OK, "drop varlen delete table");
     ASSERT_EQ(cyboudb_close(db), CybouDB_OK, "close varlen delete fixture");
     total_tests++;
-    printf("ok   test_delete_varlen_gate\n");
+    printf("ok   test_delete_varlen_predicate\n");
 }
 
 static void test_vector_accessors(const char *db_path) {
@@ -1109,7 +1190,8 @@ int main(int argc, char **argv) {
         test_invalid_args();
         test_varlen_accessors(db_path, 1);
         test_vector_accessors(db_path);
-        test_delete_varlen_gate(db_path);
+        test_delete_varlen_predicate(db_path);
+        test_calling_convention(db_path);
 #ifdef CybouDB_API_TEST_ALLOC
         ASSERT_EQ(api_live_bytes, 0, "all varlen API allocations released");
         ASSERT_EQ(api_live_allocations, 0, "all varlen API handles released");

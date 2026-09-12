@@ -448,6 +448,9 @@ parse_number:
     ret
 
 ; ASCII hex digit in AL -> EAX 0..15, or -1.
+; hex_nibble(al) -> eax: the nibble, or -1. A leaf that touches nothing but
+; rax, which is what lets the BLOB decoder keep its cursors and its counter in
+; volatile registers across the call. Keep it that way.
 hex_nibble:
     cmp     al, '0'
     jb      .bad
@@ -693,32 +696,35 @@ parse_primary:
     call    sql_arena_alloc
     test    rax, rax
     jz      .oom
-    mov     rdi, rax
+    ; The cursors stay in volatile registers: rsi and rdi are callee-saved on
+    ; both supported ABIs, and a parser that returns with either one changed
+    ; corrupts whatever the caller had live across the call.
+    mov     r10, rax                    ; decoded write cursor
     mov     r8, rax                     ; decoded start
-    mov     rsi, [rbp - 64 + TOK_OFFSET]
-    add     rsi, [rbp - 16]
-    inc     rsi                         ; exclude opening quote
+    mov     r9, [rbp - 64 + TOK_OFFSET]
+    add     r9, [rbp - 16]
+    inc     r9                          ; exclude opening quote
     mov     rcx, [rbp - 64 + TOK_LEN]
     sub     rcx, 2
 .string_decode:
     test    rcx, rcx
     jz      .string_decoded
-    mov     al, [rsi]
-    mov     [rdi], al
-    inc     rsi
-    inc     rdi
+    mov     al, [r9]
+    mov     [r10], al
+    inc     r9
+    inc     r10
     dec     rcx
     cmp     al, "'"
     jne     .string_decode
     ; The tokenizer only permits an interior quote as a doubled quote.
-    inc     rsi
+    inc     r9
     dec     rcx
     jmp     .string_decode
 .string_decoded:
     mov     rax, [rbp - 72]
     mov     [rax + EXPR_LIT_PTR], r8
-    sub     rdi, r8
-    mov     [rax + EXPR_LIT_LEN], rdi
+    sub     r10, r8
+    mov     [rax + EXPR_LIT_LEN], r10
     mov     qword [rax + EXPR_LIT_VAL], 0
     mov     dword [rax + EXPR_LIT_TYPE], CAT_TEXT
     mov     edx, [rbp - 64 + TOK_OFFSET]
@@ -754,37 +760,40 @@ parse_primary:
     call    sql_arena_alloc
     test    rax, rax
     jz      .oom
-    mov     rdi, rax
+    ; Same reason as the string decode above, and the cursors survive the
+    ; hex_nibble calls for the same reason rcx and r8 already did: it is a
+    ; leaf that touches nothing but rax.
+    mov     r11, rax                    ; decoded write cursor
     mov     r8, rax
-    mov     rsi, [rbp - 64 + TOK_OFFSET]
-    add     rsi, [rbp - 16]
-    add     rsi, 2                      ; exclude X and opening quote
+    mov     r9, [rbp - 64 + TOK_OFFSET]
+    add     r9, [rbp - 16]
+    add     r9, 2                       ; exclude X and opening quote
     mov     rcx, [rbp - 64 + TOK_LEN]
     sub     rcx, 3
 .blob_decode:
     test    rcx, rcx
     jz      .blob_decoded
-    movzx   eax, byte [rsi]
+    movzx   eax, byte [r9]
     call    hex_nibble
     test    eax, eax
     js      .bad_blob
     mov     r10d, eax
     shl     r10d, 4
-    movzx   eax, byte [rsi + 1]
+    movzx   eax, byte [r9 + 1]
     call    hex_nibble
     test    eax, eax
     js      .bad_blob
     or      eax, r10d
-    mov     [rdi], al
-    add     rsi, 2
-    inc     rdi
+    mov     [r11], al
+    add     r9, 2
+    inc     r11
     sub     rcx, 2
     jmp     .blob_decode
 .blob_decoded:
     mov     rax, [rbp - 72]
     mov     [rax + EXPR_LIT_PTR], r8
-    sub     rdi, r8
-    mov     [rax + EXPR_LIT_LEN], rdi
+    sub     r11, r8
+    mov     [rax + EXPR_LIT_LEN], r11
     mov     qword [rax + EXPR_LIT_VAL], 0
     mov     dword [rax + EXPR_LIT_TYPE], CAT_BLOB
     mov     edx, [rbp - 64 + TOK_OFFSET]
@@ -1574,21 +1583,22 @@ parse_vector_type_def:
     cmp     qword [r10 + TOK_TYPE], TOK_INT_LIT
     jne     .err
 
-    ; Convert decimal digits to integer in RAX
-    mov     rsi, [r10 + TOK_OFFSET]
-    add     rsi, [rbp - 24]             ; sql_src
+    ; Convert decimal digits to integer in RAX. r9 rather than rsi: see the
+    ; literal decoders above.
+    mov     r9, [r10 + TOK_OFFSET]
+    add     r9, [rbp - 24]              ; sql_src
     mov     rcx, [r10 + TOK_LEN]
     xor     eax, eax
 .loop:
     test    rcx, rcx
     jz      .dim_done
-    movzx   edx, byte [rsi]
+    movzx   edx, byte [r9]
     sub     edx, '0'
     cmp     edx, 9
     ja      .err
     imul    eax, 10
     add     eax, edx
-    inc     rsi
+    inc     r9
     dec     rcx
     jmp     .loop
 

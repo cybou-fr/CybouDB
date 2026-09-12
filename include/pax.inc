@@ -45,7 +45,14 @@
 %define BATCH_VALUES 8
 %define BATCH_NULLS 16
 %define BATCH_VAR_LENGTHS 24             ; optional u64 length per row-major cell
-%define CybouDB_BATCH_SIZE 32
+%define BATCH_FLAGS 32                   ; BATCH_* flags below, zero by default
+%define CybouDB_BATCH_SIZE 40
+; The varlen slots of this batch already hold persistent extent roots rather
+; than pointers to bytes, so the append must not build new chains for them.
+; Set by a rewrite that carries surviving cells across a COW republication:
+; the extents are owned by the same table and stay valid, exactly as they do
+; for the cells an UPDATE copies through a leaf it rewrites.
+%define BATCH_VARLEN_PERSISTED 1
 ; One UPDATE predicate batch. START is the global first row represented by MASK.
 %define UPDATE_SPAN_START 0
 %define UPDATE_SPAN_MASK  8
