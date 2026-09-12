@@ -1714,3 +1714,7 @@ print_vector:
     ret
 
 
+
+%ifdef CybouDB_LINUX
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif

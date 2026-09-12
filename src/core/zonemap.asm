@@ -1978,3 +1978,7 @@ db_zone_update:
 .done:
     FRAME_END
     ret
+
+%ifdef CybouDB_LINUX
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif

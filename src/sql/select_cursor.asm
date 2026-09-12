@@ -385,3 +385,7 @@ sql_select_next:
     mov r12, [rbp - 8]
     FRAME_END
     ret
+
+%ifdef CybouDB_LINUX
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif

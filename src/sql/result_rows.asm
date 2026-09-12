@@ -170,3 +170,7 @@ result_rows:
     mov     rdi, [rbp - 128]
     FRAME_END
     ret
+
+%ifdef CybouDB_LINUX
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif

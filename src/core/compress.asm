@@ -922,3 +922,7 @@ pax_decompress_leaf_old:
     mov     rdi, [rbp - 56]             ; restore callee-saved rdi
     FRAME_END
     ret
+
+%ifdef CybouDB_LINUX
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif

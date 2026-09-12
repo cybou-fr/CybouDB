@@ -162,3 +162,7 @@ scalar_kernel_table:
     dq scalar_i64_eq, scalar_i64_neq, scalar_i64_lt, scalar_i64_lte, scalar_i64_gt, scalar_i64_gte
     dq scalar_f32_eq, scalar_f32_neq, scalar_f32_lt, scalar_f32_lte, scalar_f32_gt, scalar_f32_gte
     dq scalar_bool_eq, scalar_bool_neq, 0, 0, 0, 0
+
+%ifdef CybouDB_LINUX
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif

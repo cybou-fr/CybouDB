@@ -357,3 +357,7 @@ sql_order_emit:
 .not_before:
     xor eax, eax
     ret
+
+%ifdef CybouDB_LINUX
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif

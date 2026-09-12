@@ -4187,3 +4187,7 @@ pax_scan_batch_body:
     mov rsi, [rbp - 88]
     FRAME_END
     ret
+
+%ifdef CybouDB_LINUX
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif

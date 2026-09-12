@@ -116,3 +116,7 @@ cyboudb_abi_probe:
     mov     rax, [rbp - 40]
     FRAME_END
     ret
+
+%ifdef CybouDB_LINUX
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif

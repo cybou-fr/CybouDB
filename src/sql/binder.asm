@@ -2468,3 +2468,7 @@ required_expr_columns:
 .done:
     FRAME_END
     ret
+
+%ifdef CybouDB_LINUX
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif

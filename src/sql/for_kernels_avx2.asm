@@ -245,3 +245,7 @@ FOR16_PREDICATE for16_gt, 0, 1
 FOR16_PREDICATE for16_le, 1, 1
 FOR16_PREDICATE for16_lt, 0, 2
 FOR16_PREDICATE for16_ge, 1, 2
+
+%ifdef CybouDB_LINUX
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif

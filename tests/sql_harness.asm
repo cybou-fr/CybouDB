@@ -627,3 +627,7 @@ hash_cell:
     ret
 section .rodata
 hash_multiplier: dq 1099511628211
+
+%ifdef CybouDB_LINUX
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif

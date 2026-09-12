@@ -788,3 +788,7 @@ test_sync:
 .fail:
     mov rax, -1
     ret
+
+%ifdef CybouDB_LINUX
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif

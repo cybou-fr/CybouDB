@@ -391,3 +391,7 @@ failure:
     mov ARG1, 99
     call os_exit
 
+
+%ifdef CybouDB_LINUX
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif

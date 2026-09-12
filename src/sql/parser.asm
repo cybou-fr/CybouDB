@@ -3005,3 +3005,7 @@ sql_parse:
     mov     eax, SQL_ERR_SYNTAX
     FRAME_END
     ret
+
+%ifdef CybouDB_LINUX
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif

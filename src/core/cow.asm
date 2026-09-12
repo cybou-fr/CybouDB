@@ -327,3 +327,7 @@ state_error:
 generation_error:
     mov     eax, CybouDB_E_GENERATION
     ret
+
+%ifdef CybouDB_LINUX
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif

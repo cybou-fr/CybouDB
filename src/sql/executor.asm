@@ -1919,3 +1919,7 @@ exec_active_tx_msg: db "cannot BEGIN inside active transaction", 0
 exec_no_active_tx_commit_msg: db "no active transaction to COMMIT", 0
 exec_no_active_tx_rollback_msg: db "no active transaction to ROLLBACK", 0
 exec_readonly_tx_msg: db "database is read-only", 0
+
+%ifdef CybouDB_LINUX
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif

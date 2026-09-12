@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
  * SPDX-License-Identifier: Apache-2.0
  */

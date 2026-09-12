@@ -713,3 +713,7 @@ sql_tok_next:
     mov     rdi, [rbp - 104]
     FRAME_END
     ret
+
+%ifdef CybouDB_LINUX
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif
