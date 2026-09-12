@@ -11,15 +11,24 @@
 BITS 64
 default rel
 extern db_catalog_get, db_zone_lookup, sql_zone_eval
+extern db_catalog_page, db_index_search, db_index_node_addr
 extern db_pax_scan_open_bound, db_pax_scan_batch_ex, eval_predicate_encoded
 extern sql_zone_force_off, sql_zone_trace
 extern sql_zone_leaf_total, sql_zone_leaf_none, sql_zone_leaf_all, sql_zone_leaf_unknown
 extern sql_zone_batch_total, sql_zone_column_mask
 extern sql_kernel_force_scalar, cpu_has_avx2
 global sql_select_open, sql_select_next
+section .data
+; Times a SELECT found its row through a tree instead of by reading the
+; table. A test can assert the answer and this together, which is the
+; difference between a query that is right and a query that is right for the
+; reason the plan claims.
+global index_lookups
+index_lookups: dq 0
+
 section .text
 sql_select_open:
-    FRAME_BEGIN 16, 0
+    FRAME_BEGIN 32, 1
     mov [rbp - 8], r12
     mov r12, ARG1
     mov [r12 + SEL_DB], ARG2
@@ -139,6 +148,71 @@ sql_select_open:
     lea rax, [r12 + SEL_OPTIONS + PAX_SCANOPT_VIEWS]
     mov [r12 + SEL_ENCODING_VIEWS], rax
 .encoding_views_ready:
+
+    ; --- the index, if the plan chose one ---------------------------------
+    ; The seek lives here rather than in one executor because every reader
+    ; opens its cursor through this function: the batch executor, the pull
+    ; cursor the ABI steps, and whatever reads next. Putting it in a caller
+    ; is how a second copy of a statement's behaviour starts.
+    mov qword [r12 + SEL_LOOKUP], 0
+    mov r10, [r12 + SEL_PLAN]
+    test qword [r10 + PLAN_FLAGS], PLAN_FLAG_INDEX_EQ
+    jz .lookup_ready
+    inc qword [rel index_lookups]
+    mov ARG1, [r12 + SEL_DB]
+    mov ARG2, [r10 + PLAN_INDEX_ID]
+    call db_catalog_page
+    test rax, rax
+    jz .lookup_empty
+    cmp dword [rax + CAT_TYPE], CAT_INDEX
+    jne .lookup_empty
+    ; The root goes in a register no argument aliases: ARG1 is RCX on one of
+    ; the two ABIs, and loading the context would take the root with it.
+    mov r11, [rax + IDX_ROOT]
+    test r11, r11
+    jz .lookup_empty                    ; an empty index names nothing
+    mov ARG1, [r12 + SEL_DB]
+    mov ARG2, r11
+    mov r10, [r12 + SEL_PLAN]
+    mov ARG3, [r10 + PLAN_INDEX_KEY]
+    lea ARG4, [r12 + SEL_LOOKUP]        ; the leaf it lands in, briefly
+    lea rax, [rbp - 16]
+    PASS_ARG5 rax                       ; and where in it
+    call db_index_search
+    test eax, eax
+    jnz .open_exit
+    mov r11, [r12 + SEL_LOOKUP]
+    test r11, r11
+    jz .lookup_empty
+    mov ARG1, [r12 + SEL_DB]
+    mov ARG2, r11
+    call db_index_node_addr
+    mov ecx, [rax + IDX_COUNT]
+    cmp [rbp - 16], rcx
+    jae .lookup_empty                   ; past everything the tree holds
+    mov rcx, [rbp - 16]
+    shl rcx, 4
+    mov rdx, [rax + IDX_ENTRIES + rcx + IDX_KEY]
+    mov r10, [r12 + SEL_PLAN]
+    cmp rdx, [r10 + PLAN_INDEX_KEY]
+    jne .lookup_empty                   ; the key is not in the tree at all
+    mov rdx, [rax + IDX_ENTRIES + rcx + IDX_ROW]
+    cmp rdx, [r12 + SEL_SCAN + SCAN_ROWS]
+    jae .lookup_empty                   ; a row the table no longer has
+
+    ; Put the cursor at the 64-row group the row sits in and let it enter the
+    ; leaf the way it always does. That arithmetic assumes it is standing at a
+    ; leaf boundary, so from here it believes the leaf runs further than it
+    ; does - which never matters, because the cursor stops after this batch.
+    ; A range scan will have to seek to a leaf boundary instead.
+    and rdx, ~63
+    mov [r12 + SEL_SCAN + SCAN_NEXT], rdx
+    mov qword [r12 + SEL_LOOKUP], 1
+    jmp .lookup_ready
+.lookup_empty:
+    mov qword [r12 + SEL_LOOKUP], 0
+    mov qword [r12 + SEL_DONE], 1       ; the tree says there is nothing to read
+.lookup_ready:
     xor eax, eax
 .open_exit:
     mov r12, [rbp - 8]
@@ -165,6 +239,8 @@ sql_select_next:
     mov     rax, [r11 + DB_GENERATION]
     cmp     rax, [r12 + SEL_SCAN + SCAN_GENERATION]
     jne     .scan_state
+    cmp     qword [r12 + SEL_LOOKUP], 2
+    je      .scan_finished              ; the batch the index pointed at is read
     mov     rax, [r12 + SEL_SCAN + SCAN_NEXT]
     cmp     rax, [r12 + SEL_SCAN + SCAN_ROWS]
     jae     .scan_finished
@@ -244,6 +320,12 @@ sql_select_next:
 .proj_only_store:
     mov     [r12 + SEL_REQUIRED], rax
 .read_batch:
+    ; A lookup reads the batch its row is in and then the scan is over,
+    ; whether or not the predicate kept anything in it.
+    cmp     qword [r12 + SEL_LOOKUP], 1
+    jne     .lookup_noted
+    mov     qword [r12 + SEL_LOOKUP], 2
+.lookup_noted:
     cmp     dword [sql_zone_trace], 0
     je      .batch_args
     inc     qword [sql_zone_batch_total]

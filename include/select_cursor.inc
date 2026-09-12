@@ -23,5 +23,9 @@
 %define SEL_ENCODING_VIEWS (SEL_OPTIONS + PAX_SCANOPT_SIZE) ; zero when predicates use typed values
 %define SEL_LIMIT_SKIP  (SEL_ENCODING_VIEWS + 48)
 %define SEL_LIMIT_LEFT  (SEL_LIMIT_SKIP + 8)
-%define SQL_SELECT_SIZE (SEL_LIMIT_LEFT + 8)
+; Set when the cursor was put where an index said the row is. It delivers
+; that one batch and then reports the scan finished: the tree named one row
+; and the predicate has just been evaluated over the batch holding it.
+%define SEL_LOOKUP      (SEL_LIMIT_LEFT + 8)
+%define SQL_SELECT_SIZE (SEL_LOOKUP + 8)
 %endif

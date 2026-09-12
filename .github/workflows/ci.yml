@@ -92,6 +92,8 @@ jobs:
           ./build/vector_topk_test
           ./cyboudb create-large build/test_ci_index.cdb 60000 --force
           ./build/index_tree_test build/test_ci_index.cdb
+          ./cyboudb create-large build/test_ci_plan.cdb 20000 --force
+          ./build/index_plan_test build/test_ci_plan.cdb
           sh build.sh --vector-example
           ./build/vector_search_example
 
@@ -213,6 +215,10 @@ jobs:
           cyboudb.exe create-large build\test_ci_index.cdb 60000 --force
           if errorlevel 1 exit /b 1
           build\index_tree_test.exe build\test_ci_index.cdb
+          if errorlevel 1 exit /b 1
+          cyboudb.exe create-large build\test_ci_plan.cdb 20000 --force
+          if errorlevel 1 exit /b 1
+          build\index_plan_test.exe build\test_ci_plan.cdb
           if errorlevel 1 exit /b 1
           call build.bat --vector-example
           if errorlevel 1 exit /b 1

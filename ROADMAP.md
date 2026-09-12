@@ -659,9 +659,22 @@ has the numbers:
   that takes a (key, row) pair, which is the next piece of work. Ranges need
   that too, and a seek to a leaf boundary rather than to a row.
 
+  The seek lives in sql_select_open, where every reader opens its cursor -
+  the batch executor and the pull cursor the ABI steps alike. It was written
+  in the executor first, which meant the ABI kept scanning; that is the fourth
+  time in this work that a second copy of a statement's behaviour has cost a
+  bug, and the fix each time is to move the behaviour to the shared path
+  rather than to duplicate it.
+
+  `tests/index_plan_test.c` asserts which path ran, not only what it answered,
+  by counting the times a plan reached for a tree. A query that is right for
+  the wrong reason stops being right when the plan changes, and no assertion
+  about results can tell the two apart.
+
   A prepared plan is cached by its statement text, so a statement first bound
   before an index existed keeps scanning until it is prepared again. That is
-  worth fixing and is not a wrong answer.
+  worth fixing and is not a wrong answer. Separately, the ABI's pull cursor
+  cannot ORDER BY at all, which is older than any of this.
 
 Also open: TEXT keys and multi-column keys.
 

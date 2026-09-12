@@ -55,8 +55,6 @@ section .data
 ; table. A test can assert the answer and this together, which is the
 ; difference between a query that is right and a query that is right for
 ; the reason the plan claims.
-global index_lookups
-index_lookups: dq 0
 
 section .text
 
@@ -1486,62 +1484,6 @@ sql_execute_batch:
     test eax, eax
     jnz .storage_done
 
-    ; The tree names the row, and the scan is put where it said rather than
-    ; at the beginning. Everything after this point is the scan path
-    ; unchanged: the batch is produced the same way and the predicate runs
-    ; over it the same way, so the index decides where to look and never what
-    ; the answer is - a stale entry costs a page read, not a wrong row.
-    mov r10, [rbp - 16]
-    test qword [r10 + PLAN_FLAGS], PLAN_FLAG_INDEX_EQ
-    jz .next_select
-    inc qword [rel index_lookups]
-    mov ARG1, [rbp - 8]
-    mov ARG2, [r10 + PLAN_INDEX_ID]
-    call db_catalog_page
-    test rax, rax
-    jz .select_complete
-    ; The root goes in a register no argument aliases. ARG1 is RCX on one
-    ; of the two ABIs, and loading the ctx would take the root with it.
-    mov r11, [rax + IDX_ROOT]
-    test r11, r11
-    jz .select_complete                 ; an empty index names nothing
-    mov ARG1, [rbp - 8]
-    mov ARG2, r11
-    mov r10, [rbp - 16]
-    mov ARG3, [r10 + PLAN_INDEX_KEY]
-    lea ARG4, [rbp - 1808]
-    lea rax, [rbp - 1816]
-    PASS_ARG5 rax
-    call db_index_search
-    test eax, eax
-    jnz .storage_done
-    cmp qword [rbp - 1808], 0
-    je .select_complete
-    mov ARG1, [rbp - 8]
-    mov ARG2, [rbp - 1808]
-    call db_index_node_addr
-    mov ecx, [rax + IDX_COUNT]
-    cmp [rbp - 1816], rcx
-    jae .select_complete                ; past everything the tree holds
-    mov rcx, [rbp - 1816]
-    shl rcx, 4
-    mov rdx, [rax + IDX_ENTRIES + rcx + IDX_KEY]
-    mov r10, [rbp - 16]
-    cmp rdx, [r10 + PLAN_INDEX_KEY]
-    jne .select_complete                ; the key is not in the tree at all
-    mov rdx, [rax + IDX_ENTRIES + rcx + IDX_ROW]
-    cmp rdx, [rbp - 1728 + SEL_SCAN + SCAN_ROWS]
-    jae .select_complete                ; a row the table no longer has
-
-    ; Put the cursor at the 64-row group the row sits in and let it enter
-    ; the leaf the way it always does. Its leaf bookkeeping assumes it is
-    ; standing at a leaf boundary, so from here it will believe the leaf
-    ; runs further than it does - which never matters, because a lookup
-    ; reads the one batch its row is in and stops. A range scan will have
-    ; to seek to a leaf boundary instead.
-    and rdx, ~63                        ; the group, which stays in the leaf
-    mov [rbp - 1728 + SEL_SCAN + SCAN_NEXT], rdx
-
 .next_select:
     lea ARG1, [rbp - 1728]
     call sql_select_next
@@ -1563,16 +1505,10 @@ sql_execute_batch:
     call [rbp - 32]
 .select_sink_result:
     test eax, eax
-    jz .select_lookup_done
+    jz .next_select
     cmp eax, CybouDB_SINK_STOP
     jne .sink_failed
     jmp .success
-
-.select_lookup_done:
-    mov r10, [rbp - 16]
-    test qword [r10 + PLAN_FLAGS], PLAN_FLAG_INDEX_EQ
-    jz .next_select
-    jmp .select_complete
 
 .select_complete:
     mov r10, [rbp - 16]
