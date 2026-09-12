@@ -118,6 +118,12 @@
 %define CybouDB_FEATURE_VARLEN 1024
 ; Persistent vector extents in PAX storage. New create-large databases emit this bit.
 %define CybouDB_FEATURE_VECTOR 2048
+; Per-row tombstones - requires PAX. A leaf reserves the last bytes of its body
+; for a bitmap with one bit per row, so a DELETE marks the rows it removes
+; instead of rewriting the ones it keeps. The reservation changes how many rows
+; a leaf holds, which is why this is an incompatible bit rather than a hint: a
+; build without it would read those bytes as column data. See docs/TOMBSTONES.md.
+%define CybouDB_FEATURE_TOMBSTONES 4096
 
 ; Column compression codecs (stored in bits 8..15 of leaf column flags):
 %define PAX_CODEC_RAW       0

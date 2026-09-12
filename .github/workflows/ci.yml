@@ -44,6 +44,7 @@ jobs:
           python3 tests/vector_sql_tests.py ./cyboudb
           python3 tests/transaction_tests.py ./cyboudb
           python3 tests/delete_tests.py ./cyboudb
+          python3 tests/tombstone_tests.py ./cyboudb
           python3 tests/zone_tests.py ./cyboudb ./build/cow_harness
           python3 tests/zone_validation_tests.py ./cyboudb ./build/cow_harness
           python3 tests/span_tests.py ./cyboudb ./build/cow_harness
@@ -84,6 +85,9 @@ jobs:
           ./build/c_api_test build/test_ci_compressed_c.cdb compressed
           ./cyboudb create-large build/test_ci_guard.cdb 10000 --force
           ./build/commit_guard_test build/test_ci_guard.cdb
+          ./cyboudb create-tombstones build/test_ci_tomb.cdb 8000 --force
+          ./cyboudb create-large build/test_ci_plain.cdb 8000 --force
+          ./build/tombstone_layout_test build/test_ci_tomb.cdb build/test_ci_plain.cdb
           ./build/vector_topk_test
           sh build.sh --vector-example
           ./build/vector_search_example
@@ -143,6 +147,7 @@ jobs:
           python tests/vector_sql_tests.py ./cyboudb.exe
           python tests/transaction_tests.py ./cyboudb.exe
           python tests/delete_tests.py ./cyboudb.exe
+          python tests/tombstone_tests.py ./cyboudb.exe
           python tests/cmdline_tests.py ./cyboudb.exe
           python tests/zone_tests.py ./cyboudb.exe ./build/cow_harness.exe
           python tests/zone_validation_tests.py ./cyboudb.exe ./build/cow_harness.exe

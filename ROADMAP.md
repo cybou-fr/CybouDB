@@ -232,11 +232,29 @@ cyboudb query demo.cdb "SELECT id, score FROM runs WHERE score > 90"
       flat 16 us, 90 000 rows in one transaction from 1,004 ms to 153 ms, and
       `DELETE` of 1% of a million rows from 124,452 ms to 177 ms with the cost
       per surviving row constant across selectivities
-* [ ] incremental deletion: the rewrite is proportional to the survivors, not
-      to the rows removed, and stages a second copy of what survives. Row
-      tombstones or in-place leaf compaction would fix that, and neither
-      should be written before the quadratic term above is gone and the
-      rewrite has an honest number to beat
+Incremental deletion, so that removing a row costs a bit rather than a copy of
+everything it is not. The design is in [docs/TOMBSTONES.md](docs/TOMBSTONES.md):
+the bitmap lives in the PAX leaf itself, in the last bytes of its body, so a
+scan that has the leaf has the bitmap and there is no second graph to publish
+or validate.
+
+* [x] `CybouDB_FEATURE_TOMBSTONES` and the leaf arithmetic it changes. Capacity
+      and the bitmap that sizes it are each other's input, so the two are
+      solved together to a fixed point; `create-tombstones` emits the bit, and
+      a database without it is byte-identical to what earlier builds wrote.
+      A single BOOL column goes from 3 520 rows a leaf to 3 200; the
+      seven-column benchmark schema stays at 448, the group arithmetic's slack
+      having already covered the 56 bytes. Pinned by
+      `tests/tombstone_layout_test.c` and `tests/tombstone_tests.py`
+* [ ] `PAX_DEAD` and the bitmap itself: marking rows, the per-leaf dead count,
+      and validating that the two agree
+* [ ] the scan mask - one 64-bit extract per batch, intersected with the
+      predicate's selection where the NULL semantics already meet - and
+      `COUNT(*)` over live rows
+* [ ] the executor's choice between marking and rewriting, and the benchmark
+      that says where the line is
+* [ ] compaction: a leaf whose rows are all dead still occupies its pages, and
+      a table that is mostly tombstones still scans every physical row
 * [x] statement parser contract: single-column `UPDATE ... SET literal WHERE ...`
 * [x] binder contract for typed single-column `UPDATE`
 * [x] COW executor for flat multi-leaf, fixed-width `UPDATE`

@@ -33,11 +33,8 @@ section .text
 
 ; db_pax_capacity(ctx, validated_schema) -> rows per logical leaf.
 db_pax_capacity:
-    mov r10, ARG1
     mov r11, ARG2
-    xor eax, eax
-    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_PAX_RUNS
-    setnz al
+    call pax_layout
     mov ARG1, r11
     mov ARG2, rax
     jmp pax_capacity
@@ -53,12 +50,39 @@ pax_runs:
     setnz al
     ret
 
+; pax_layout(ARG1 = ctx) -> RAX: the leaf arithmetic this file was written
+; with, as a mask. Bit 0 is the run, bit 1 is the tombstone reservation. One
+; value rather than two arguments, because every caller that has to ask one
+; question has to ask both, and a leaf is only interpretable against the pair.
+%define PAX_LAYOUT_RUNS 1
+%define PAX_LAYOUT_TOMB 2
+pax_layout:
+    mov r10, ARG1
+    xor eax, eax
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_PAX_RUNS
+    jz .no_runs
+    or eax, PAX_LAYOUT_RUNS
+.no_runs:
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_TOMBSTONES
+    jz .done
+    or eax, PAX_LAYOUT_TOMB
+.done:
+    ret
+
+; pax_tomb_bytes(ARG1 = capacity) -> RAX: the bitmap a leaf of that capacity
+; reserves, one bit per row rounded up to whole bytes.
+pax_tomb_bytes:
+    mov rax, ARG1
+    add rax, 7
+    shr rax, 3
+    ret
+
 ; PAX_CAPACITY_OF <schema>, <ctx> - rows per leaf, in RAX.
 ; Both operands are read before anything is clobbered, so a caller may pass
 ; memory slots; a register holding the schema would not survive pax_runs.
 %macro PAX_CAPACITY_OF 2
     mov ARG1, %2
-    call pax_runs
+    call pax_layout
     mov ARG2, rax
     mov ARG1, %1
     call pax_capacity
@@ -67,7 +91,7 @@ pax_runs:
 ; PAX_RUN_OF <schema>, <ctx> - pages per leaf, in RAX.
 %macro PAX_RUN_OF 2
     mov ARG1, %2
-    call pax_runs
+    call pax_layout
     mov ARG2, rax
     mov ARG1, %1
     call pax_run_pages
@@ -1214,12 +1238,14 @@ pax_seal_leaf:
 pax_run_pages:
     FRAME_BEGIN 32, 0
     mov qword [rbp - 16], 1
-    test ARG2, ARG2
+    mov [rbp - 24], ARG2                ; layout mask
+    test ARG2, PAX_LAYOUT_RUNS
     jz .run_done
     mov [rbp - 8], ARG1
 .run_try:
     mov ARG1, [rbp - 8]
     mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 24]
     call pax_capacity_for
     cmp rax, PAX_RUN_TARGET
     jae .run_done
@@ -1248,29 +1274,80 @@ pax_run_pages:
 ; multiple of 64. Only a schema too wide for one full group in the whole run
 ; falls back to a partial group.
 pax_capacity:
-    FRAME_BEGIN 16, 0
+    FRAME_BEGIN 32, 1
     mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2                ; layout mask
     call pax_run_pages
     mov ARG1, [rbp - 8]
     mov ARG2, rax
+    mov ARG3, [rbp - 16]
     call pax_capacity_for
     FRAME_END
     ret
 
 ; Row capacity of a leaf of a given run length.
 ;
-;   pax_capacity_for(ARG1 = schema, ARG2 = run pages) -> RAX
+;   pax_capacity_for(ARG1 = schema, ARG2 = run pages, ARG3 = layout) -> RAX
 ;
 ; Split out because pax_run_pages has to ask the question for a run length it
 ; is still choosing, which is exactly this without the choosing.
 ;
+; With PAX_LAYOUT_TOMB the body that capacity is measured against is the body
+; less the bitmap that capacity sizes, so the two are each other's input. Each
+; step subtracts from the run's own body rather than from the previous step's,
+; so the sequence only shrinks and settles - in practice within two steps. See
+; docs/TOMBSTONES.md.
+;
+; Local slots: [rbp-8]=schema, [rbp-16]=layout, [rbp-24]=working body,
+;              [rbp-32]=previous capacity, [rbp-40]=the run's whole body
+pax_capacity_for:
+    FRAME_BEGIN 48, 1
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG3
+    call pax_body
+    mov [rbp - 40], rax
+    mov [rbp - 24], rax
+    test qword [rbp - 16], PAX_LAYOUT_TOMB
+    jz .measure_once
+    mov qword [rbp - 32], -1
+.shrink:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 24]
+    call pax_rows_in
+    cmp rax, [rbp - 32]
+    je .settled
+    mov [rbp - 32], rax
+    mov ARG1, rax
+    call pax_tomb_bytes
+    mov r10, rax
+    mov rax, [rbp - 40]
+    sub rax, r10
+    jbe .none                       ; the bitmap would take the whole body
+    mov [rbp - 24], rax
+    jmp .shrink
+.settled:
+    FRAME_END
+    ret
+.none:
+    xor eax, eax
+    FRAME_END
+    ret
+.measure_once:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 24]
+    call pax_rows_in
+    FRAME_END
+    ret
+
+; pax_rows_in(ARG1 = schema, ARG2 = body bytes) -> RAX: rows that fit in that
+; many bytes of leaf body.
+;
 ; Local slots: [rbp-8]=schema, [rbp-16]=columns, [rbp-24]=body bytes,
 ;              [rbp-32]=bytes per group, [rbp-40]=index, [rbp-48]=candidate
-pax_capacity_for:
+pax_rows_in:
     FRAME_BEGIN 64, 0
     mov [rbp - 8], ARG1
-    call pax_body
-    mov [rbp - 24], rax
+    mov [rbp - 24], ARG2
     mov r10, [rbp - 8]
     mov eax, [r10 + CAT_COUNT]
     mov [rbp - 16], rax

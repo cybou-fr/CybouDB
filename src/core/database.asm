@@ -55,6 +55,7 @@ extern db_bitmap_init, db_bitmap_validate, db_bitmap_seal
 extern db_bitmap_leaves, db_bitmap_recount
 
 global db_create, db_open, db_alloc_page, db_free_page, db_commit, db_rollback, db_close
+global db_create_tombstones
 global db_create_cow
 global db_create_catalog
 global db_create_pax, db_create_pax_multi
@@ -107,6 +108,13 @@ db_create_large:
     jmp create_common
 db_create_compressed:
     mov eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_COMPRESSION
+    jmp create_common
+; Everything create-large has, plus the per-row tombstone reservation. A
+; separate creator rather than a bit added to create-large: the reservation
+; changes how many rows a leaf holds, so it would move every existing
+; database's layout out from under files that already exist.
+db_create_tombstones:
+    mov eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR | CybouDB_FEATURE_TOMBSTONES
     jmp create_common
 create_common:
     FRAME_BEGIN 64 + CybouDB_DB_SIZE, 0
@@ -538,7 +546,7 @@ db_open:
     ; A feature bit we do not know about may change the meaning of anything
     ; below, so refuse rather than guess.
     mov     rax, [r10 + HDR_FLAGS_INCOMPAT]
-    test    rax, ~(CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_COMPRESSION | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR)
+    test    rax, ~(CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_COMPRESSION | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR | CybouDB_FEATURE_TOMBSTONES)
     jne     .e_features
 
     ; Leaf runs are a choice about the multi-page PAX layout, so the bit means
@@ -589,6 +597,13 @@ db_open:
     jz      .e_features
     and     rax, ~CybouDB_FEATURE_VECTOR
 .vector_checked:
+    ; Tombstones reserve part of a PAX leaf, so they mean nothing without one.
+    test    rax, CybouDB_FEATURE_TOMBSTONES
+    jz      .tomb_checked
+    test    rax, CybouDB_FEATURE_PAX
+    jz      .e_features
+    and     rax, ~CybouDB_FEATURE_TOMBSTONES
+.tomb_checked:
     test    rax, CybouDB_FEATURE_MAP_SPAN
     jz      .flat_map_flags
     cmp     rax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN

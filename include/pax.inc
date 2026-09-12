@@ -11,6 +11,11 @@
 %define PAX_ROWS 32
 %define PAX_COLUMNS 36
 %define PAX_CAPACITY 40
+; Rows of this leaf marked dead, with CybouDB_FEATURE_TOMBSTONES. Four bytes a
+; leaf kept reserved-zero, so a leaf written without the feature reads back as
+; none dead - which is what it is. PAX_DIR_LEVEL occupies the same span on a
+; directory page; the two page kinds never share a field.
+%define PAX_DEAD 48
 %define PAX_DIRECTORY 64
 %define PAX_CRC 4092
 ; Rows covered by one NULL mask, and the unit a future vector engine works on.
@@ -24,6 +29,10 @@
 ; 64 INT64 columns reach 249 rows, and nothing wider than 64 columns exists.
 %define PAX_RUN_TARGET 256
 %define PAX_RUN_MAX 32
+; The dead-row bitmap sits in the last ceil(capacity / 8) bytes of a leaf's
+; body, immediately before the run's CRC, and capacity is computed against a
+; body already reduced by it. See docs/TOMBSTONES.md for why the two are
+; defined together and how the fixed point is reached.
 %define PAX_DIR_MAGIC 0x44515341         ; ASQD
 %define PAX_DIR_MAX 251                 ; (4092 - 64) / 16
 ; Directory depth, with CybouDB_FEATURE_PAX_TREE. A directory at level 0 names
