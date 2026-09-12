@@ -593,16 +593,21 @@ and no encryption claim should be made without external review.
 
 ## Secondary indexes
 
-Not implemented. The format decisions are settled and written down in
-[docs/INDEX.md](docs/INDEX.md): an index is a third page type in the catalog
-directory, its nodes are ordinary copy-on-write payload pages, and a leaf entry
-names a row by position - which is why a compacting DELETE rebuilds every index
-of the table it rewrote, in the same transaction.
+Partly implemented, and the part that is missing is named below rather than
+implied. The format decisions are in [docs/INDEX.md](docs/INDEX.md).
 
-`CybouDB_FEATURE_INDEX` is reserved in the header so the next capability cannot
-take the same bit, but no creator emits it and `db_open` does not accept it, so
-a file claiming it is still refused. Version 1 will cover single-column INT32
-and INT64 keys, unique and not, with point and range lookup.
+Done: the B+tree - bulk build, descent, one-row insert with splits, one-entry
+delete, all under copy-on-write; the index as a third page type in the catalog
+directory, validated at every commit and every open, so a tree that did not
+survive publication is a file that refuses to open; `CREATE [UNIQUE] INDEX name
+ON table (column)` and `DROP INDEX name` over INT32 and INT64 columns, with
+uniqueness enforced while the tree is built.
+
+Not done: **maintenance**. An index is built over the rows the table has when
+the statement runs, and no INSERT, UPDATE or DELETE touches it afterwards. No
+query can be answered wrongly because of it, because no plan consults an index
+yet - and the planner must not be taught to until the hooks exist. Also open:
+TEXT keys, multi-column keys, and using an index to answer a query at all.
 
 ---
 

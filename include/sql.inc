@@ -61,6 +61,8 @@
 %define TOK_TRANSACTION     83
 %define TOK_COMMIT          84
 %define TOK_ROLLBACK        85
+%define TOK_INDEX           86
+%define TOK_UNIQUE          87
 
 ; Types
 %define TOK_TYPE_INT32      30
@@ -122,6 +124,8 @@
 %define STMT_COMMIT         7
 %define STMT_ROLLBACK       8
 %define STMT_DELETE         9
+%define STMT_CREATE_INDEX   10
+%define STMT_DROP_INDEX     11
 
 ; --- AST Statement header and statement-specific payload --------------------
 %define AST_STMT_TYPE       0           ; qword: STMT_*
@@ -135,6 +139,14 @@
 %define STMT_EXTRA2         24          ; qword: columns / projections array ptr
 %define STMT_EXTRA3         32          ; qword: row_count / where_expr ptr
 %define STMT_EXTRA4         40          ; qword: rows array ptr
+; CREATE INDEX has more names to carry than a statement over one table does:
+; its own, the table it is on, and the column. The first goes in STMT_NAME_*,
+; the others here. See docs/INDEX.md.
+%define STMT_INDEX_UNIQUE   16          ; aliases STMT_EXTRA1
+%define STMT_INDEX_TABLE_PTR 24         ; aliases STMT_EXTRA2
+%define STMT_INDEX_TABLE_LEN 32         ; aliases STMT_EXTRA3
+%define STMT_INDEX_COL_PTR  40          ; aliases STMT_EXTRA4
+%define STMT_INDEX_COL_LEN  48
 %define AST_STMT_PAYLOAD_SIZE 104
 
 ; Statement-specific payload field names. Their layouts may evolve

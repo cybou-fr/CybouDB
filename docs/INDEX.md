@@ -169,6 +169,14 @@ new root publishes the index's, or neither is published.
 Uniqueness is enforced where the insert happens, not by a later check, so a
 violating statement fails before it has staged a row.
 
+**Maintenance is not implemented yet.** `CREATE INDEX` builds the tree over the
+rows the table has at that moment, and nothing updates it afterwards: an INSERT,
+an UPDATE or a DELETE leaves the index describing the table as it was. No query
+can be answered wrongly because of it - no plan consults an index yet - but an
+index created today is a snapshot, and the table above is what it will be once
+the maintenance hooks exist. The planner must not be taught to use an index
+before they do.
+
 A refused insert is not a no-op on the tree: the path to the leaf has already
 been copied by the time the duplicate is seen, and a copy retires the page it
 came from. The caller discards the transaction rather than reusing the root it

@@ -1711,10 +1711,14 @@ sql_parse:
     mov     r10, [r10]
     mov     qword [r10 + AST_STMT_TYPE], STMT_CREATE_TABLE
 
-    ; Expect TABLE
+    ; TABLE, or the other thing CREATE can make.
     lea     ARG1, [rbp - 160]
     lea     ARG2, [rbp - 192]
     call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_INDEX
+    je      .parse_create_index
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_UNIQUE
+    je      .parse_create_index
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_TABLE
     jne     .bad_syntax
 
@@ -2160,10 +2164,12 @@ sql_parse:
     mov     r10, [r10]
     mov     qword [r10 + AST_STMT_TYPE], STMT_DROP_TABLE
 
-    ; Expect TABLE keyword.
+    ; TABLE or INDEX.
     lea     ARG1, [rbp - 160]
     lea     ARG2, [rbp - 192]
     call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_INDEX
+    je      .parse_drop_index
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_TABLE
     jne     .bad_syntax
 
@@ -2181,6 +2187,102 @@ sql_parse:
     mov     rax, [rbp - 192 + TOK_LEN]
     mov     [r10 + DROP_TABLE_NAME_LEN], rax
 
+    jmp     .check_eof
+
+; --- CREATE [UNIQUE] INDEX name ON table (column) ----------------------------
+; Reached from .parse_create once the token after CREATE turns out not to be
+; TABLE. The payload carries three names: its own in STMT_NAME_*, the table and
+; the column beside it.
+.parse_create_index:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_CREATE_INDEX
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + STMT_INDEX_UNIQUE], 0
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_UNIQUE
+    jne     .index_kw_seen
+    mov     qword [r10 + STMT_INDEX_UNIQUE], 1
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_INDEX
+    jne     .bad_syntax
+.index_kw_seen:
+    ; Its own name.
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_table_name
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + STMT_NAME_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + STMT_NAME_LEN], rax
+
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_ON
+    jne     .bad_syntax
+
+    ; The table it is on.
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_table_name
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + STMT_INDEX_TABLE_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + STMT_INDEX_TABLE_LEN], rax
+
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_LPAREN
+    jne     .bad_lparen
+
+    ; One column. Several is a later version, and saying so is better than
+    ; silently indexing the first.
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_syntax
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + STMT_INDEX_COL_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + STMT_INDEX_COL_LEN], rax
+
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_RPAREN
+    jne     .bad_syntax
+    jmp     .check_eof
+
+; --- DROP INDEX name ---------------------------------------------------------
+.parse_drop_index:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_DROP_INDEX
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_table_name
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + DROP_TABLE_NAME_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + DROP_TABLE_NAME_LEN], rax
     jmp     .check_eof
 
 ; --- BEGIN [TRANSACTION|WORK] ------------------------------------------------

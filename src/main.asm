@@ -189,6 +189,8 @@ err_table:
 err_no_pax_cli:  db "error: database does not support PAX tables (create with create-pax-multi)", 10, 0
 msg_sql_table_created: db "Table created.", 10, 0
 msg_sql_table_dropped: db "Table dropped.", 10, 0
+msg_sql_index_created: db "Index created.", 10, 0
+msg_sql_index_dropped: db "Index dropped.", 10, 0
 msg_sql_insert_prefix: db "INSERT ", 0
 msg_sql_update_prefix: db "UPDATE ", 0
 msg_sql_delete_prefix: db "DELETE ", 0
@@ -1128,6 +1130,10 @@ cyboudb_exec_query:
     je      .update_done
     cmp     qword [r10 + PLAN_TYPE], STMT_DELETE
     je      .delete_done
+    cmp     qword [r10 + PLAN_TYPE], STMT_CREATE_INDEX
+    je      .index_created
+    cmp     qword [r10 + PLAN_TYPE], STMT_DROP_INDEX
+    je      .index_dropped
 
     ; Insert completed: print "INSERT <rows>\n"
     PUTS    msg_sql_insert_prefix
@@ -1172,6 +1178,14 @@ cyboudb_exec_query:
 
 .create_done:
     PUTS    msg_sql_table_created
+    jmp     .exec_success
+
+.index_created:
+    PUTS    msg_sql_index_created
+    jmp     .exec_success
+
+.index_dropped:
+    PUTS    msg_sql_index_dropped
     jmp     .exec_success
 
 .exec_select:

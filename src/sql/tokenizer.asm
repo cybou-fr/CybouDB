@@ -64,6 +64,8 @@ kw_transaction:     db "transaction", 0
 kw_work:            db "work", 0
 kw_commit:          db "commit", 0
 kw_rollback:        db "rollback", 0
+kw_index:           db "index", 0
+kw_unique:          db "unique", 0
 
     align 8
 kw_table_entries:
@@ -116,6 +118,8 @@ kw_table_entries:
     dq kw_work,     4, TOK_TRANSACTION
     dq kw_commit,   6, TOK_COMMIT
     dq kw_rollback, 8, TOK_ROLLBACK
+    dq kw_index,    5, TOK_INDEX
+    dq kw_unique,   6, TOK_UNIQUE
     dq 0,          0, 0                 ; terminator
 
 section .text

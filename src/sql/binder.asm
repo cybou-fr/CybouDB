@@ -28,6 +28,9 @@ err_unsupported_op:  db "unsupported expression comparison", 0
 err_join_pending:    db "JOIN WHERE predicates are not implemented yet", 0
 err_join_condition:  db "JOIN ON currently requires column = column", 0
 err_join_projection: db "JOIN projections must be explicitly qualified", 0
+err_no_index:        db "database was not created with index support", 0
+err_index_type:      db "an index needs an INT32 or INT64 column", 0
+err_index_missing:   db "index not found in catalog", 0
 err_join_key_type: db "JOIN keys currently require INT32 or INT64", 0
 err_order_pending: db "ORDER BY execution is not implemented yet", 0
 err_varlen_pending: db "TEXT/BLOB storage extents are not implemented yet", 0
@@ -939,6 +942,10 @@ sql_bind:
     je      .bind_commit
     cmp     rax, STMT_ROLLBACK
     je      .bind_rollback
+    cmp     rax, STMT_CREATE_INDEX
+    je      .bind_create_index
+    cmp     rax, STMT_DROP_INDEX
+    je      .bind_drop_index
 
     mov     eax, SQL_ERR_SYNTAX
     jmp     .binder_exit
@@ -1614,6 +1621,166 @@ sql_bind:
     mov     [r10 + PLAN_REQUIRED_VALUES], rdx
 
 .delete_bound:
+    xor     eax, eax
+    jmp     .binder_exit
+
+; --- BIND CREATE INDEX -------------------------------------------------------
+; Resolves three names and builds the page image the catalog will store, the
+; way CREATE TABLE builds a schema image: the executor then has one call to
+; make and no decisions left to take.
+;
+; Local slots borrowed here: [rbp-56]=table id, [rbp-64]=schema pointer,
+; [rbp-72]=column index, [rbp-80]=page image.
+.bind_create_index:
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + PLAN_TYPE], STMT_CREATE_INDEX
+    mov     r11, [rbp - 8]
+    test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_INDEX
+    jz      .index_unsupported
+
+    mov     r10, [rbp - 16]
+    mov     rcx, [r10 + STMT_NAME_LEN]
+    cmp     rcx, 31
+    ja      .bad_tbl_len
+    cmp     rcx, 0
+    je      .bad_tbl_len
+
+    ; The name has to be free, and tables and indexes share one namespace.
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + STMT_NAME_PTR]
+    mov     ARG3, [r10 + STMT_NAME_LEN]
+    xor     ARG4, ARG4
+    call    catalog_find_table
+    test    rax, rax
+    jnz     .dup_table
+
+    ; The table it is on, which has to be a table.
+    mov     r10, [rbp - 16]
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + STMT_INDEX_TABLE_PTR]
+    mov     ARG3, [r10 + STMT_INDEX_TABLE_LEN]
+    lea     ARG4, [rbp - 56]
+    call    catalog_find_table
+    test    rax, rax
+    jz      .tbl_not_found
+    mov     [rbp - 64], rax
+    cmp     dword [rax + CAT_TYPE], CAT_SCHEMA
+    jne     .tbl_not_found
+
+    ; The column it is on, which has to be one this version can order.
+    mov     r10, [rbp - 16]
+    mov     ARG1, [rbp - 64]
+    mov     ARG2, [r10 + STMT_INDEX_COL_PTR]
+    mov     ARG3, [r10 + STMT_INDEX_COL_LEN]
+    lea     ARG4, [rbp - 72]
+    call    schema_find_col
+    test    rax, rax
+    jz      .col_not_found
+    ; The record lives in the schema page, where the type is the first
+    ; field - not the AST shape a CREATE TABLE column arrives in.
+    mov     ecx, [rax]
+    cmp     ecx, CAT_INT32
+    je      .index_type_ok
+    cmp     ecx, CAT_INT64
+    jne     .index_bad_type
+.index_type_ok:
+
+    ; The page image the catalog stores: what the index is, with the header
+    ; left to the catalog to stamp.
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, CybouDB_PAGE_SIZE
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+    mov     [rbp - 80], rax
+    mov     r11, rax
+    xor     ecx, ecx
+.index_zero:
+    mov     qword [r11 + rcx * 8], 0
+    inc     ecx
+    cmp     ecx, CybouDB_PAGE_SIZE / 8
+    jb      .index_zero
+
+    mov     r11, [rbp - 80]
+    mov     rax, [rbp - 72]
+    mov     [r11 + IDX_COLUMN], eax
+    mov     r10, [rbp - 16]
+    mov     rax, [r10 + STMT_INDEX_UNIQUE]
+    mov     [r11 + IDX_FLAGS], eax
+    mov     rax, [rbp - 56]
+    mov     [r11 + IDX_TABLE], rax
+
+    ; The name, padded with the zeroes already there.
+    mov     rsi, [r10 + STMT_NAME_PTR]
+    mov     rcx, [r10 + STMT_NAME_LEN]
+    lea     r8, [r11 + IDX_NAME]
+    xor     edx, edx
+.index_name:
+    cmp     rdx, rcx
+    jae     .index_named
+    mov     al, [rsi + rdx]
+    mov     [r8 + rdx], al
+    inc     rdx
+    jmp     .index_name
+.index_named:
+
+    ; The id, one past the last the directory holds - the rule tables follow.
+    mov     r10, [rbp - 8]
+    mov     rax, [r10 + DB_ROOT]
+    test    rax, rax
+    jz      .first_index_id
+    shl     rax, CybouDB_PAGE_SHIFT
+    add     rax, [r10 + DB_BASE]
+    mov     ecx, [rax + CAT_COUNT]
+    test    ecx, ecx
+    jz      .first_index_id
+    dec     ecx
+    shl     rcx, 4
+    mov     rax, [rax + CAT_DATA + rcx]
+    inc     rax
+    jmp     .index_id_ready
+.first_index_id:
+    mov     rax, 1
+.index_id_ready:
+    mov     r10, [rbp - 48]
+    mov     [r10 + PLAN_TABLE_ID], rax
+    mov     rax, [rbp - 80]
+    mov     [r10 + PLAN_DATA1], rax
+    mov     rax, [rbp - 56]
+    mov     [r10 + PLAN_DATA2], rax     ; the table to build it over
+    mov     rax, [rbp - 72]
+    mov     [r10 + PLAN_DATA3], rax     ; the column
+    mov     rax, [rbp - 64]
+    mov     [r10 + PLAN_SCHEMA_PAGE], rax
+    mov     r11, [rbp - 8]
+    mov     [r10 + PLAN_CTX], r11
+    xor     eax, eax
+    jmp     .binder_exit
+
+; --- BIND DROP INDEX ---------------------------------------------------------
+.bind_drop_index:
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + PLAN_TYPE], STMT_DROP_INDEX
+    mov     r11, [rbp - 8]
+    test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_INDEX
+    jz      .index_unsupported
+
+    mov     r10, [rbp - 16]
+    mov     rcx, [r10 + DROP_TABLE_NAME_LEN]
+    cmp     rcx, 31
+    ja      .bad_tbl_len
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + DROP_TABLE_NAME_PTR]
+    mov     ARG3, [r10 + DROP_TABLE_NAME_LEN]
+    lea     ARG4, [rbp - 56]
+    call    catalog_find_table
+    test    rax, rax
+    jz      .index_not_found
+    cmp     dword [rax + CAT_TYPE], CAT_INDEX
+    jne     .index_not_found            ; DROP INDEX does not drop a table
+    mov     r10, [rbp - 48]
+    mov     rdx, [rbp - 56]
+    mov     [r10 + PLAN_TABLE_ID], rdx
     xor     eax, eax
     jmp     .binder_exit
 
@@ -2375,6 +2542,33 @@ sql_bind:
     lea     ARG4, [err_col_not_found]
     call    set_binder_error
     mov     eax, SQL_ERR_COLUMN_NOT_FOUND
+    jmp     .binder_exit
+
+.index_unsupported:
+    mov     ARG1, [rbp - 40]
+    mov     ARG2, SQL_ERR_TYPE_MISMATCH
+    xor     ARG3, ARG3
+    lea     ARG4, [err_no_index]
+    call    set_binder_error
+    mov     eax, SQL_ERR_TYPE_MISMATCH
+    jmp     .binder_exit
+
+.index_bad_type:
+    mov     ARG1, [rbp - 40]
+    mov     ARG2, SQL_ERR_TYPE_MISMATCH
+    xor     ARG3, ARG3
+    lea     ARG4, [err_index_type]
+    call    set_binder_error
+    mov     eax, SQL_ERR_TYPE_MISMATCH
+    jmp     .binder_exit
+
+.index_not_found:
+    mov     ARG1, [rbp - 40]
+    mov     ARG2, SQL_ERR_TABLE_NOT_FOUND
+    xor     ARG3, ARG3
+    lea     ARG4, [err_index_missing]
+    call    set_binder_error
+    mov     eax, SQL_ERR_TABLE_NOT_FOUND
     jmp     .binder_exit
 
 .bad_val_count:

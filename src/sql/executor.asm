@@ -29,6 +29,8 @@ default rel
 
 extern db_catalog_put, db_catalog_drop, db_catalog_truncate_data, db_pax_insert, db_pax_update_one, db_pax_capacity, db_commit, db_rollback
 extern db_pax_mark_dead, db_pax_dead_total
+extern db_catalog_put_index, db_catalog_set_index_root
+extern db_index_insert, db_index_insert_unique
 extern db_catalog_get, db_pax_scan_open_bound, db_pax_scan_batch
 extern db_var_write_chain, db_var_read_chain
 extern sql_select_open, sql_select_next
@@ -541,6 +543,10 @@ sql_execute_batch:
     je      .exec_drop
     cmp     rax, STMT_DELETE
     je      .exec_delete
+    cmp     rax, STMT_CREATE_INDEX
+    je      .exec_create_index
+    cmp     rax, STMT_DROP_INDEX
+    je      .exec_drop_index
     cmp     rax, STMT_BEGIN
     je      .exec_begin
     cmp     rax, STMT_COMMIT
@@ -1048,6 +1054,166 @@ sql_execute_batch:
 .delete_rewrite_done:
     xor     eax, eax
     jmp     .exec_exit
+
+.exec_create_index:
+    ; The catalog entry first: the tree is published into it afterwards, and a
+    ; table with no rows is finished after this step.
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    mov     ARG3, [r10 + PLAN_DATA1]
+    call    db_catalog_put_index
+    test    eax, eax
+    jnz     .storage_done
+
+    ; --- build it over the rows the table already has ----------------------
+    ; One insert per row rather than a sorted bulk load: the rows arrive in
+    ; row order, not key order, and sorting them would need somewhere to put
+    ; them. The tree is the place they get sorted.
+    mov     r10, [rbp - 16]
+    mov     r11, [r10 + PLAN_SCHEMA_PAGE]
+    mov     rax, [r11 + CAT_TABLE_ROWS]
+    mov     [rbp - 1752], rax
+    mov     qword [rbp - 1800], 0       ; the tree root, still empty
+    mov     qword [rbp - 1816], 0       ; entries placed
+    test    rax, rax
+    jz      .index_published
+
+    mov     rax, [r10 + PLAN_DATA3]
+    mov     rcx, rax
+    mov     rax, 1
+    shl     rax, cl
+    mov     [rbp - 1792], rax           ; just the column being indexed
+    lea     rax, [rbp - DELETE_VIEW_OFF]
+    mov     [rbp - 1760], rax
+    mov     qword [rbp - 1768], 0
+    mov     r11, [rbp - 8]
+    test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_COMPRESSION
+    jz      .index_scan_open
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, PAX_DECODE_MAX_BYTES
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+    mov     [rbp - 1768], rax
+.index_scan_open:
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_SCHEMA_PAGE]
+    lea     ARG3, [rbp - 1984]
+    call    db_pax_scan_open_bound
+    test    eax, eax
+    jnz     .storage_done
+    mov     qword [rbp - 1808], 0       ; the first row of the next batch
+
+.index_batch:
+    lea     ARG1, [rbp - 1984]
+    mov     ARG2, [rbp - 1760]
+    mov     ARG3, [rbp - 1792]
+    mov     ARG4, [rbp - 1768]
+    call    db_pax_scan_batch
+    test    eax, eax
+    jnz     .storage_done
+    test    rdx, rdx
+    jz      .index_built
+    mov     [rbp - 1848], rdx           ; rows this batch delivered
+
+    ; A row the table has marked dead is not a row the index names.
+    mov     rax, [rbp - 1984 + SCAN_DEAD]
+    not     rax
+    mov     rcx, 64
+    sub     rcx, [rbp - 1848]
+    mov     rdx, -1
+    shr     rdx, cl
+    and     rax, rdx
+    mov     [rbp - 1856], rax           ; the lanes worth indexing
+
+    mov     r10, [rbp - 16]
+    mov     rax, [r10 + PLAN_DATA3]
+    imul    rax, CybouDB_COLVIEW_SIZE
+    add     rax, [rbp - 1760]
+    add     rax, BATCH_VIEW_COLUMNS
+    mov     [rbp - 1832], rax           ; the column's view in this batch
+
+.index_row:
+    mov     rax, [rbp - 1856]
+    test    rax, rax
+    jz      .index_batch_done
+    bsf     rcx, rax
+    mov     [rbp - 1864], rcx           ; the lane
+    lea     rdx, [rax - 1]
+    and     rax, rdx
+    mov     [rbp - 1856], rax
+
+    ; A NULL has no key, so the index stores nothing for it.
+    mov     r8, [rbp - 1832]
+    mov     rcx, [rbp - 1864]
+    bt      qword [r8 + COLVIEW_NULL_MASK], rcx
+    jc      .index_row
+
+    mov     r9, [r8 + COLVIEW_VALUES_PTR]
+    mov     edx, [r8 + COLVIEW_WIDTH]
+    cmp     edx, 8
+    je      .index_key_64
+    movsxd  rax, dword [r9 + rcx * 4]   ; INT32 sorts where a signed key does
+    jmp     .index_key_ready
+.index_key_64:
+    mov     rax, [r9 + rcx * 8]
+.index_key_ready:
+    mov     [rbp - 1872], rax           ; the key
+    mov     rax, [rbp - 1808]
+    add     rax, [rbp - 1864]
+    mov     [rbp - 1880], rax           ; the row it names
+
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    mov     ARG3, [rbp - 1800]
+    mov     ARG4, [rbp - 1872]
+    mov     rax, [rbp - 1880]
+    PASS_ARG5 rax
+    lea     rax, [rbp - 1800]
+    PASS_ARG6 rax
+    mov     r11, [rbp - 16]
+    mov     r11, [r11 + PLAN_DATA1]
+    cmp     dword [r11 + IDX_FLAGS], 0
+    jne     .index_insert_unique
+    call    db_index_insert
+    jmp     .index_inserted
+.index_insert_unique:
+    call    db_index_insert_unique
+.index_inserted:
+    test    eax, eax
+    jnz     .storage_done
+    inc     qword [rbp - 1816]
+    jmp     .index_row
+
+.index_batch_done:
+    mov     rax, [rbp - 1848]
+    add     [rbp - 1808], rax
+    jmp     .index_batch
+
+.index_built:
+    cmp     qword [rbp - 1816], 0
+    je      .index_published
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    mov     ARG3, [rbp - 1800]
+    mov     ARG4, [rbp - 1816]
+    call    db_catalog_set_index_root
+    test    eax, eax
+    jnz     .storage_done
+.index_published:
+    xor     eax, eax
+    jmp     .exec_exit
+
+.exec_drop_index:
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    call    db_catalog_drop
+    jmp     .storage_done
 
 .exec_drop:
     mov     ARG1, [rbp - 8]
