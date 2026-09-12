@@ -89,6 +89,7 @@ jobs:
           ./cyboudb create-large build/test_ci_plain.cdb 8000 --force
           ./build/tombstone_layout_test build/test_ci_tomb.cdb build/test_ci_plain.cdb
           ./build/vector_topk_test
+          ./build/index_tree_test build/test_ci_c.cdb
           sh build.sh --vector-example
           ./build/vector_search_example
 
@@ -195,6 +196,8 @@ jobs:
           build\c_api_test.exe build\test_ci_compressed_c.cdb compressed
           if errorlevel 1 exit /b 1
           build\vector_topk_test.exe
+          if errorlevel 1 exit /b 1
+          build\index_tree_test.exe build\test_ci_c.cdb
           if errorlevel 1 exit /b 1
           call build.bat --vector-example
           if errorlevel 1 exit /b 1

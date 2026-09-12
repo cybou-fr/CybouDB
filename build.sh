@@ -19,25 +19,25 @@ OBJDIR=build
 INC="-Iinclude/"
 
 # Modules: portable core + SQL engine + Linux platform layer
-BASE_SOURCES="src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/compress.asm src/core/vector_arena.asm src/core/checksum.asm src/sql/tokenizer.asm src/sql/parser.asm src/sql/binder.asm src/sql/executor.asm src/sql/select_cursor.asm src/sql/join_cursor.asm src/sql/order_executor.asm src/sql/zone_predicate.asm src/sql/result_rows.asm src/sql/kernels_scalar.asm src/sql/kernels_avx2.asm src/sql/for_kernels_avx2.asm src/sql/vector_kernels_scalar.asm src/sql/vector_kernels_avx2.asm src/sql/vector_topk.asm src/sql/bmi2.asm src/sql/popcount.asm src/platform/linux/os_posix.asm"
+BASE_SOURCES="src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/compress.asm src/core/vector_arena.asm src/core/checksum.asm src/sql/tokenizer.asm src/sql/parser.asm src/sql/binder.asm src/sql/executor.asm src/sql/select_cursor.asm src/sql/join_cursor.asm src/sql/order_executor.asm src/sql/zone_predicate.asm src/sql/result_rows.asm src/sql/kernels_scalar.asm src/sql/kernels_avx2.asm src/sql/for_kernels_avx2.asm src/sql/vector_kernels_scalar.asm src/sql/vector_kernels_avx2.asm src/sql/vector_topk.asm src/sql/bmi2.asm src/sql/popcount.asm src/platform/linux/os_posix.asm"
 SOURCES="src/main.asm src/console/repl.asm $BASE_SOURCES"
 
 if [ "${1:-}" = "--core-tests" ]; then
     OUT=build/cow_harness
     OBJDIR=build/core-tests
-    SOURCES="tests/cow_harness.asm src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/compress.asm src/core/checksum.asm src/platform/linux/os_posix.asm"
+    SOURCES="tests/cow_harness.asm src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/compress.asm src/core/checksum.asm src/platform/linux/os_posix.asm"
 fi
 
 if [ "${1:-}" = "--varlen-tests" ]; then
     OUT=build/varlen_harness
     OBJDIR=build/varlen-tests
-    SOURCES="tests/varlen_harness.asm src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/compress.asm src/core/checksum.asm src/platform/linux/os_posix.asm"
+    SOURCES="tests/varlen_harness.asm src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/compress.asm src/core/checksum.asm src/platform/linux/os_posix.asm"
 fi
 
 if [ "${1:-}" = "--varlen-fragmentation-tests" ]; then
     OUT=build/varlen_fragmentation_harness
     OBJDIR=build/varlen-fragmentation-tests
-    SOURCES="tests/varlen_fragmentation_harness.asm src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/compress.asm src/core/checksum.asm src/platform/linux/os_posix.asm"
+    SOURCES="tests/varlen_fragmentation_harness.asm src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/compress.asm src/core/checksum.asm src/platform/linux/os_posix.asm"
 fi
 
 if [ "${1:-}" = "--sql-tests" ]; then
@@ -110,6 +110,7 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         "$CC" -O2 -no-pie -Wall -Iinclude tests/commit_guard_test.c build/libcyboudb.a -o build/commit_guard_test
         "$CC" -O2 -no-pie -Wall -Iinclude tests/tombstone_layout_test.c build/libcyboudb.a -o build/tombstone_layout_test
         "$CC" -O2 -no-pie -Wall -Iinclude tests/vector_topk_test.c build/libcyboudb.a -o build/vector_topk_test
+        "$CC" -O2 -no-pie -Wall -Iinclude tests/index_tree_test.c build/libcyboudb.a -o build/index_tree_test
     fi
     if [ "${1:-}" = "--c-api-bench" ]; then
         CC=gcc

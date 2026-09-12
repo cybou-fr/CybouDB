@@ -24,6 +24,8 @@
 ; --- A tree node -------------------------------------------------------------
 ; One page. Leaves and internal nodes share every field; only the meaning of an
 ; entry differs, and the level says which it is.
+%define IDX_MAGIC 0
+%define IDX_VERSION 4
 %define IDX_MAGIC_VALUE 0x49515341       ; ASQI
 %define IDX_VERSION_VALUE 1
 %define IDX_PAGE_ID 8

@@ -23,6 +23,7 @@
 %include "pax.inc"
 %include "varlen.inc"
 %include "zonemap.inc"
+%include "index.inc"
 
 ; -----------------------------------------------------------------------------
 ;  CybouDB_DB - open database descriptor (CybouDB_DB_SIZE bytes).
