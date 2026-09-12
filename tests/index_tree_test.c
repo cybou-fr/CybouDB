@@ -33,7 +33,6 @@ extern void *db_index_node_addr(void *ctx, uint64_t page);
 #define IDX_MAGIC_VALUE 0x49515341u
 #define IDX_LEVEL   32
 #define IDX_COUNT   36
-#define IDX_NEXT    40
 #define IDX_ENTRIES 64
 #define IDX_MAX_ENTRIES 251
 
@@ -64,31 +63,39 @@ static uint64_t u64(const void *page, uint64_t off) {
     return v;
 }
 
-/* Every leaf, in chain order: the entries a scan of the whole index sees. */
+/* Every leaf, left to right: the entries a scan of the whole index sees.
+   There is no sibling chain to follow - a leaf keeps no pointer to the next
+   one, because copy-on-write would leave that pointer naming a retired page -
+   so this descends, which is what a range scan does too. */
+static int visit(void *ctx, uint64_t page, entry_t *out, uint64_t max,
+                 uint64_t *seen, int depth, int *out_height) {
+    unsigned char *node = db_index_node_addr(ctx, page);
+    uint32_t count = u32(node, IDX_COUNT);
+
+    if (u32(node, 0) != IDX_MAGIC_VALUE) return 0;
+    if (u32(node, IDX_LEVEL) == 0) {
+        if (depth > *out_height) *out_height = depth;
+        for (uint32_t i = 0; i < count; i++) {
+            if (*seen >= max) return 0;
+            out[*seen].key = (int64_t)u64(node, IDX_ENTRIES + i * 16);
+            out[*seen].row = u64(node, IDX_ENTRIES + i * 16 + 8);
+            (*seen)++;
+        }
+        return 1;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        uint64_t child = u64(node, IDX_ENTRIES + i * 16 + 8);
+        if (!visit(ctx, child, out, max, seen, depth + 1, out_height)) return 0;
+        node = db_index_node_addr(ctx, page);   /* recursion does not move it */
+    }
+    return 1;
+}
+
 static int walk_leaves(void *ctx, uint64_t root, entry_t *out, uint64_t max,
                        uint64_t *out_count, int *out_height) {
-    unsigned char *node = db_index_node_addr(ctx, root);
-    uint64_t page = root, seen = 0;
-    int height = 1;
-
-    while (u32(node, IDX_LEVEL) != 0) {
-        page = u64(node, IDX_ENTRIES);      /* leftmost child */
-        node = db_index_node_addr(ctx, page);
-        height++;
-    }
-    for (;;) {
-        uint32_t count = u32(node, IDX_COUNT);
-        if (u32(node, 0) != IDX_MAGIC_VALUE) return 0;
-        for (uint32_t i = 0; i < count; i++) {
-            if (seen >= max) return 0;
-            out[seen].key = (int64_t)u64(node, IDX_ENTRIES + i * 16);
-            out[seen].row = u64(node, IDX_ENTRIES + i * 16 + 8);
-            seen++;
-        }
-        page = u64(node, IDX_NEXT);
-        if (!page) break;
-        node = db_index_node_addr(ctx, page);
-    }
+    uint64_t seen = 0;
+    int height = 0;
+    if (!visit(ctx, root, out, max, &seen, 1, &height)) return 0;
     *out_count = seen;
     *out_height = height;
     return 1;
@@ -103,13 +110,7 @@ static int key_at(void *ctx, uint64_t root, int64_t key, int64_t *out_key,
     unsigned char *node;
     if (db_index_search(ctx, root, key, &leaf, &slot) != 0 || !leaf) return 0;
     node = db_index_node_addr(ctx, leaf);
-    if (slot >= u32(node, IDX_COUNT)) {         /* past this leaf's last entry */
-        uint64_t next = u64(node, IDX_NEXT);
-        if (!next) return 0;
-        node = db_index_node_addr(ctx, next);
-        slot = 0;
-        if (u32(node, IDX_COUNT) == 0) return 0;
-    }
+    if (slot >= u32(node, IDX_COUNT)) return 0;  /* past everything it holds */
     if (out_key) *out_key = (int64_t)u64(node, IDX_ENTRIES + slot * 16);
     if (out_row) *out_row = u64(node, IDX_ENTRIES + slot * 16 + 8);
     return 1;

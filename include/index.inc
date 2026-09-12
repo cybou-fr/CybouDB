@@ -33,8 +33,12 @@
 %define IDX_OWNER 24                     ; the index id, not the table id
 %define IDX_LEVEL 32                     ; 0 is a leaf, higher is internal
 %define IDX_COUNT 36                     ; entries in this node
-%define IDX_NEXT 40                      ; next leaf at this level, 0 at the end
-%define IDX_RESERVED 48                  ; 16 bytes, zero
+; There is no sibling pointer. A leaf chain and copy-on-write cannot both be
+; right: rewriting a leaf gives it a new page id, and its predecessor - which
+; is not on the path from the root - would still name the retired one. Keeping
+; the chain correct means copying backwards to the first leaf. A range scan
+; descends with a path stack instead. See docs/INDEX.md.
+%define IDX_RESERVED 40                  ; 24 bytes, zero
 %define IDX_ENTRIES 64
 %define IDX_CRC 4092
 %define IDX_LEAF 0
@@ -44,16 +48,17 @@
 %define IDX_ENTRY_SIZE 16
 %define IDX_MAX_ENTRIES 251              ; (4092 - 64) / 16
 
+; The ordering key is the first qword of an entry in both node kinds, so one
+; comparison and one ordering check serve the whole tree.
+;
 ; Leaf entry: the key, sign-extended to 64 bits, and the row it names.
 %define IDX_KEY 0
 %define IDX_ROW 8
 
-; Internal entry: a child, and the largest key anywhere beneath it. Strictly
-; increasing by IDX_KEY_END, so a search takes the first entry whose end is not
-; smaller than the key it wants. Deliberately the shape PAX_DIRECTORY already
-; uses: a second kind of downward walk costs more than any separator-key layout
-; would save.
-%define IDX_CHILD 0
-%define IDX_KEY_END 8
+; Internal entry: the largest key anywhere beneath a child, and that child.
+; Strictly increasing by IDX_KEY_END, so a search takes the first entry whose
+; end is not smaller than the key it wants.
+%define IDX_KEY_END 0
+%define IDX_CHILD 8
 
 %endif ; CybouDB_INDEX_INC

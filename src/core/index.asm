@@ -41,9 +41,9 @@ index_stamp:
     mov [ARG1 + IDX_OWNER], ARG4
     mov dword [ARG1 + IDX_LEVEL], 0
     mov dword [ARG1 + IDX_COUNT], 0
-    mov qword [ARG1 + IDX_NEXT], 0
     mov qword [ARG1 + IDX_RESERVED], 0
     mov qword [ARG1 + IDX_RESERVED + 8], 0
+    mov qword [ARG1 + IDX_RESERVED + 16], 0
     ret
 
 ; index_seal(ARG1 = node). Everything ahead of the checksum, as everywhere.
@@ -105,178 +105,216 @@ index_new_node:
     ret
 
 ; -----------------------------------------------------------------------------
-;  db_index_build(ctx, owner index id, entries, count, out_root)
-;      -> RAX: result code
+;  Bulk build
 ;
-;  Entries are 16-byte (key, row) pairs, sorted ascending and distinct. The
-;  tree is built bottom up: leaves are packed and chained, then each level is
-;  produced by walking the chain the level below left behind, which is why no
-;  scratch array is needed for a build of any size - the pages already link to
-;  each other in the order the next level wants to read them.
+;  One node per level is open at a time, and a finished node is handed to the
+;  level above as soon as the next one starts. So a build of any size costs the
+;  eight-level state below and nothing else: no scratch array proportional to
+;  the table, and no second pass over what was just written.
 ;
-;  A count of zero leaves the root at zero, which is what an empty index is.
-;
-;  Local slots: [rbp-8]=ctx, [rbp-16]=owner, [rbp-24]=entries, [rbp-32]=count,
-;               [rbp-40]=out_root, [rbp-48]=first node of the level just built,
-;               [rbp-56]=nodes in it, [rbp-64]=current node id,
-;               [rbp-72]=current node address, [rbp-80]=previous node address,
-;               [rbp-88]=cursor, [rbp-96]=level, [rbp-104]=source node id
+;  A node is pushed upwards when the next entry arrives rather than when it
+;  fills, which is what makes the last node of every level the open one at the
+;  end - and that is what lets the finish decide the root by asking which level
+;  made exactly one node.
 ; -----------------------------------------------------------------------------
-db_index_build:
-    FRAME_BEGIN 112, 1
+%define BS_CTX      0
+%define BS_OWNER    8
+%define BS_OPEN     16                  ; 8 qwords: the open node's page id
+%define BS_ADDR     80                  ; where it is mapped
+%define BS_COUNT    144                 ; entries placed in it
+%define BS_LAST     208                 ; the largest key under it so far
+%define BS_MADE     272                 ; nodes created at this level
+%define BS_SIZE     336
+%define IDX_MAX_LEVELS 8
+
+; index_close(ARG1 = state, ARG2 = level): write the open node's count and seal
+; it. The node stays in the state; what happens to it next is the caller's.
+index_close:
+    FRAME_BEGIN 32, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov r10, ARG1
+    mov rax, ARG2
+    mov r11, [r10 + BS_ADDR + rax * 8]
+    mov rcx, [r10 + BS_COUNT + rax * 8]
+    mov [r11 + IDX_COUNT], ecx
+    mov ARG1, r11
+    call index_seal
+    xor eax, eax
+    FRAME_END
+    ret
+
+; index_push(ARG1 = state, ARG2 = level, ARG3 = key, ARG4 = payload)
+;   -> RAX: result code.
+;
+; Recursive, and a full node handed to the level above is the only way it
+; recurses, so its depth is the height of the tree.
+;
+;  Local slots: [rbp-8]=state, [rbp-16]=level, [rbp-24]=key, [rbp-32]=payload,
+;               [rbp-40]=a node being handed up, [rbp-48]=its largest key
+index_push:
+    FRAME_BEGIN 64, 0
     mov [rbp - 8], ARG1
     mov [rbp - 16], ARG2
     mov [rbp - 24], ARG3
     mov [rbp - 32], ARG4
+    cmp ARG2, IDX_MAX_LEVELS
+    jae .too_deep
+    mov r10, ARG1
+    mov rax, ARG2
+    cmp qword [r10 + BS_OPEN + rax * 8], 0
+    je .open_one
+    cmp qword [r10 + BS_COUNT + rax * 8], IDX_MAX_ENTRIES
+    jb .place
+    ; Full, and something else has arrived: this node is finished.
+    mov ARG1, r10
+    mov ARG2, [rbp - 16]
+    call index_close
+    mov r10, [rbp - 8]
+    mov rax, [rbp - 16]
+    mov rcx, [r10 + BS_OPEN + rax * 8]
+    mov [rbp - 40], rcx
+    mov rcx, [r10 + BS_LAST + rax * 8]
+    mov [rbp - 48], rcx
+    mov qword [r10 + BS_OPEN + rax * 8], 0
+    mov ARG1, r10
+    mov ARG2, [rbp - 16]
+    inc ARG2
+    mov ARG3, [rbp - 48]
+    mov ARG4, [rbp - 40]
+    call index_push
+    test eax, eax
+    jnz .done
+    mov r10, [rbp - 8]
+.open_one:
+    mov ARG1, [r10 + BS_CTX]
+    mov ARG2, [r10 + BS_OWNER]
+    mov ARG3, [rbp - 16]
+    mov rax, [rbp - 16]
+    lea ARG4, [r10 + BS_OPEN + rax * 8]
+    call index_new_node
+    test eax, eax
+    jnz .done
+    mov r10, [rbp - 8]
+    mov rax, [rbp - 16]
+    mov [r10 + BS_ADDR + rax * 8], rdx
+    mov qword [r10 + BS_COUNT + rax * 8], 0
+    inc qword [r10 + BS_MADE + rax * 8]
+.place:
+    mov r10, [rbp - 8]
+    mov rax, [rbp - 16]
+    mov r11, [r10 + BS_ADDR + rax * 8]
+    mov rcx, [r10 + BS_COUNT + rax * 8]
+    mov rdx, rcx
+    shl rdx, 4
+    mov r8, [rbp - 24]
+    mov [r11 + IDX_ENTRIES + rdx], r8            ; the key, in both node kinds
+    mov r9, [rbp - 32]
+    mov [r11 + IDX_ENTRIES + rdx + 8], r9        ; the row, or the child
+    inc rcx
+    mov [r10 + BS_COUNT + rax * 8], rcx
+    mov [r10 + BS_LAST + rax * 8], r8
+    xor eax, eax
+.done:
+    FRAME_END
+    ret
+.too_deep:
+    mov eax, CybouDB_E_FULL
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  db_index_build(ctx, owner index id, entries, count, out_root)
+;      -> RAX: result code
+;
+;  Entries are 16-byte (key, row) pairs, sorted ascending and distinct. A count
+;  of zero leaves the root at zero, which is what an empty index is.
+;
+;  Local slots: [rbp-8]=entries, [rbp-16]=count, [rbp-24]=out_root,
+;               [rbp-32]=cursor, [rbp-40]=level; the builder state sits below.
+; -----------------------------------------------------------------------------
+db_index_build:
+    FRAME_BEGIN 64 + BS_SIZE, 0
+    mov [rbp - 8], ARG3
+    mov [rbp - 16], ARG4
     mov rax, IN_ARG5
-    mov [rbp - 40], rax
+    mov [rbp - 24], rax
     mov qword [rax], 0
-    cmp qword [rbp - 32], 0
-    je .ok
 
-    ; --- the leaves --------------------------------------------------------
-    mov qword [rbp - 48], 0
-    mov qword [rbp - 56], 0
-    mov qword [rbp - 80], 0
-    mov qword [rbp - 88], 0
-.leaf_node:
-    mov rax, [rbp - 88]
-    cmp rax, [rbp - 32]
-    jae .leaves_done
-    mov ARG1, [rbp - 8]
-    mov ARG2, [rbp - 16]
-    xor ARG3, ARG3                  ; IDX_LEAF
-    lea ARG4, [rbp - 64]
-    call index_new_node
-    test eax, eax
-    jnz .done
-    mov [rbp - 72], rdx
-    ; Chain it behind the previous leaf, or remember it as the first.
-    mov rax, [rbp - 80]
-    test rax, rax
-    jz .leaf_first
-    mov rcx, [rbp - 64]
-    mov [rax + IDX_NEXT], rcx
-    mov ARG1, rax
-    call index_seal                 ; the previous leaf is finished now
-    jmp .leaf_fill
-.leaf_first:
-    mov rax, [rbp - 64]
-    mov [rbp - 48], rax
-.leaf_fill:
-    mov r8, [rbp - 72]
-    xor ecx, ecx                    ; entries placed in this leaf
-.leaf_entry:
-    cmp ecx, IDX_MAX_ENTRIES
-    jae .leaf_full
-    mov rax, [rbp - 88]
-    cmp rax, [rbp - 32]
-    jae .leaf_full
-    shl rax, 4
-    add rax, [rbp - 24]
-    mov rdx, [rax + IDX_KEY]
-    mov r9, [rax + IDX_ROW]
-    mov rax, rcx
-    shl rax, 4
-    mov [r8 + IDX_ENTRIES + rax + IDX_KEY], rdx
-    mov [r8 + IDX_ENTRIES + rax + IDX_ROW], r9
-    inc qword [rbp - 88]
+    lea r10, [rbp - 64 - BS_SIZE]
+    mov [r10 + BS_CTX], ARG1
+    mov [r10 + BS_OWNER], ARG2
+    xor ecx, ecx
+.clear:
+    mov qword [r10 + BS_OPEN + rcx * 8], 0
+    mov qword [r10 + BS_ADDR + rcx * 8], 0
+    mov qword [r10 + BS_COUNT + rcx * 8], 0
+    mov qword [r10 + BS_LAST + rcx * 8], 0
+    mov qword [r10 + BS_MADE + rcx * 8], 0
     inc ecx
-    jmp .leaf_entry
-.leaf_full:
-    mov [r8 + IDX_COUNT], ecx
-    mov rax, [rbp - 72]
-    mov [rbp - 80], rax
-    inc qword [rbp - 56]
-    jmp .leaf_node
-.leaves_done:
-    mov rax, [rbp - 80]
-    mov ARG1, rax
-    call index_seal                 ; the last leaf has no successor
-    mov qword [rbp - 96], 0
+    cmp ecx, IDX_MAX_LEVELS
+    jb .clear
 
-    ; --- one level per pass over the chain below it ------------------------
-.level:
-    cmp qword [rbp - 56], 1
-    jbe .rooted
-    mov rax, [rbp - 48]
-    mov [rbp - 104], rax            ; walk the level just built
-    mov qword [rbp - 48], 0
-    mov qword [rbp - 56], 0
-    mov qword [rbp - 80], 0
-    inc qword [rbp - 96]
-.parent_node:
-    cmp qword [rbp - 104], 0
-    je .level_done
-    mov ARG1, [rbp - 8]
-    mov ARG2, [rbp - 16]
-    mov ARG3, [rbp - 96]
-    lea ARG4, [rbp - 64]
-    call index_new_node
+    cmp qword [rbp - 16], 0
+    je .ok
+    mov qword [rbp - 32], 0
+.entry:
+    mov rax, [rbp - 32]
+    cmp rax, [rbp - 16]
+    jae .finish
+    shl rax, 4
+    add rax, [rbp - 8]
+    mov ARG3, [rax + IDX_KEY]
+    mov ARG4, [rax + IDX_ROW]
+    lea ARG1, [rbp - 64 - BS_SIZE]
+    xor ARG2, ARG2                      ; level 0, the leaves
+    call index_push
     test eax, eax
     jnz .done
-    mov [rbp - 72], rdx
-    mov rax, [rbp - 80]
-    test rax, rax
-    jz .parent_first
-    mov rcx, [rbp - 64]
-    mov [rax + IDX_NEXT], rcx
-    mov ARG1, rax
-    call index_seal
-    jmp .parent_fill
-.parent_first:
-    mov rax, [rbp - 64]
-    mov [rbp - 48], rax
-.parent_fill:
-    ; The counter lives in a slot rather than a register: reading a child's
-    ; header goes through index_node_addr, and ARG1 is a volatile register on
-    ; one of the two ABIs this builds for.
-    mov qword [rbp - 112], 0
-.parent_entry:
-    cmp qword [rbp - 112], IDX_MAX_ENTRIES
-    jae .parent_full
-    cmp qword [rbp - 104], 0
-    je .parent_full
-    ; The child, and the largest key anywhere beneath it - which is the last
-    ; key of its last entry, whichever kind of node it is.
-    mov ARG1, [rbp - 8]
-    mov ARG2, [rbp - 104]
-    call index_node_addr
-    mov r8, [rbp - 72]
-    mov r9d, [rax + IDX_COUNT]
-    dec r9
-    shl r9, 4
-    mov rdx, [rax + IDX_ENTRIES + r9 + 8]   ; IDX_ROW aliases IDX_KEY_END
-    cmp dword [rax + IDX_LEVEL], IDX_LEAF
-    jne .parent_end_ready
-    mov rdx, [rax + IDX_ENTRIES + r9 + IDX_KEY]
-.parent_end_ready:
-    mov r9, [rbp - 104]
-    mov rax, [rax + IDX_NEXT]
-    mov [rbp - 104], rax
-    mov rax, [rbp - 112]
-    shl rax, 4
-    mov [r8 + IDX_ENTRIES + rax + IDX_CHILD], r9
-    mov [r8 + IDX_ENTRIES + rax + IDX_KEY_END], rdx
-    inc qword [rbp - 112]
-    jmp .parent_entry
-.parent_full:
-    mov r8, [rbp - 72]
-    mov rax, [rbp - 112]
-    mov [r8 + IDX_COUNT], eax
-    mov rax, [rbp - 72]
-    mov [rbp - 80], rax
-    inc qword [rbp - 56]
-    jmp .parent_node
-.level_done:
-    mov ARG1, [rbp - 80]
-    call index_seal
-    jmp .level
+    inc qword [rbp - 32]
+    jmp .entry
 
-.rooted:
-    mov rax, [rbp - 48]
-    mov r10, [rbp - 40]
-    mov [r10], rax
+    ; --- which level holds the root ----------------------------------------
+    ; Every non-empty level ends with exactly one open node. The lowest level
+    ; that made only one is the root, and every level below it is closed and
+    ; handed upwards on the way there.
+.finish:
+    mov qword [rbp - 40], 0
+.level:
+    lea r10, [rbp - 64 - BS_SIZE]
+    mov rax, [rbp - 40]
+    cmp qword [r10 + BS_MADE + rax * 8], 1
+    je .root
+    lea ARG1, [rbp - 64 - BS_SIZE]
+    mov ARG2, [rbp - 40]
+    call index_close
+    lea r10, [rbp - 64 - BS_SIZE]
+    mov rax, [rbp - 40]
+    mov rcx, [r10 + BS_OPEN + rax * 8]
+    mov rdx, [r10 + BS_LAST + rax * 8]
+    mov qword [r10 + BS_OPEN + rax * 8], 0
+    mov ARG3, rdx
+    mov ARG4, rcx
+    lea ARG1, [rbp - 64 - BS_SIZE]
+    mov ARG2, [rbp - 40]
+    inc ARG2
+    call index_push
+    test eax, eax
+    jnz .done
+    inc qword [rbp - 40]
+    cmp qword [rbp - 40], IDX_MAX_LEVELS
+    jb .level
+    mov eax, CybouDB_E_FULL
+    jmp .done
+.root:
+    lea ARG1, [rbp - 64 - BS_SIZE]
+    mov ARG2, [rbp - 40]
+    call index_close
+    lea r10, [rbp - 64 - BS_SIZE]
+    mov rax, [rbp - 40]
+    mov rcx, [r10 + BS_OPEN + rax * 8]
+    mov r11, [rbp - 24]
+    mov [r11], rcx
 .ok:
     xor eax, eax
 .done:
@@ -288,8 +326,12 @@ db_index_build:
 ;
 ;  Positions on the first entry whose key is not smaller than the one asked
 ;  for, which is what both a point lookup and the start of a range want. A
-;  position past the last entry of the last leaf is reported as slot equal to
-;  that leaf's count, so a caller walks IDX_NEXT and stops naturally.
+;  key past everything this tree holds is reported as the slot equal to the
+;  last leaf's count, which is the position one past its last entry.
+;
+;  There is no sibling pointer to continue along: a range scan re-descends,
+;  or keeps the path it came down. See include/index.inc for why a leaf chain
+;  and copy-on-write cannot both be right.
 ;
 ;  The descent trusts the node headers, which validation has already proved:
 ;  db_index_validate runs before a generation is published, so a tree reached
@@ -472,6 +514,8 @@ index_node_validate:
     cmp qword [rax + IDX_RESERVED], 0
     jne .bad
     cmp qword [rax + IDX_RESERVED + 8], 0
+    jne .bad
+    cmp qword [rax + IDX_RESERVED + 16], 0
     jne .bad
     mov rdx, [rbp - 40]
     cmp rdx, -1

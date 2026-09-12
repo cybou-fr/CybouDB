@@ -72,8 +72,7 @@ everywhere:
 | 24 | 8 | Owner: the index id |
 | 32 | 4 | Level: 0 for a leaf, higher for an internal node |
 | 36 | 4 | Entries in this node |
-| 40 | 8 | Next leaf at the same level, 0 at the end; leaves only |
-| 48 | 16 | Reserved, zero |
+| 40 | 24 | Reserved, zero |
 | 64 | 4028 | Entries |
 | 4092 | 4 | CRC-32C over bytes [0, 4092) |
 
@@ -82,14 +81,13 @@ same fan-out the PAX directory has, for the same reason.
 
 * **Leaf entry**: `(key, row)` — the key sign-extended to 64 bits, and the
   row's position in the table.
-* **Internal entry**: `(child_page, key_end)` — a child and the largest key
-  anywhere beneath it. Entries are strictly increasing by `key_end`, and a
-  search takes the first entry whose `key_end` is not smaller than the key it
-  wants.
+* **Internal entry**: `(key_end, child_page)` — the largest key anywhere
+  beneath a child, and that child. Entries are strictly increasing by
+  `key_end`, and a search takes the first entry whose `key_end` is not smaller
+  than the key it wants.
 
-The internal shape is deliberately the one the PAX directory already uses.
-Whatever a separator-key layout would save is smaller than having a second
-kind of downward walk in the engine.
+The ordering key is the first field of an entry in both node kinds, so one
+comparison and one ordering check serve the whole tree.
 
 Keys are ordered as signed 64-bit integers. An `INT32` column is sign-extended
 on the way in, so one comparison serves both types and a negative key sorts
@@ -97,6 +95,24 @@ where it belongs.
 
 Duplicate keys are allowed unless the index is unique; entries with equal keys
 are ordered by row, which keeps every entry distinct and the order total.
+
+### No sibling pointers
+
+A leaf keeps no pointer to the next leaf, and that is a decision rather than
+an omission.
+
+Copy-on-write gives a rewritten leaf a new page id. Its predecessor is not on
+the path from the root, so nothing would update the pointer that still names
+the retired page — and following it in a later generation could reach a page
+that has since been handed out to something else. Keeping the chain correct
+means copying backwards to the first leaf, which turns a one-row insert into a
+rewrite of the whole index.
+
+So a range scan descends, keeping the path it came down, and a search that
+lands one past a leaf's last entry has found that the tree holds nothing
+further. The bulk builder, the other thing that would have wanted a chain,
+keeps one open node per level instead and hands a finished node to the level
+above as soon as the next one starts: no chain, no scratch array, one pass.
 
 ## NULL
 
