@@ -381,6 +381,153 @@ static void insert_suite(void *ctx) {
     db_rollback(ctx);
 }
 
+/* --- delete ------------------------------------------------------------ */
+
+extern int db_index_delete(void *ctx, uint64_t owner, uint64_t root,
+                           int64_t key, uint64_t row, uint64_t *out_root);
+
+#define CYBOUDB_E_NOTFOUND 28           /* include/constants.inc */
+
+/* Build a tree of `count` entries, then remove them in the order `step` walks
+   them, auditing the structure as it shrinks. */
+static void delete_case(void *ctx, const char *what, uint64_t count,
+                        uint64_t step) {
+    entry_t *entries = malloc(sizeof(entry_t) * (size_t)count);
+    uint64_t root = 0, next = 0;
+    int ok = 1;
+    char label[128];
+
+    for (uint64_t i = 0; i < count; i++) {
+        entries[i].key = (int64_t)(i * 2) - (int64_t)count;
+        entries[i].row = i;
+    }
+    if (db_index_build(ctx, 11, entries, count, &root) != 0) ok = 0;
+
+    for (uint64_t n = 0; n < count && ok; n++) {
+        uint64_t i = (n * step) % count;
+        if (db_index_delete(ctx, 11, root, entries[i].key, entries[i].row,
+                            &next) != 0) { ok = 0; break; }
+        root = next;
+        /* Auditing every step is what makes a wrong key_end after a removal
+           visible at the removal rather than thousands of entries later. */
+        if (n % 97 == 0 && root && !tree_ok(ctx, root, count - n - 1)) ok = 0;
+    }
+    snprintf(label, sizeof label, "%s: %llu deletes", what,
+             (unsigned long long)count);
+    check(label, ok);
+
+    snprintf(label, sizeof label, "%s: the last one empties the tree", what);
+    check(label, root == 0);
+
+    free(entries);
+    db_rollback(ctx);
+}
+
+static void delete_suite(void *ctx) {
+    entry_t *entries = malloc(sizeof(entry_t) * 4000);
+    uint64_t root = 0, next = 0;
+    int ok = 1;
+
+    for (uint64_t i = 0; i < 4000; i++) {
+        entries[i].key = (int64_t)(i * 2) - 4000;
+        entries[i].row = i;
+    }
+    check("a tree to delete from",
+          db_index_build(ctx, 11, entries, 4000, &root) == 0 && root != 0);
+
+    /* A key the tree never held, and a key it holds under another row. */
+    check("deleting a key that is not there",
+          db_index_delete(ctx, 11, root, 1, 0, &next) == CYBOUDB_E_NOTFOUND);
+    check("deleting the right key at the wrong row",
+          db_index_delete(ctx, 11, root, entries[10].key, 999, &next)
+          == CYBOUDB_E_NOTFOUND);
+    check("a refused delete stages nothing", tree_ok(ctx, root, 4000));
+
+    check("one entry removed",
+          db_index_delete(ctx, 11, root, entries[10].key, 10, &next) == 0);
+    root = next;
+    check("and the tree holds one fewer", tree_ok(ctx, root, 3999));
+    {
+        int64_t found = 0;
+        check("the key it named is gone",
+              key_at(ctx, root, entries[10].key, &found, NULL) &&
+              found == entries[11].key);
+    }
+    ok = 1;
+    for (uint64_t i = 0; i < 4000 && ok; i++) {
+        int64_t found = 0;
+        uint64_t row = 0;
+        if (i == 10) continue;
+        if (!key_at(ctx, root, entries[i].key, &found, &row)) ok = 0;
+        else if (found != entries[i].key || row != i) ok = 0;
+    }
+    check("every other key is where it was", ok);
+    db_rollback(ctx);
+
+    /* Emptying a tree, in the three orders that stress different sides of it:
+       from the front, which empties leaves left to right; from the back, which
+       keeps trimming the last one; and scattered. */
+    delete_case(ctx, "front to back", 3000, 1);
+    delete_case(ctx, "back to front", 3000, 2999);
+    delete_case(ctx, "scattered", 3000, 1009);
+
+    /* A root that has to lose a level. A bulk build of 63002 entries leaves
+       252 leaves, so the level above holds 251 of them in its first node and
+       one in its second, and the root names just those two. Removing the one
+       entry under the second collapses the root into the first - one delete
+       rather than sixty thousand. */
+    {
+        entry_t *deep = malloc(sizeof(entry_t) * 63002);
+        uint64_t deep_root = 0;
+        for (uint64_t i = 0; i < 63002; i++) {
+            deep[i].key = (int64_t)i - 31501;
+            deep[i].row = i;
+        }
+        check("a three-level tree to shrink",
+              db_index_build(ctx, 11, deep, 63002, &deep_root) == 0 &&
+              (int)u32(db_index_node_addr(ctx, deep_root), IDX_LEVEL) == 2);
+        check("its last entry removed",
+              db_index_delete(ctx, 11, deep_root, deep[63001].key,
+                              deep[63001].row, &next) == 0);
+        deep_root = next;
+        check("the root came down a level",
+              (int)u32(db_index_node_addr(ctx, deep_root), IDX_LEVEL) == 1);
+        check("and what is left is still a tree",
+              tree_ok(ctx, deep_root, 63001));
+        ok = 1;
+        for (uint64_t i = 0; i < 63001 && ok; i += 137) {
+            int64_t found = 0;
+            uint64_t row = 0;
+            if (!key_at(ctx, deep_root, deep[i].key, &found, &row)) ok = 0;
+            else if (found != deep[i].key || row != deep[i].row) ok = 0;
+        }
+        check("every surviving key is still found", ok);
+        check("and the one that went is not",
+              !key_at(ctx, deep_root, deep[63001].key, NULL, NULL));
+        free(deep);
+        db_rollback(ctx);
+    }
+
+    /* Insert and delete against each other: the tree has to stay correct
+       while it is both growing and shrinking. */
+    root = 0;
+    ok = 1;
+    for (uint64_t i = 0; i < 2000 && ok; i++) {
+        if (db_index_insert(ctx, 11, root, (int64_t)i, i, &next) != 0) ok = 0;
+        root = next;
+        if (i >= 3) {
+            if (db_index_delete(ctx, 11, root, (int64_t)(i - 3), i - 3,
+                                &next) != 0) ok = 0;
+            root = next;
+        }
+    }
+    check("inserting and deleting at once", ok);
+    check("leaves exactly what is outstanding", tree_ok(ctx, root, 3));
+    db_rollback(ctx);
+
+    free(entries);
+}
+
 int main(int argc, char **argv) {
     cyboudb_db *db = NULL;
     void *ctx;
@@ -408,6 +555,7 @@ int main(int argc, char **argv) {
     build_case(ctx, IDX_MAX_ENTRIES * IDX_MAX_ENTRIES + 1, 3);
 
     insert_suite(ctx);
+    delete_suite(ctx);
 
     check("rollback", db_rollback(ctx) == CybouDB_OK);
     check("close", cyboudb_close(db) == CybouDB_OK);

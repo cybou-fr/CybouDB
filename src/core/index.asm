@@ -12,8 +12,9 @@ BITS 64
 default rel
 extern crc32c
 extern db_cow_alloc_page, db_cow_copy_page
-extern db_bitmap_candidate_payload, db_bitmap_deep
+extern db_bitmap_candidate_payload, db_bitmap_deep, db_bitmap_retire
 global db_index_build, db_index_insert, db_index_insert_unique
+global db_index_delete
 global db_index_search, db_index_validate
 global db_index_node_addr
 
@@ -789,6 +790,316 @@ index_insert_common:
     mov [r10], rax
     xor eax, eax
 .done:
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  Delete
+;
+;  One entry, named by both its key and the row it points at, because a
+;  non-unique index holds several entries under one key and only one of them
+;  belongs to the row being removed.
+;
+;  A node is copied only once it is known to survive. The alternative - copy
+;  first, discover the node is now empty, abandon the copy - would leave an
+;  allocated page nothing references, and the allocation map would be right to
+;  object. So the descent reads the node it is standing on and copies it after
+;  the child below has reported, which is also when its new contents are known.
+;
+;  Nothing is merged or rebalanced. A node that loses its last entry is dropped
+;  from its parent and a root left with one child collapses into it, so the
+;  height never drifts upwards; a node that merely thins out stays thin. A
+;  table that deletes enough to matter is compacted by the rewrite in
+;  docs/TOMBSTONES.md, and the rewrite rebuilds every index of that table.
+; -----------------------------------------------------------------------------
+
+; index_node_drop(ARG1 = ctx, ARG2 = page id): the new tree does not reference
+; this node. Retiring it is what db_cow_copy_page does for a node that is
+; replaced rather than removed.
+index_node_drop:
+    jmp db_bitmap_retire
+
+; index_entry_close(ARG1 = node, ARG2 = count, ARG3 = slot)
+; Move the entries above slot down one place, covering it.
+index_entry_close:
+    mov rax, ARG3
+.shift:
+    inc rax
+    cmp rax, ARG2
+    jae .done
+    mov r10, rax
+    shl r10, 4
+    mov r11, [ARG1 + IDX_ENTRIES + r10]
+    mov [ARG1 + IDX_ENTRIES + r10 - 16], r11
+    mov r11, [ARG1 + IDX_ENTRIES + r10 + 8]
+    mov [ARG1 + IDX_ENTRIES + r10 - 8], r11
+    jmp .shift
+.done:
+    ret
+
+; index_copy_for_edit(ARG1 = state, ARG2 = node id, ARG3 = out id)
+;   -> RAX: result, RDX: the copy's address.
+index_copy_for_edit:
+    FRAME_BEGIN 32, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 24], ARG3
+    mov r10, ARG1
+    mov ARG1, [r10 + II_CTX]
+    call db_cow_copy_page
+    test eax, eax
+    jnz .done
+    mov r10, [rbp - 8]
+    mov ARG1, [r10 + II_CTX]
+    mov r11, [rbp - 24]
+    mov ARG2, [r11]
+    call index_node_addr
+    mov [rbp - 16], rax
+    mov ARG1, rax
+    mov r10, [rbp - 8]
+    mov ARG2, [r10 + II_CTX]
+    mov r11, [rbp - 24]
+    mov ARG3, [r11]
+    call index_restamp
+    mov rdx, [rbp - 16]
+    xor eax, eax
+.done:
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  index_delete_node(ARG1 = state, ARG2 = node id, ARG3 = out block)
+;      -> RAX: result code. IO_NODE is zero when the node no longer exists.
+;
+;  Local slots: [rbp-8]=state, [rbp-16]=node id, [rbp-24]=out, [rbp-32]=address,
+;               [rbp-40]=count, [rbp-48]=slot, [rbp-56]=copy id,
+;               [rbp-64]=copy address, [rbp-96]=child out block
+; -----------------------------------------------------------------------------
+index_delete_node:
+    FRAME_BEGIN 128, 2
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+
+    mov r10, ARG1
+    mov ARG1, [r10 + II_CTX]
+    mov ARG2, [rbp - 16]
+    call index_node_addr
+    mov [rbp - 32], rax
+    mov r10, rax
+    mov ecx, [r10 + IDX_COUNT]
+    mov [rbp - 40], rcx
+    cmp dword [r10 + IDX_LEVEL], IDX_LEAF
+    jne .internal
+
+    ; --- the leaf holding it, if it holds it at all ------------------------
+    mov r11, [rbp - 8]
+    mov r8, [r11 + II_KEY]
+    mov r9, [r11 + II_ROW]
+    xor ecx, ecx
+.leaf_slot:
+    cmp rcx, [rbp - 40]
+    jae .absent
+    mov rax, rcx
+    shl rax, 4
+    mov rdx, [r10 + IDX_ENTRIES + rax]
+    cmp rdx, r8
+    jg .absent                          ; past where it would have been
+    jne .leaf_next
+    mov rdx, [r10 + IDX_ENTRIES + rax + 8]
+    cmp rdx, r9
+    je .leaf_found
+.leaf_next:
+    inc rcx
+    jmp .leaf_slot
+.leaf_found:
+    mov [rbp - 48], rcx
+    cmp qword [rbp - 40], 1
+    jne .leaf_shrink
+    ; Its last entry: the leaf goes rather than being copied empty.
+    mov r10, [rbp - 8]
+    mov ARG1, [r10 + II_CTX]
+    mov ARG2, [rbp - 16]
+    call index_node_drop
+    mov r10, [rbp - 24]
+    mov qword [r10 + IO_NODE], 0
+    xor eax, eax
+    jmp .done
+.leaf_shrink:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    lea ARG3, [rbp - 56]
+    call index_copy_for_edit
+    test eax, eax
+    jnz .done
+    mov [rbp - 64], rdx
+    mov ARG1, rdx
+    mov ARG2, [rbp - 40]
+    mov ARG3, [rbp - 48]
+    call index_entry_close
+    jmp .shrunk
+
+.internal:
+    ; --- the first child that could hold the key ---------------------------
+    xor ecx, ecx
+    mov r11, [rbp - 8]
+    mov r8, [r11 + II_KEY]
+.child_slot:
+    inc rcx
+    cmp rcx, [rbp - 40]
+    jae .child_ready
+    mov rax, rcx
+    dec rax
+    shl rax, 4
+    mov rdx, [r10 + IDX_ENTRIES + rax]
+    cmp rdx, r8
+    jl .child_slot
+.child_ready:
+    dec rcx
+    mov [rbp - 48], rcx
+    mov rax, rcx
+    shl rax, 4
+    mov r10, [rbp - 32]
+    mov rax, [r10 + IDX_ENTRIES + rax + 8]
+    mov ARG1, [rbp - 8]
+    mov ARG2, rax
+    lea ARG3, [rbp - 96]
+    call index_delete_node
+    test eax, eax
+    jnz .done
+    cmp qword [rbp - 96 + IO_NODE], 0
+    jne .child_kept
+
+    ; The child is gone. If it was the only one, so is this node.
+    cmp qword [rbp - 40], 1
+    jne .child_removed
+    mov r10, [rbp - 8]
+    mov ARG1, [r10 + II_CTX]
+    mov ARG2, [rbp - 16]
+    call index_node_drop
+    mov r10, [rbp - 24]
+    mov qword [r10 + IO_NODE], 0
+    xor eax, eax
+    jmp .done
+.child_removed:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    lea ARG3, [rbp - 56]
+    call index_copy_for_edit
+    test eax, eax
+    jnz .done
+    mov [rbp - 64], rdx
+    mov ARG1, rdx
+    mov ARG2, [rbp - 40]
+    mov ARG3, [rbp - 48]
+    call index_entry_close
+    jmp .shrunk
+
+.child_kept:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    lea ARG3, [rbp - 56]
+    call index_copy_for_edit
+    test eax, eax
+    jnz .done
+    mov [rbp - 64], rdx
+    mov rax, [rbp - 48]
+    shl rax, 4
+    mov rcx, [rbp - 96 + IO_END]
+    mov [rdx + IDX_ENTRIES + rax], rcx
+    mov rcx, [rbp - 96 + IO_NODE]
+    mov [rdx + IDX_ENTRIES + rax + 8], rcx
+    mov r10, [rbp - 64]
+    mov rax, [rbp - 40]
+    mov [r10 + IDX_COUNT], eax
+    jmp .sealed
+
+.shrunk:
+    mov r10, [rbp - 64]
+    mov rax, [rbp - 40]
+    dec rax
+    mov [r10 + IDX_COUNT], eax
+.sealed:
+    mov ARG1, [rbp - 64]
+    call index_tail_clear
+    mov ARG1, [rbp - 64]
+    call index_seal
+    mov ARG1, [rbp - 64]
+    call index_node_end
+    mov r10, [rbp - 24]
+    mov [r10 + IO_END], rax
+    mov rax, [rbp - 56]
+    mov [r10 + IO_NODE], rax
+    xor eax, eax
+.done:
+    FRAME_END
+    ret
+.absent:
+    mov eax, CybouDB_E_NOTFOUND
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  db_index_delete(ctx, owner, root, key, row, out_root) -> RAX: result code,
+;  CybouDB_E_NOTFOUND when the tree holds no such entry.
+;
+;  Local slots: [rbp-8]=out_root, [rbp-16]=root, [rbp-64]=state,
+;               [rbp-96]=out block, [rbp-104]=root address
+; -----------------------------------------------------------------------------
+db_index_delete:
+    FRAME_BEGIN 128, 2
+    lea r10, [rbp - 64]
+    mov [r10 + II_CTX], ARG1
+    mov [r10 + II_OWNER], ARG2
+    mov [r10 + II_KEY], ARG4
+    mov qword [r10 + II_UNIQUE], 0
+    mov [rbp - 16], ARG3
+    mov rax, IN_ARG5
+    mov [r10 + II_ROW], rax
+    mov rax, IN_ARG6
+    mov [rbp - 8], rax
+
+    cmp qword [rbp - 16], 0
+    je .absent
+
+    lea ARG1, [rbp - 64]
+    mov ARG2, [rbp - 16]
+    lea ARG3, [rbp - 96]
+    call index_delete_node
+    test eax, eax
+    jnz .done
+    mov rax, [rbp - 96 + IO_NODE]
+    test rax, rax
+    jz .publish                         ; the tree is empty now
+
+    ; A root left naming one child is a level nobody needs.
+    lea r10, [rbp - 64]
+    mov ARG1, [r10 + II_CTX]
+    mov ARG2, rax
+    call index_node_addr
+    mov [rbp - 104], rax
+    cmp dword [rax + IDX_LEVEL], IDX_LEAF
+    je .keep_root
+    cmp dword [rax + IDX_COUNT], 1
+    jne .keep_root
+    mov rcx, [rax + IDX_ENTRIES + 8]    ; its only child becomes the root
+    mov [rbp - 112], rcx
+    lea r10, [rbp - 64]
+    mov ARG1, [r10 + II_CTX]
+    mov ARG2, [rbp - 96 + IO_NODE]
+    call index_node_drop
+    mov rax, [rbp - 112]
+    jmp .publish
+.keep_root:
+    mov rax, [rbp - 96 + IO_NODE]
+.publish:
+    mov r10, [rbp - 8]
+    mov [r10], rax
+    xor eax, eax
+.done:
+    FRAME_END
+    ret
+.absent:
+    mov eax, CybouDB_E_NOTFOUND
     FRAME_END
     ret
 
