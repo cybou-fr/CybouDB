@@ -47,16 +47,24 @@ It carries the catalog header every directory-reachable page carries, and then:
 
 | Offset | Size | Field |
 | ---: | ---: | --- |
-| 24 | 8 | Owner: the indexed table's id |
+| 24 | 8 | Owner: the index's own id |
 | 40 | 8 | Tree root page id, 0 while the index is empty |
 | 48 | 4 | Indexed column, its position in the schema |
 | 52 | 4 | Flags: bit 0 unique, all other bits zero |
 | 56 | 8 | Rows the tree holds, for validation to check against |
 | 64 | 32 | Index name |
+| 96 | 8 | The table this indexes |
 
-`CAT_OWNER` naming the table is what makes the reverse lookup — every index of
-a table — a scan of the directory rather than a second structure to keep
+`CAT_OWNER` is the index's own id, the rule a schema page already follows, so
+one ownership check in the directory walk serves both page kinds - and the
+nodes of two indexes over one table are told apart by the owner they carry.
+The table being indexed is a field of its own, and every index of a table is
+found by walking the directory rather than by a second structure to keep
 consistent.
+
+The name sits where a schema page keeps its table name, so tables and indexes
+share one namespace and the uniqueness check the directory already performs
+covers both without being taught anything.
 
 ### Tree nodes
 

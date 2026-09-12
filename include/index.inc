@@ -9,16 +9,22 @@
 ; --- The catalog page that defines one index, CAT_TYPE = CAT_INDEX -----------
 ; It carries the catalog header, so CAT_MAGIC, CAT_VERSION, CAT_PAGE_ID,
 ; CAT_GENERATION and CAT_CRC mean what they mean on every directory-reachable
-; page. CAT_OWNER names the indexed table, which is what makes "every index of
-; this table" a walk of the directory rather than a second structure to keep
+; page.
+;
+; CAT_OWNER is the index's own id, the same rule a schema page follows, so one
+; ownership check in the directory walk serves both page kinds - and so the
+; nodes of two indexes over one table are told apart by the owner they carry.
+; The table being indexed is a field of its own, and finding every index of a
+; table is a walk of the directory rather than a second structure to keep
 ; consistent.
 %define CAT_INDEX 3
 %define IDX_ROOT 40                      ; tree root page, 0 while empty
 %define IDX_COLUMN 48                    ; indexed column, its schema position
 %define IDX_FLAGS 52
 %define IDX_ROWS 56                      ; entries the tree holds
-%define IDX_NAME 64
+%define IDX_NAME 64                      ; aliases CAT_TABLE_NAME: one namespace
 %define IDX_NAME_SIZE 32
+%define IDX_TABLE 96                     ; the table this indexes
 %define IDX_UNIQUE 1                     ; IDX_FLAGS bit 0
 
 ; --- A tree node -------------------------------------------------------------
