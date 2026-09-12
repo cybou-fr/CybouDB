@@ -29,7 +29,8 @@ default rel
 
 extern db_catalog_put, db_catalog_drop, db_catalog_truncate_data, db_pax_insert, db_pax_update_one, db_pax_capacity, db_commit, db_rollback
 extern db_pax_mark_dead, db_pax_dead_total
-extern db_catalog_put_index, db_catalog_set_index_root
+extern db_catalog_put_index, db_catalog_set_index_root, db_index_of_table
+extern db_index_retire_tree
 extern db_index_insert, db_index_insert_unique
 extern db_catalog_get, db_pax_scan_open_bound, db_pax_scan_batch
 extern db_var_write_chain, db_var_read_chain
@@ -686,6 +687,12 @@ sql_execute_batch:
     mov     r10, [rbp - 16]
     mov     ARG2, [r10 + PLAN_TABLE_ID]
     call    db_catalog_truncate_data
+    test    eax, eax
+    jnz     .storage_done
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    call    sql_index_empty_all
     jmp     .storage_done
 
 .exec_delete_none:
@@ -1052,12 +1059,36 @@ sql_execute_batch:
     test    eax, eax
     jnz     .storage_done
 .delete_rewrite_done:
+    ; Every surviving row has moved, so every entry naming a row by position
+    ; has stopped meaning what it said.
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    lea     ARG3, [rbp - 64]
+    call    db_catalog_get
+    test    eax, eax
+    jnz     .storage_done
+    mov     r10, [rbp - 8]
+    mov     rax, [rbp - 64]
+    shl     rax, CybouDB_PAGE_SHIFT
+    add     rax, [r10 + DB_BASE]
+    mov     ARG3, rax
+    mov     ARG1, r10
+    mov     r11, [rbp - 16]
+    mov     ARG2, [r11 + PLAN_TABLE_ID]
+    mov     ARG4, [rbp - 24]
+    mov     rax, -1
+    PASS_ARG5 rax
+    call    sql_index_rebuild_all
+    test    eax, eax
+    jnz     .storage_done
     xor     eax, eax
     jmp     .exec_exit
 
 .exec_create_index:
-    ; The catalog entry first: the tree is published into it afterwards, and a
-    ; table with no rows is finished after this step.
+    ; The catalog entry first, then the tree over the rows the table already
+    ; has - which is the same work a compacting DELETE has to redo, so it is
+    ; the same code.
     mov     ARG1, [rbp - 8]
     mov     r10, [rbp - 16]
     mov     ARG2, [r10 + PLAN_TABLE_ID]
@@ -1066,149 +1097,42 @@ sql_execute_batch:
     test    eax, eax
     jnz     .storage_done
 
-    ; --- build it over the rows the table already has ----------------------
-    ; One insert per row rather than a sorted bulk load: the rows arrive in
-    ; row order, not key order, and sorting them would need somewhere to put
-    ; them. The tree is the place they get sorted.
-    mov     r10, [rbp - 16]
-    mov     r11, [r10 + PLAN_SCHEMA_PAGE]
-    mov     rax, [r11 + CAT_TABLE_ROWS]
-    mov     [rbp - 1752], rax
-    mov     qword [rbp - 1800], 0       ; the tree root, still empty
-    mov     qword [rbp - 1816], 0       ; entries placed
-    test    rax, rax
-    jz      .index_published
-
-    mov     rax, [r10 + PLAN_DATA3]
-    mov     rcx, rax
-    mov     rax, 1
-    shl     rax, cl
-    mov     [rbp - 1792], rax           ; just the column being indexed
-    lea     rax, [rbp - DELETE_VIEW_OFF]
-    mov     [rbp - 1760], rax
-    mov     qword [rbp - 1768], 0
-    mov     r11, [rbp - 8]
-    test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_COMPRESSION
-    jz      .index_scan_open
-    mov     ARG1, [rbp - 24]
-    mov     ARG2, PAX_DECODE_MAX_BYTES
-    call    sql_arena_alloc
-    test    rax, rax
-    jz      .oom
-    mov     [rbp - 1768], rax
-.index_scan_open:
-    mov     ARG1, [rbp - 8]
-    mov     r10, [rbp - 16]
-    mov     ARG2, [r10 + PLAN_SCHEMA_PAGE]
-    lea     ARG3, [rbp - 1984]
-    call    db_pax_scan_open_bound
-    test    eax, eax
-    jnz     .storage_done
-    mov     qword [rbp - 1808], 0       ; the first row of the next batch
-
-.index_batch:
-    lea     ARG1, [rbp - 1984]
-    mov     ARG2, [rbp - 1760]
-    mov     ARG3, [rbp - 1792]
-    mov     ARG4, [rbp - 1768]
-    call    db_pax_scan_batch
-    test    eax, eax
-    jnz     .storage_done
-    test    rdx, rdx
-    jz      .index_built
-    mov     [rbp - 1848], rdx           ; rows this batch delivered
-
-    ; A row the table has marked dead is not a row the index names.
-    mov     rax, [rbp - 1984 + SCAN_DEAD]
-    not     rax
-    mov     rcx, 64
-    sub     rcx, [rbp - 1848]
-    mov     rdx, -1
-    shr     rdx, cl
-    and     rax, rdx
-    mov     [rbp - 1856], rax           ; the lanes worth indexing
-
-    mov     r10, [rbp - 16]
-    mov     rax, [r10 + PLAN_DATA3]
-    imul    rax, CybouDB_COLVIEW_SIZE
-    add     rax, [rbp - 1760]
-    add     rax, BATCH_VIEW_COLUMNS
-    mov     [rbp - 1832], rax           ; the column's view in this batch
-
-.index_row:
-    mov     rax, [rbp - 1856]
-    test    rax, rax
-    jz      .index_batch_done
-    bsf     rcx, rax
-    mov     [rbp - 1864], rcx           ; the lane
-    lea     rdx, [rax - 1]
-    and     rax, rdx
-    mov     [rbp - 1856], rax
-
-    ; A NULL has no key, so the index stores nothing for it.
-    mov     r8, [rbp - 1832]
-    mov     rcx, [rbp - 1864]
-    bt      qword [r8 + COLVIEW_NULL_MASK], rcx
-    jc      .index_row
-
-    mov     r9, [r8 + COLVIEW_VALUES_PTR]
-    mov     edx, [r8 + COLVIEW_WIDTH]
-    cmp     edx, 8
-    je      .index_key_64
-    movsxd  rax, dword [r9 + rcx * 4]   ; INT32 sorts where a signed key does
-    jmp     .index_key_ready
-.index_key_64:
-    mov     rax, [r9 + rcx * 8]
-.index_key_ready:
-    mov     [rbp - 1872], rax           ; the key
-    mov     rax, [rbp - 1808]
-    add     rax, [rbp - 1864]
-    mov     [rbp - 1880], rax           ; the row it names
-
     mov     ARG1, [rbp - 8]
     mov     r10, [rbp - 16]
     mov     ARG2, [r10 + PLAN_TABLE_ID]
-    mov     ARG3, [rbp - 1800]
-    mov     ARG4, [rbp - 1872]
-    mov     rax, [rbp - 1880]
-    PASS_ARG5 rax
-    lea     rax, [rbp - 1800]
-    PASS_ARG6 rax
+    lea     ARG3, [rbp - 64]
+    call    db_catalog_get
+    test    eax, eax
+    jnz     .storage_done
+    mov     r10, [rbp - 8]
+    mov     rax, [rbp - 64]
+    shl     rax, CybouDB_PAGE_SHIFT
+    add     rax, [r10 + DB_BASE]
+    mov     ARG3, rax
+    mov     ARG1, r10
     mov     r11, [rbp - 16]
-    mov     r11, [r11 + PLAN_DATA1]
-    cmp     dword [r11 + IDX_FLAGS], 0
-    jne     .index_insert_unique
-    call    db_index_insert
-    jmp     .index_inserted
-.index_insert_unique:
-    call    db_index_insert_unique
-.index_inserted:
-    test    eax, eax
-    jnz     .storage_done
-    inc     qword [rbp - 1816]
-    jmp     .index_row
-
-.index_batch_done:
-    mov     rax, [rbp - 1848]
-    add     [rbp - 1808], rax
-    jmp     .index_batch
-
-.index_built:
-    cmp     qword [rbp - 1816], 0
-    je      .index_published
-    mov     ARG1, [rbp - 8]
-    mov     r10, [rbp - 16]
-    mov     ARG2, [r10 + PLAN_TABLE_ID]
-    mov     ARG3, [rbp - 1800]
-    mov     ARG4, [rbp - 1816]
-    call    db_catalog_set_index_root
-    test    eax, eax
-    jnz     .storage_done
-.index_published:
-    xor     eax, eax
-    jmp     .exec_exit
+    mov     ARG2, [r11 + PLAN_TABLE_ID]
+    mov     ARG4, [r11 + PLAN_SCHEMA_PAGE]
+    mov     rax, [rbp - 24]
+    PASS_ARG5 rax
+    call    sql_index_build_one
+    jmp     .storage_done
 
 .exec_drop_index:
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    lea     ARG3, [rbp - 64]
+    call    db_catalog_get
+    test    eax, eax
+    jnz     .storage_done
+    mov     r10, [rbp - 8]
+    mov     rax, [rbp - 64]
+    shl     rax, CybouDB_PAGE_SHIFT
+    add     rax, [r10 + DB_BASE]
+    mov     ARG1, r10
+    mov     ARG2, [rax + IDX_ROOT]
+    call    db_index_retire_tree
     mov     ARG1, [rbp - 8]
     mov     r10, [rbp - 16]
     mov     ARG2, [r10 + PLAN_TABLE_ID]
@@ -1217,6 +1141,12 @@ sql_execute_batch:
 
 .exec_drop:
     mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    call    sql_index_drop_all
+    test    eax, eax
+    jnz     .storage_done
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
     mov     ARG2, [r10 + PLAN_TABLE_ID]
     call    db_catalog_drop
     jmp     .storage_done
@@ -1227,10 +1157,36 @@ sql_execute_batch:
     call    db_catalog_put
     jmp     .storage_done
 .exec_insert:
+    ; Where the appended rows will sit, read before the append moves it.
     mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    lea     ARG3, [rbp - 64]
+    call    db_catalog_get
+    test    eax, eax
+    jnz     .storage_done
+    mov     r10, [rbp - 8]
+    mov     rax, [rbp - 64]
+    shl     rax, CybouDB_PAGE_SHIFT
+    add     rax, [r10 + DB_BASE]
+    mov     [rbp - 72], rax             ; schema
+    mov     rcx, [rax + CAT_TABLE_ROWS]
+    mov     [rbp - 80], rcx             ; the first row this INSERT adds
+
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
     mov     ARG2, [r10 + PLAN_TABLE_ID]
     mov     ARG3, [r10 + PLAN_DATA1]
     call    db_pax_insert
+    test    eax, eax
+    jnz     .storage_done
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    mov     ARG3, [rbp - 72]
+    mov     ARG4, [r10 + PLAN_DATA1]
+    mov     rax, [rbp - 80]
+    PASS_ARG5 rax
+    call    sql_index_insert_batch
     jmp     .storage_done
 .exec_update:
     mov r10, [rbp - 16]
@@ -1354,7 +1310,7 @@ sql_execute_batch:
 .update_apply:
     mov rax, [rbp - 200]
     cmp rax, [rbp - 176]
-    jae .success
+    jae .update_indexes
     shl rax, 4
     add rax, [rbp - 168]
     mov [rbp - 208], rax
@@ -1403,6 +1359,30 @@ sql_execute_batch:
     add [rbp - 200], rax
     mov r10, [rbp - 16]
     jmp .update_apply
+.update_indexes:
+    ; The rows did not move, but the keys of the column that changed did.
+    mov ARG1, [rbp - 8]
+    mov r10, [rbp - 16]
+    mov ARG2, [r10 + PLAN_TABLE_ID]
+    lea ARG3, [rbp - 240]
+    call db_catalog_get
+    test eax, eax
+    jnz .storage_done
+    mov r10, [rbp - 8]
+    mov rax, [rbp - 240]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
+    mov ARG3, rax
+    mov ARG1, r10
+    mov r11, [rbp - 16]
+    mov ARG2, [r11 + PLAN_TABLE_ID]
+    mov ARG4, [rbp - 24]
+    mov rax, [r11 + PLAN_UPDATE_COL_IDX]
+    PASS_ARG5 rax
+    call sql_index_rebuild_all
+    test eax, eax
+    jnz .storage_done
+    jmp .success
 .exec_select:
     cmp qword [rbp - 32], 0
     je .missing_sink
@@ -1666,6 +1646,450 @@ sql_execute_batch:
 ; -----------------------------------------------------------------------------
 ;  sql_vector_topk_execute(db, plan, arena, batch_cb, cb_ctx, out_err)
 ;  Executes streaming Top-K vector search with O(K) memory overhead.
+; -----------------------------------------------------------------------------
+;  sql_index_build_one(ctx, index id, index page, schema, arena)
+;      -> RAX: result code
+;
+;  Builds one index over the rows a table has now, and publishes it. This is
+;  what CREATE INDEX does, and what a compacting DELETE has to do again: the
+;  rewrite moves every surviving row, so every entry naming a row by position
+;  stops meaning what it said.
+;
+;  One insert per row rather than a sorted bulk load: the rows arrive in row
+;  order, not key order, and sorting them would need somewhere to put them.
+;  The tree is the place they get sorted.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=index id, [rbp-24]=index page,
+;               [rbp-32]=schema, [rbp-40]=arena, [rbp-48]=column,
+;               [rbp-56]=unique, [rbp-64]=root, [rbp-72]=entries,
+;               [rbp-80]=batch view, [rbp-88]=decode storage, [rbp-96]=mask,
+;               [rbp-104]=first row of this batch, [rbp-112]=rows in it,
+;               [rbp-120]=live lanes, [rbp-128]=the column's view,
+;               [rbp-136]=lane, [rbp-144]=is int32, [rbp-2176]=cursor
+; -----------------------------------------------------------------------------
+sql_index_build_one:
+    FRAME_BEGIN 2240, 2
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov [rbp - 32], ARG4
+    mov rax, IN_ARG5
+    mov [rbp - 40], rax
+    mov r10, ARG3
+    mov ecx, [r10 + IDX_COLUMN]
+    mov [rbp - 48], rcx
+    mov ecx, [r10 + IDX_FLAGS]
+    mov [rbp - 56], rcx
+    mov qword [rbp - 64], 0
+    mov qword [rbp - 72], 0
+    ; Whatever this index held is about to stop being named by anything.
+    mov ARG1, [rbp - 8]
+    mov ARG2, [r10 + IDX_ROOT]
+    call db_index_retire_tree
+
+    ; INT32 is stored sign-extended, and the tree orders signed keys.
+    mov r11, [rbp - 32]
+    mov rax, [rbp - 48]
+    imul rax, CAT_COLUMN_SIZE
+    mov ecx, [r11 + CAT_COLUMNS + rax]
+    xor eax, eax
+    cmp ecx, CAT_INT32
+    sete al
+    mov [rbp - 144], rax
+
+    mov rax, [rbp - 48]
+    mov rcx, rax
+    mov rax, 1
+    shl rax, cl
+    mov [rbp - 96], rax             ; just the column being indexed
+
+    mov r11, [rbp - 32]
+    cmp qword [r11 + CAT_TABLE_ROWS], 0
+    je .publish
+
+    mov ARG1, [rbp - 40]
+    mov ARG2, CybouDB_BATCH_VIEW_SIZE
+    call sql_arena_alloc
+    test rax, rax
+    jz .oom
+    mov [rbp - 80], rax
+    mov qword [rbp - 88], 0
+    mov r10, [rbp - 8]
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_COMPRESSION
+    jz .scan_open
+    mov ARG1, [rbp - 40]
+    mov ARG2, PAX_DECODE_MAX_BYTES
+    call sql_arena_alloc
+    test rax, rax
+    jz .oom
+    mov [rbp - 88], rax
+.scan_open:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 32]
+    lea ARG3, [rbp - 2176]
+    call db_pax_scan_open_bound
+    test eax, eax
+    jnz .done
+    mov qword [rbp - 104], 0
+
+.batch:
+    lea ARG1, [rbp - 2176]
+    mov ARG2, [rbp - 80]
+    mov ARG3, [rbp - 96]
+    mov ARG4, [rbp - 88]
+    call db_pax_scan_batch
+    test eax, eax
+    jnz .done
+    test rdx, rdx
+    jz .publish
+    mov [rbp - 112], rdx
+
+    ; A row the table has marked dead is not a row the index names.
+    mov rax, [rbp - 2176 + SCAN_DEAD]
+    not rax
+    mov rcx, 64
+    sub rcx, [rbp - 112]
+    mov rdx, -1
+    shr rdx, cl
+    and rax, rdx
+    mov [rbp - 120], rax
+
+    mov rax, [rbp - 48]
+    imul rax, CybouDB_COLVIEW_SIZE
+    add rax, [rbp - 80]
+    add rax, BATCH_VIEW_COLUMNS
+    mov [rbp - 128], rax
+
+.row:
+    mov rax, [rbp - 120]
+    test rax, rax
+    jz .batch_done
+    bsf rcx, rax
+    mov [rbp - 136], rcx
+    lea rdx, [rax - 1]
+    and rax, rdx
+    mov [rbp - 120], rax
+
+    ; A NULL has no key, so the index stores nothing for it.
+    mov r8, [rbp - 128]
+    mov rcx, [rbp - 136]
+    bt qword [r8 + COLVIEW_NULL_MASK], rcx
+    jc .row
+
+    mov r9, [r8 + COLVIEW_VALUES_PTR]
+    cmp qword [rbp - 144], 0
+    je .key_64
+    movsxd rdx, dword [r9 + rcx * 4]
+    jmp .key_ready
+.key_64:
+    mov rdx, [r9 + rcx * 8]
+.key_ready:
+    ; Into a slot before any argument register is loaded: ARG2 is RDX on one
+    ; of the two ABIs, and the key would go with it.
+    mov [rbp - 152], rdx
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 64]
+    mov ARG4, [rbp - 152]
+    mov rax, [rbp - 104]
+    add rax, [rbp - 136]
+    PASS_ARG5 rax
+    lea rax, [rbp - 64]
+    PASS_ARG6 rax
+    cmp qword [rbp - 56], 0
+    jne .unique
+    call db_index_insert
+    jmp .inserted
+.unique:
+    call db_index_insert_unique
+.inserted:
+    test eax, eax
+    jnz .done
+    inc qword [rbp - 72]
+    jmp .row
+
+.batch_done:
+    mov rax, [rbp - 112]
+    add [rbp - 104], rax
+    jmp .batch
+
+.publish:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 64]
+    mov ARG4, [rbp - 72]
+    call db_catalog_set_index_root
+.done:
+    FRAME_END
+    ret
+.oom:
+    mov eax, SQL_ERR_NO_STORAGE
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  sql_index_rebuild_all(ctx, table id, schema, arena, column) -> RAX: result
+;
+;  Every index of a table that has stopped describing it. A column of -1 means
+;  all of them, which is what a compacting DELETE needs: it moved every
+;  surviving row, so every entry naming a row by position stopped meaning what
+;  it said. A column instead means the indexes over that column, which is what
+;  an UPDATE to it leaves behind.
+;
+;  Rebuilding rather than patching, in both cases, because the old keys are not
+;  what the statement has: a rewrite has already visited every surviving row,
+;  and an UPDATE knows the value it wrote and not the one it replaced.
+; -----------------------------------------------------------------------------
+sql_index_rebuild_all:
+    FRAME_BEGIN 64, 1
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov [rbp - 32], ARG4
+    mov rax, IN_ARG5
+    mov [rbp - 56], rax
+    mov qword [rbp - 40], 0
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_INDEX
+    jz .ok
+.index:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 40]
+    lea ARG4, [rbp - 48]
+    call db_index_of_table
+    test rax, rax
+    jz .ok
+    cmp qword [rbp - 56], -1
+    je .rebuild
+    mov ecx, [rax + IDX_COLUMN]
+    cmp rcx, [rbp - 56]
+    jne .skip
+.rebuild:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 48]
+    mov ARG3, rax
+    mov ARG4, [rbp - 24]
+    mov rax, [rbp - 32]
+    PASS_ARG5 rax
+    call sql_index_build_one
+    test eax, eax
+    jnz .done
+.skip:
+    mov rax, [rbp - 48]
+    mov [rbp - 40], rax
+    jmp .index
+.ok:
+    xor eax, eax
+.done:
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  sql_index_insert_batch(ctx, table id, schema, batch, first row)
+;      -> RAX: result code
+;
+;  Every index of the table learns about the rows an INSERT just appended. The
+;  rows do not move, so each is one entry; a NULL has no key and is skipped;
+;  and a unique index refusing a duplicate fails the statement, which is what
+;  makes the constraint a constraint.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=table id, [rbp-24]=schema, [rbp-32]=batch,
+;               [rbp-40]=first row, [rbp-48]=after id, [rbp-56]=this index id,
+;               [rbp-64]=index page, [rbp-72]=root, [rbp-80]=entries,
+;               [rbp-88]=column, [rbp-96]=column count, [rbp-104]=row,
+;               [rbp-112]=is int32, [rbp-120]=unique
+; -----------------------------------------------------------------------------
+sql_index_insert_batch:
+    FRAME_BEGIN 128, 2
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov [rbp - 32], ARG4
+    mov rax, IN_ARG5
+    mov [rbp - 40], rax
+    mov qword [rbp - 48], 0
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_INDEX
+    jz .ok
+    mov r11, ARG3
+    mov eax, [r11 + CAT_COUNT]
+    mov [rbp - 96], rax
+    mov r11, ARG4
+    cmp qword [r11 + BATCH_ROWS], 0
+    je .ok
+
+.index:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 48]
+    lea ARG4, [rbp - 56]
+    call db_index_of_table
+    test rax, rax
+    jz .ok
+    mov [rbp - 64], rax
+    mov ecx, [rax + IDX_COLUMN]
+    mov [rbp - 88], rcx
+    mov ecx, [rax + IDX_FLAGS]
+    mov [rbp - 120], rcx
+    mov rcx, [rax + IDX_ROOT]
+    mov [rbp - 72], rcx
+    mov rcx, [rax + IDX_ROWS]
+    mov [rbp - 80], rcx
+
+    ; INT32 is stored sign-extended, and the tree orders signed keys.
+    mov r11, [rbp - 24]
+    mov rax, [rbp - 88]
+    imul rax, CAT_COLUMN_SIZE
+    mov ecx, [r11 + CAT_COLUMNS + rax]
+    xor eax, eax
+    cmp ecx, CAT_INT32
+    sete al
+    mov [rbp - 112], rax
+
+    mov qword [rbp - 104], 0
+.row:
+    mov r11, [rbp - 32]
+    mov rax, [rbp - 104]
+    cmp rax, [r11 + BATCH_ROWS]
+    jae .index_done
+    imul rax, [rbp - 96]
+    add rax, [rbp - 88]             ; the cell this row keeps its key in
+    mov rcx, [r11 + BATCH_NULLS]
+    test rcx, rcx
+    jz .not_null
+    cmp byte [rcx + rax], 0
+    jne .next_row
+.not_null:
+    mov rcx, [r11 + BATCH_VALUES]
+    mov rdx, [rcx + rax * 8]
+    cmp qword [rbp - 112], 0
+    je .key_ready
+    movsxd rdx, edx
+.key_ready:
+    ; Into a slot before any argument register is loaded: ARG2 is RDX on one
+    ; of the two ABIs, and the key would go with it.
+    mov [rbp - 128], rdx
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 56]
+    mov ARG3, [rbp - 72]
+    mov ARG4, [rbp - 128]
+    mov rax, [rbp - 40]
+    add rax, [rbp - 104]
+    PASS_ARG5 rax
+    lea rax, [rbp - 72]
+    PASS_ARG6 rax
+    cmp qword [rbp - 120], 0
+    jne .unique
+    call db_index_insert
+    jmp .inserted
+.unique:
+    call db_index_insert_unique
+.inserted:
+    test eax, eax
+    jnz .done
+    inc qword [rbp - 80]
+.next_row:
+    inc qword [rbp - 104]
+    jmp .row
+
+.index_done:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 56]
+    mov ARG3, [rbp - 72]
+    mov ARG4, [rbp - 80]
+    call db_catalog_set_index_root
+    test eax, eax
+    jnz .done
+    mov rax, [rbp - 56]
+    mov [rbp - 48], rax
+    jmp .index
+.ok:
+    xor eax, eax
+.done:
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  sql_index_empty_all(ctx, table id) -> RAX: result code
+;
+;  Every index of the table loses its tree. What a truncation leaves behind is
+;  a table with no rows, and an index over no rows is an empty one.
+; -----------------------------------------------------------------------------
+sql_index_empty_all:
+    FRAME_BEGIN 48, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov qword [rbp - 24], 0
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_INDEX
+    jz .ok
+.index:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 24]
+    lea ARG4, [rbp - 32]
+    call db_index_of_table
+    test rax, rax
+    jz .ok
+    cmp qword [rax + IDX_ROOT], 0
+    je .already_empty
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rax + IDX_ROOT]
+    call db_index_retire_tree
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 32]
+    xor ARG3, ARG3
+    xor ARG4, ARG4
+    call db_catalog_set_index_root
+    test eax, eax
+    jnz .done
+.already_empty:
+    mov rax, [rbp - 32]
+    mov [rbp - 24], rax
+    jmp .index
+.ok:
+    xor eax, eax
+.done:
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  sql_index_drop_all(ctx, table id) -> RAX: result code
+;
+;  A table's indexes go with it. Dropping one changes the directory, so the
+;  walk restarts from zero rather than continuing past an id that has moved.
+; -----------------------------------------------------------------------------
+sql_index_drop_all:
+    FRAME_BEGIN 48, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_INDEX
+    jz .ok
+.index:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    xor ARG3, ARG3
+    lea ARG4, [rbp - 24]
+    call db_index_of_table
+    test rax, rax
+    jz .ok
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rax + IDX_ROOT]
+    call db_index_retire_tree
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 24]
+    call db_catalog_drop
+    test eax, eax
+    jnz .done
+    jmp .index
+.ok:
+    xor eax, eax
+.done:
+    FRAME_END
+    ret
+
 ; -----------------------------------------------------------------------------
 sql_vector_topk_execute:
     FRAME_BEGIN 2048, 2

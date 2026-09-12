@@ -169,44 +169,16 @@ new root publishes the index's, or neither is published.
 Uniqueness is enforced where the insert happens, not by a later check, so a
 violating statement fails before it has staged a row.
 
-**Maintenance is not implemented yet.** `CREATE INDEX` builds the tree over the
-rows the table has at that moment, and nothing updates it afterwards: an INSERT,
-an UPDATE or a DELETE leaves the index describing the table as it was. No query
-can be answered wrongly because of it - no plan consults an index yet - but an
-index created today is a snapshot, and the table above is what it will be once
-the maintenance hooks exist. The planner must not be taught to use an index
-before they do.
+Where a statement cannot patch the index it rebuilds it, and the two cases are
+the ones where the old keys are not something the statement has: a compacting
+DELETE has already visited every surviving row, and an UPDATE knows the value
+it wrote but not the one it replaced. An UPDATE rebuilds only the indexes over
+the column it changed; the rest are untouched, because the rows did not move.
 
-A refused insert is not a no-op on the tree: the path to the leaf has already
-been copied by the time the duplicate is seen, and a copy retires the page it
-came from. The caller discards the transaction rather than reusing the root it
-handed in — the same contract a refused commit has, and for the same reason.
-
-An insert costs the height of the tree in copied pages, and nothing else: a
-node off the path is shared between the two generations rather than rewritten.
-A node that overflows splits into two halves of 126, so a tree grown one row
-at a time is at worst half empty and its height is still bounded by the fan-out.
-
-## Removing an entry
-
-An entry is named by both its key and the row it points at: a non-unique index
-holds several entries under one key, and only one of them belongs to the row
-being removed.
-
-A node is copied only once it is known to survive. Copying first and
-discovering afterwards that the node is now empty would leave an allocated
-page nothing references, and the allocation map would be right to object. So
-the descent reads the node it is standing on, waits for the child below to
-report, and copies it then — which is also the moment its new contents are
-known. One consequence is worth having: a delete that finds nothing has staged
-nothing, unlike an insert that refuses a duplicate.
-
-Nothing is merged or rebalanced. A node that loses its last entry is dropped
-from its parent and a root left naming one child collapses into it, so the
-height never drifts upwards; a node that merely thins out stays thin. A table
-that deletes enough for that to matter is compacted by the rewrite in
-[TOMBSTONES.md](TOMBSTONES.md), and that rewrite rebuilds every index of the
-table anyway.
+A tree that stops being named is retired node by node. Retirement is recorded
+rather than derived - the allocator counts what the map says - so a rebuild, an
+emptied index and a dropped one each give their old tree back instead of
+leaving pages nobody will hand out again.
 
 ## Copy-on-write
 

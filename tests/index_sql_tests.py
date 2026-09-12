@@ -25,6 +25,64 @@ from pathlib import Path
 FEATURE_INDEX = 8192
 
 
+def read_tree(path, name):
+    """Every (key, row) one index holds, read out of the file.
+
+    The point of reading the tree rather than trusting a statement's exit code
+    is that an index nothing queries can be wrong in complete silence: a build
+    that put the same key in every entry still validates, because validation
+    compares the tree to what the index page claims and not to the table.
+    """
+    with open(path, "rb") as handle:
+        blob = handle.read()
+    page_size = 4096
+
+    def u32(off):
+        return struct.unpack_from("<I", blob, off)[0]
+
+    def u64(off):
+        return struct.unpack_from("<Q", blob, off)[0]
+
+    def i64(off):
+        return struct.unpack_from("<q", blob, off)[0]
+
+    # The newest superblock names the catalog directory.
+    best, root = -1, 0
+    for sb in (1, 2):
+        generation = u64(sb * page_size + 8)
+        if generation > best:
+            best, root = generation, u64(sb * page_size + 40)
+    if not root:
+        return None
+    count = u32(root * page_size + 36)
+    for i in range(count):
+        entry = root * page_size + 64 + i * 16
+        page = u64(entry + 8) * page_size
+        if u32(page + 32) != 3:                      # CAT_INDEX
+            continue
+        label = blob[page + 64:page + 96].split(bytes(1))[0].decode()
+        if label != name:
+            continue
+        entries = []
+
+        def visit(node):
+            base = node * page_size
+            n = u32(base + 36)
+            if u32(base + 32) == 0:                  # a leaf
+                for j in range(n):
+                    off = base + 64 + j * 16
+                    entries.append((i64(off), u64(off + 8)))
+                return
+            for j in range(n):
+                visit(u64(base + 64 + j * 16 + 8))
+
+        tree_root = u64(page + 40)
+        if tree_root:
+            visit(tree_root)
+        return entries
+    return None
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python index_sql_tests.py <path_to_cyboudb_exe>")
@@ -115,6 +173,76 @@ def main():
         check("while an ordinary index over them is fine",
               r.returncode == 0, r.stdout)
 
+        # --- what the tree actually holds ------------------------------------
+        # A build that put the same key in every entry would pass every check
+        # above: an index nothing queries can be wrong in silence, so the file
+        # is read and compared against the table.
+        tree = read_tree(db, "idx_v")
+        check("the tree holds one entry per row",
+              tree is not None and len(tree) == 200, str(tree)[:120])
+        check("with the keys the column has and the rows that carry them",
+              sorted(tree) == [(i * 10, i - 1) for i in range(1, 201)],
+              str(sorted(tree)[:4]))
+
+        # --- maintenance ------------------------------------------------------
+        r = query("INSERT INTO t VALUES (201, 2010, 0);")
+        tree = read_tree(db, "idx_v")
+        check("an INSERT reaches every index",
+              r.returncode == 0 and tree is not None and (2010, 200) in tree and
+              len(tree) == 201, r.stdout)
+
+        r = query("INSERT INTO t VALUES (5, 5000, 0);")
+        check("and a unique index refuses a row that would break it",
+              r.returncode != 0, r.stdout)
+        r = run("check", db)
+        check("leaving the file valid", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
+
+        # A DELETE small enough to mark leaves the rows where they are, so the
+        # index keeps naming them; the entry is filtered when the row is read.
+        r = query("DELETE FROM t WHERE v = 10;")
+        check("a marking DELETE", r.returncode == 0, r.stdout)
+        r = run("check", db)
+        check("keeps the file valid", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
+
+        # One past half the table compacts, which moves every surviving row.
+        r = query("DELETE FROM t WHERE id < 150;")
+        check("a compacting DELETE", r.returncode == 0, r.stdout)
+        tree = read_tree(db, "idx_v")
+        rows = query("SELECT id FROM t;").stdout
+        live = [line.strip() for line in rows.splitlines()
+                if line.strip().isdigit()]
+        check("rebuilds the index over the rows that are left",
+              tree is not None and len(tree) == len(live), 
+              f"tree={len(tree) if tree else None} live={len(live)}")
+        check("naming them by their new positions",
+              tree is not None and sorted(row for _, row in tree) ==
+              list(range(len(live))), str(sorted(tree)[:4]))
+        r = run("check", db)
+        check("and the file still checks out", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
+
+        # An UPDATE does not move rows, but it moves the keys of the column it
+        # writes, so the indexes over that column are rebuilt and the others
+        # are left alone.
+        before_w = read_tree(db, "idx_w")
+        r = query("UPDATE t SET v = 7 WHERE id = 200;")
+        check("an UPDATE to an indexed column", r.returncode == 0, r.stdout)
+        tree = read_tree(db, "idx_v")
+        check("moves its key in the index",
+              tree is not None and 7 in [k for k, _ in tree] and
+              2000 not in [k for k, _ in tree], str(sorted(tree)[:4]))
+        check("and leaves an index on another column alone",
+              read_tree(db, "idx_w") == before_w)
+        r = run("check", db)
+        check("the file still checks out after it", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
+
+        r = query("DELETE FROM t;")
+        check("emptying the table", r.returncode == 0, r.stdout)
+        check("empties its indexes", read_tree(db, "idx_v") == [])
+
         # --- dropping --------------------------------------------------------
         r = query("DROP INDEX idx_v;")
         check("dropping an index", r.returncode == 0 and
@@ -127,6 +255,7 @@ def main():
               "index not found" in r.stdout, r.stdout)
         r = query("DROP TABLE t;")
         check("the table still drops", r.returncode == 0, r.stdout)
+        check("taking its indexes with it", read_tree(db, "u_id") is None)
         r = run("check", db)
         check("leaving a file that checks out", r.returncode == 0 and
               "Status:          OK" in r.stdout, r.stdout)

@@ -603,11 +603,15 @@ survive publication is a file that refuses to open; `CREATE [UNIQUE] INDEX name
 ON table (column)` and `DROP INDEX name` over INT32 and INT64 columns, with
 uniqueness enforced while the tree is built.
 
-Not done: **maintenance**. An index is built over the rows the table has when
-the statement runs, and no INSERT, UPDATE or DELETE touches it afterwards. No
-query can be answered wrongly because of it, because no plan consults an index
-yet - and the planner must not be taught to until the hooks exist. Also open:
-TEXT keys, multi-column keys, and using an index to answer a query at all.
+Maintenance is done too: an INSERT reaches every index of the table, a unique
+index refuses a row that would break it, a marking DELETE leaves the entries
+where they are because the rows did not move, a compacting DELETE rebuilds
+every index because they did, an UPDATE rebuilds the indexes over the column it
+wrote, and DROP TABLE takes its indexes with it.
+
+Not done: **no plan consults an index**. Every query still scans, so what the
+work so far buys is an index that is correct and maintained rather than one
+that is used. Also open: TEXT keys and multi-column keys.
 
 ---
 

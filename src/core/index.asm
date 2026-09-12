@@ -16,7 +16,7 @@ extern db_bitmap_candidate_payload, db_bitmap_deep, db_bitmap_retire
 global db_index_build, db_index_insert, db_index_insert_unique
 global db_index_delete
 global db_index_search, db_index_validate, index_page_valid
-global db_index_node_addr
+global db_index_node_addr, db_index_of_table, db_index_retire_tree
 
 section .text
 
@@ -1185,6 +1185,115 @@ db_index_search:
     mov rax, [rbp - 40]
     mov [rax], rcx
 .empty:
+    xor eax, eax
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  db_index_of_table(ctx, table id, after this index id, out index id)
+;      -> RAX: the index page's address, or zero when there is no next one.
+;
+;  Every index of a table, one call at a time, in id order: pass zero to start
+;  and the id it hands back to continue. Walking the directory is what having
+;  no second structure to keep consistent costs, and the directory is one page.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=table id, [rbp-24]=after, [rbp-32]=out
+; -----------------------------------------------------------------------------
+db_index_of_table:
+    FRAME_BEGIN 48, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov [rbp - 32], ARG4
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_INDEX
+    jz .none
+    mov rax, [r10 + DB_ROOT]
+    test rax, rax
+    jz .none
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
+    mov r8, rax                     ; the directory
+    mov ecx, [r8 + CAT_COUNT]
+    test ecx, ecx
+    jz .none
+    xor edx, edx
+.entry:
+    cmp edx, ecx
+    jae .none
+    mov rax, rdx
+    shl rax, 4
+    mov r9, [r8 + CAT_DATA + rax]   ; the id this entry names
+    cmp r9, [rbp - 24]
+    jbe .next
+    mov r11, [r8 + CAT_DATA + rax + 8]
+    shl r11, CybouDB_PAGE_SHIFT
+    add r11, [r10 + DB_BASE]
+    cmp dword [r11 + CAT_TYPE], CAT_INDEX
+    jne .next
+    mov rax, [rbp - 16]
+    cmp [r11 + IDX_TABLE], rax
+    jne .next
+    mov rax, [rbp - 32]
+    mov [rax], r9
+    mov rax, r11
+    FRAME_END
+    ret
+.next:
+    inc edx
+    jmp .entry
+.none:
+    xor eax, eax
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  db_index_retire_tree(ctx, root) -> RAX: 0
+;
+;  Every node of a tree the new generation will not name. Retirement is
+;  recorded, not derived: db_bitmap_recount counts what the map says, so a node
+;  left marked payload with nothing pointing at it is a page nobody ever hands
+;  out again. A rebuild, an emptied index and a dropped one all leave a whole
+;  tree behind, and this is what stops each of them from being a leak.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=node, [rbp-24]=address, [rbp-32]=index
+; -----------------------------------------------------------------------------
+db_index_retire_tree:
+    FRAME_BEGIN 48, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    cmp ARG2, 0
+    je .done
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_INDEX
+    jz .done
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    call index_node_addr
+    mov [rbp - 24], rax
+    cmp dword [rax + IDX_MAGIC], IDX_MAGIC_VALUE
+    jne .done                       ; not a node: retire nothing on a guess
+    cmp dword [rax + IDX_LEVEL], IDX_LEAF
+    je .retire
+    mov qword [rbp - 32], 0
+.child:
+    mov r10, [rbp - 24]
+    mov eax, [r10 + IDX_COUNT]
+    cmp [rbp - 32], rax
+    jae .retire
+    mov rax, [rbp - 32]
+    shl rax, 4
+    mov r9, [r10 + IDX_ENTRIES + rax + IDX_CHILD]
+    mov ARG1, [rbp - 8]
+    mov ARG2, r9
+    call db_index_retire_tree
+    inc qword [rbp - 32]
+    jmp .child
+.retire:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    call db_bitmap_retire
+.done:
     xor eax, eax
     FRAME_END
     ret
