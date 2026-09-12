@@ -13,6 +13,7 @@ default rel
 extern crc32c
 extern db_cow_alloc_page, db_cow_copy_page
 extern db_bitmap_candidate_payload, db_bitmap_deep, db_bitmap_retire
+extern db_bitmap_is_fresh
 global db_index_build, db_index_insert, db_index_insert_unique
 global db_index_delete
 global db_index_search, db_index_validate, index_page_valid
@@ -59,45 +60,18 @@ index_stamp:
     mov qword [ARG1 + IDX_RESERVED + 8], 0
     ret
 
-; index_seal(ARG1 = node, ARG2 = ctx). Records how many entries live at or
-; below this node, then checksums everything ahead of the checksum.
+; index_seal(ARG1 = node, ARG2 = ctx). The checksum, over everything ahead of
+; it. The ctx is no longer read: it stays in the signature because every writer
+; passes it and the next thing to need it will be a writer too.
 ;
-; The count is what lets a commit stop at the path it changed. Under
-; copy-on-write a subtree older than the candidate generation cannot have
-; changed, so validation can take its recorded size instead of walking it -
-; and the walk is what made a one-row insert cost the size of the index.
-;
-; Recomputing it from the children rather than adjusting it as the tree is
-; edited costs at most 251 header reads on a node that is being written
-; anyway, and cannot drift.
+; Sealing used to recompute IDX_SUBTREE from the node's children, which read
+; one header per child - up to 251 random pages on a node that was otherwise
+; four page copies. The size is maintained where the change is made instead:
+; an insert adds one to every node on the path it copied, a delete takes one
+; away, and a split recomputes only the half that moved.
 index_seal:
     FRAME_BEGIN 32, 0
     mov [rbp - 8], ARG1
-    mov [rbp - 16], ARG2
-    mov r10, ARG1
-    mov eax, [r10 + IDX_COUNT]
-    cmp dword [r10 + IDX_LEVEL], IDX_LEAF
-    je .sized
-    ; An internal node holds what its children hold.
-    xor eax, eax
-    xor ecx, ecx
-.child_sum:
-    cmp ecx, [r10 + IDX_COUNT]
-    jae .sized
-    inc qword [rel index_child_reads]
-    mov rdx, rcx
-    shl rdx, 4
-    mov rdx, [r10 + IDX_ENTRIES + rdx + IDX_CHILD]
-    shl rdx, CybouDB_PAGE_SHIFT
-    mov r11, [rbp - 16]
-    add rdx, [r11 + DB_BASE]
-    add rax, [rdx + IDX_SUBTREE]
-    inc ecx
-    jmp .child_sum
-.sized:
-    mov r10, [rbp - 8]
-    mov [r10 + IDX_SUBTREE], rax
-    mov ARG1, [rbp - 8]
     mov ARG2, IDX_CRC
     call crc32c
     mov r10, [rbp - 8]
@@ -172,7 +146,8 @@ index_new_node:
 %define BS_COUNT    144                 ; entries placed in it
 %define BS_LAST     208                 ; the largest key under it so far
 %define BS_MADE     272                 ; nodes created at this level
-%define BS_SIZE     336
+%define BS_SUB      336                 ; entries under the open node
+%define BS_SIZE     400
 %define IDX_MAX_LEVELS 8
 
 ; index_close(ARG1 = state, ARG2 = level): write the open node's count and seal
@@ -186,6 +161,8 @@ index_close:
     mov r11, [r10 + BS_ADDR + rax * 8]
     mov rcx, [r10 + BS_COUNT + rax * 8]
     mov [r11 + IDX_COUNT], ecx
+    mov rcx, [r10 + BS_SUB + rax * 8]
+    mov [r11 + IDX_SUBTREE], rcx
     mov ARG1, r11
     mov r10, [rbp - 8]
     mov ARG2, [r10 + BS_CTX]
@@ -249,6 +226,7 @@ index_push:
     mov rax, [rbp - 16]
     mov [r10 + BS_ADDR + rax * 8], rdx
     mov qword [r10 + BS_COUNT + rax * 8], 0
+    mov qword [r10 + BS_SUB + rax * 8], 0
     inc qword [r10 + BS_MADE + rax * 8]
 .place:
     mov r10, [rbp - 8]
@@ -264,6 +242,18 @@ index_push:
     inc rcx
     mov [r10 + BS_COUNT + rax * 8], rcx
     mov [r10 + BS_LAST + rax * 8], r8
+    ; What this entry adds: one row at a leaf, and at a level above, whatever
+    ; the child it names already counted.
+    mov rdx, 1
+    cmp qword [rbp - 16], 0
+    je .one_row
+    mov rdx, r9
+    shl rdx, CybouDB_PAGE_SHIFT
+    mov r11, [r10 + BS_CTX]
+    add rdx, [r11 + DB_BASE]
+    mov rdx, [rdx + IDX_SUBTREE]
+.one_row:
+    add [r10 + BS_SUB + rax * 8], rdx
     xor eax, eax
 .done:
     FRAME_END
@@ -300,6 +290,7 @@ db_index_build:
     mov qword [r10 + BS_ADDR + rcx * 8], 0
     mov qword [r10 + BS_COUNT + rcx * 8], 0
     mov qword [r10 + BS_LAST + rcx * 8], 0
+    mov qword [r10 + BS_SUB + rcx * 8], 0
     mov qword [r10 + BS_MADE + rcx * 8], 0
     inc ecx
     cmp ecx, IDX_MAX_LEVELS
@@ -550,7 +541,12 @@ index_insert_node:
     mov rdx, [rbp - 112 + IO_NODE]
     mov [r10 + IDX_ENTRIES + rax + 8], rdx
     cmp qword [rbp - 112 + IO_SIB], 0
-    je .finished
+    jne .child_split
+    ; The child did not split, so this node gains no entry - but the row
+    ; went in below it all the same.
+    inc qword [r10 + IDX_SUBTREE]
+    jmp .finished
+.child_split:
     ; The child split, so this node gains the entry naming its right half.
     inc qword [rbp - 56]
     mov r11, [rbp - 8]
@@ -578,6 +574,7 @@ index_insert_node:
     mov rax, [rbp - 48]
     inc rax
     mov [r10 + IDX_COUNT], eax
+    inc qword [r10 + IDX_SUBTREE]
     jmp .finished
 
 .split:
@@ -629,6 +626,37 @@ index_insert_node:
 .split_counts:
     mov [r9 + IDX_COUNT], edx
     mov [rbp - 128], rdx                ; entries the right half took
+    ; What moved with them. A leaf entry is one row; an internal entry carries
+    ; whatever its child counted, and only the moved half is read - the left
+    ; keeps the remainder by subtraction.
+    mov r11, [rbp - 40]
+    cmp dword [r11 + IDX_LEVEL], IDX_LEAF
+    je .split_rows_are_entries
+    xor rax, rax
+    xor ecx, ecx
+.split_sum:
+    cmp rcx, rdx
+    jae .split_sum_done
+    mov r11, rcx
+    shl r11, 4
+    mov r11, [r9 + IDX_ENTRIES + r11 + IDX_CHILD]
+    shl r11, CybouDB_PAGE_SHIFT
+    mov r8, [rbp - 8]
+    mov r8, [r8 + II_CTX]
+    add r11, [r8 + DB_BASE]
+    mov r11, [r11 + IDX_SUBTREE]
+    add rax, r11
+    inc ecx
+    jmp .split_sum
+.split_sum_done:
+    jmp .split_moved
+.split_rows_are_entries:
+    mov rax, rdx
+.split_moved:
+    mov [rbp - 144], rax                ; rows the right half took
+    mov r8, [rbp - 40]
+    mov r9, [rbp - 72]
+    mov rdx, [rbp - 128]
     mov rax, [rbp - 136]
     mov [r8 + IDX_COUNT], eax
 
@@ -650,6 +678,15 @@ index_insert_node:
     mov rax, [rbp - 136]
     inc rax
     mov [r10 + IDX_COUNT], eax
+    ; The row went left: the right half keeps what it took and the left keeps
+    ; everything else, including the one being placed.
+    mov rax, [rbp - 144]
+    mov r11, [rbp - 72]
+    mov [r11 + IDX_SUBTREE], rax
+    mov rcx, [r10 + IDX_SUBTREE]
+    inc rcx
+    sub rcx, rax
+    mov [r10 + IDX_SUBTREE], rcx
     jmp .split_seal
 .split_into_right:
     mov rax, [rbp - 56]
@@ -669,6 +706,15 @@ index_insert_node:
     mov rax, [rbp - 128]
     inc rax
     mov [r10 + IDX_COUNT], eax
+    ; The row went right, so the right half keeps what it took plus this one.
+    mov rax, [rbp - 144]
+    inc rax
+    mov [r10 + IDX_SUBTREE], rax
+    mov r11, [rbp - 40]
+    mov rcx, [r11 + IDX_SUBTREE]
+    inc rcx
+    sub rcx, rax
+    mov [r11 + IDX_SUBTREE], rcx
 
 .split_seal:
     ; Everything above what each half now holds is zero, as every tail is.
@@ -782,6 +828,7 @@ index_insert_common:
     mov ARG2, r10
     call index_node_addr
     mov dword [rax + IDX_COUNT], 1
+    mov qword [rax + IDX_SUBTREE], 1
     mov ARG1, rax
     lea r10, [rbp - 64]
     mov ARG2, [r10 + II_CTX]
@@ -837,6 +884,17 @@ index_insert_common:
     call index_entry_put
     mov r10, [rbp - 152]
     mov dword [r10 + IDX_COUNT], 2
+    lea r11, [rbp - 64]
+    mov r11, [r11 + II_CTX]
+    mov rax, [rbp - 128 + IO_NODE]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r11 + DB_BASE]
+    mov rcx, [rax + IDX_SUBTREE]
+    mov rax, [rbp - 128 + IO_SIB]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r11 + DB_BASE]
+    add rcx, [rax + IDX_SUBTREE]
+    mov [r10 + IDX_SUBTREE], rcx
     mov ARG1, r10
     lea r10, [rbp - 64]
     mov ARG2, [r10 + II_CTX]
@@ -1067,13 +1125,19 @@ index_delete_node:
     mov r10, [rbp - 64]
     mov rax, [rbp - 40]
     mov [r10 + IDX_COUNT], eax
-    jmp .sealed
+    jmp .one_fewer
 
 .shrunk:
     mov r10, [rbp - 64]
     mov rax, [rbp - 40]
     dec rax
     mov [r10 + IDX_COUNT], eax
+.one_fewer:
+    ; Exactly one row leaves the tree, so every node on the path holds one
+    ; fewer - including a node that lost a whole child, because a child is
+    ; dropped only when the entry it lost was its last.
+    mov r10, [rbp - 64]
+    dec qword [r10 + IDX_SUBTREE]
 .sealed:
     mov ARG1, [rbp - 64]
     call index_tail_clear
@@ -1502,6 +1566,20 @@ db_index_validate:
     call index_node_validate
     test eax, eax
     jz .bad
+    mov r10, [rbp - 8]
+    cmp qword [r10 + DB_VERIFY], 0
+    jne .counted
+    ; The root says what the whole tree holds and the index page says
+    ; what it should be: one page against one page.
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 32]
+    call index_node_addr
+    mov r10, [rbp - 24]
+    mov rdx, [rax + IDX_SUBTREE]
+    cmp rdx, [r10 + IDX_ROWS]
+    jne .bad
+    jmp .good
+.counted:
     mov r10, [rbp - 24]
     mov rax, [rbp - 40]
     cmp rax, [r10 + IDX_ROWS]
@@ -1525,7 +1603,7 @@ db_index_validate:
 ;               [rbp-40]=expected level, [rbp-48]=seen, [rbp-56]=address,
 ;               [rbp-64]=count, [rbp-72]=index, [rbp-80]=previous key end
 index_node_validate:
-    FRAME_BEGIN 96, 2
+    FRAME_BEGIN 112, 2
     inc qword [rel index_nodes_walked]
     mov [rbp - 8], ARG1
     mov [rbp - 16], ARG2
@@ -1661,6 +1739,19 @@ index_node_validate:
     ; The child goes into a register no argument aliases: ARG1 is RCX on
     ; one of the two ABIs, and loading it would take the child with it.
     mov r9, [r8 + IDX_ENTRIES + rax + IDX_CHILD]
+    mov [rbp - 104], r9
+    ; Ask the map, not the page: reading a child's header to find out it
+    ; is old costs exactly the page fault this is here to avoid.
+    mov r10, [rbp - 8]
+    cmp qword [r10 + DB_VERIFY], 0
+    jne .enter_child
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 104]
+    call db_bitmap_is_fresh
+    test eax, eax
+    jz .child_skipped
+.enter_child:
+    mov r9, [rbp - 104]
     mov ARG1, [rbp - 8]
     mov ARG2, [rbp - 16]
     mov ARG3, [rbp - 24]
@@ -1674,6 +1765,7 @@ index_node_validate:
     call index_node_validate
     test eax, eax
     jz .bad
+.child_skipped:
     inc qword [rbp - 72]
     jmp .child_entries
 
@@ -1707,7 +1799,11 @@ index_node_validate:
     jne .bad                        ; a leaf holds exactly what it says
     jmp .valid
 .subtree_checked:
-    ; What the children reported against what this node claims.
+    ; What the children reported against what this node claims - which
+    ; only means anything when every child was visited.
+    mov r10, [rbp - 8]
+    cmp qword [r10 + DB_VERIFY], 0
+    je .valid
     mov rax, [rbp - 48]
     mov rax, [rax]
     sub rax, [rbp - 96]

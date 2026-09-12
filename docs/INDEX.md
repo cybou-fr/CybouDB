@@ -118,9 +118,14 @@ the change.
 `cyboudb check` sets the flag that makes every node deep, and then the sizes
 are recomputed from the children and compared rather than believed.
 
-The number is recomputed from a node's children each time it is sealed, rather
-than adjusted as the tree is edited. That costs at most 251 header reads on a
-node that is being written anyway, and it cannot drift.
+Every writer adjusts the number where it makes the change: an insert adds one
+to each node on the path it copied, a delete takes one away, and a split gives
+each half what it holds. Recomputing it from the children at every seal was
+tried first and measured: it reads one header per child, up to 251 random
+pages on a node that is otherwise four page copies, and it was most of what
+an indexed insert cost. What makes the cheaper version safe is that
+`cyboudb check` recomputes every size from the children and compares - a
+writer's bookkeeping going wrong is caught there rather than trusted forever.
 
 ### No sibling pointers
 

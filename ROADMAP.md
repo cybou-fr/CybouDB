@@ -628,15 +628,18 @@ has the numbers:
   walking it whenever that subtree is older than the candidate generation -
   which, under copy-on-write, is every subtree a transaction did not touch.
   `cyboudb check` still walks everything and recomputes the sizes.
-* **An indexed INSERT is still far more expensive than an unindexed one**, and
-  the earlier claim here that it cost three validated nodes was measured
-  through a path that never reached the index at all - the ABI was not
-  maintaining indexes, which is now fixed. Measured again through a path that
-  does the work, `tests/index_probe.c` reports 1.6 ms without an index at
-  either size, 33 ms with one at 5000 rows and 47 ms at 50000, with 44 and 151
-  nodes visited. Two things are wrong there and neither is attributed yet: a
-  parent still calls into every child to find out the child is old, and sealing
-  a node sums its children's sizes rather than adjusting its own.
+* **An indexed INSERT is much cheaper than it was, and still not flat.** Two
+  causes were found by measurement and removed. A parent used to call into
+  every child to find out the child was old, which costs the page fault the
+  walk exists to avoid; it now asks the allocation map whether this
+  transaction wrote the page. And sealing a node used to recompute its subtree
+  size from its children - up to 251 random pages on a node that was otherwise
+  four page copies - where every writer now adjusts the size where it makes
+  the change. `tests/index_probe.c` measures 33 ms to 2.1 ms at 5000 rows and
+  47 ms to 14.1 ms at 50000, with 44 and 151 nodes visited becoming 4 and 5,
+  and the child reads gone. Against 1.7 ms unindexed, what is left at 50000
+  rows is about 12 ms that five page touches cannot explain, and it is not
+  attributed.
 * **UPDATE and DELETE rebuild** where they could patch, which makes both linear
   in the table. The statement has the rows that matched but not the keys they
   carried, and that is what would have to change.
