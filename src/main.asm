@@ -1086,7 +1086,7 @@ cyboudb_exec_query:
     ; generation as well as the data instead of publishing an empty commit.
     cmp     qword [r10 + PLAN_TYPE], STMT_DELETE
     jne     .check_empty_update
-    cmp     qword [r10 + PLAN_DATA1], 0
+    cmp     qword [r10 + PLAN_DELETE_ROWS], 0
     je      .mutation_done
     jmp     .commit_mutation
 .check_empty_update:
@@ -1144,7 +1144,7 @@ cyboudb_exec_query:
 .delete_done:
     PUTS    msg_sql_delete_prefix
     mov     r10, [rbp - 40]
-    mov     ARG1, [r10 + PLAN_DATA1]
+    mov     ARG1, [r10 + PLAN_DELETE_ROWS]
     call    put_u64
     PUTS    str_nl
     jmp     .exec_success

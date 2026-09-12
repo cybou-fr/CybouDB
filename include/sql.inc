@@ -346,7 +346,8 @@
 %define PLAN_UPDATE_LENGTH  256         ; qword TEXT/BLOB byte length, otherwise zero
 %define PLAN_UPDATE_IS_NULL 264         ; qword boolean
 %define PLAN_VECTOR_TOPK_EXPR 272       ; qword: bound vector distance expr
-%define BOUND_PLAN_SIZE     280
+%define PLAN_DELETE_ROWS    280         ; qword rows a DELETE removed
+%define BOUND_PLAN_SIZE     288
 %define PLAN_PROJ_RIGHT_BIT 0x80000000  ; u32 projection index belongs to RHS
 %define PLAN_FLAG_LIMIT     2           ; bit 1: LIMIT clause is present
 %define PLAN_FLAG_ORDER     4           ; bit 2: ORDER BY is present

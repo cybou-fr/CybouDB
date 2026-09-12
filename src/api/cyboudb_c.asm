@@ -21,7 +21,7 @@ extern db_catalog_put, db_catalog_drop, db_catalog_truncate_data, db_pax_insert
 extern db_var_read_chain
 extern sql_select_open, sql_select_next
 extern sql_arena_init, sql_arena_alloc
-extern sql_parse, sql_bind
+extern sql_parse, sql_bind, sql_execute_batch
 extern os_mem_alloc, os_mem_free
 
 %ifdef CybouDB_WINDOWS
@@ -489,7 +489,7 @@ cyboudb_prepare:
 ;  cyboudb_step(cyboudb_stmt *stmt) -> int
 ; =============================================================================
 cyboudb_step:
-    FRAME_BEGIN 48, 0
+    FRAME_BEGIN 96, 2
     mov     [rbp - 8], r12              ; preserve callee-saved r12
     test    ARG1, ARG1
     jz      .step_misuse
@@ -678,15 +678,34 @@ cyboudb_step:
     cmp     dword [r12 + STMT_H_STATE], STMT_STATE_DONE
     je      .step_done_ret
 
-    mov     r9, [rbp - 24]              ; plan
-    cmp     qword [r9 + PLAN_DATA1], 0
-    je      .step_delete_done
+    ; DELETE runs through the shared executor: a predicate needs the scan,
+    ; the kernels and the rewrite that only sql_execute_batch has.
+    ;
+    ; It executes against its own arena laid over the pull-select state and
+    ; decode buffer, which a DELETE plan never steps through. The prepare
+    ; arena still holds the plan and is left alone: it is sized for what
+    ; binding needed, not for what a rewrite scratch costs.
+    lea     ARG1, [rbp - 96]
+    lea     ARG2, [r12 + STMT_H_SELECT]
+    mov     ARG3, STMT_H_ARENA_BUF - STMT_H_SELECT
+    call    sql_arena_init
     mov     r10, [r12 + STMT_H_DB]
     lea     ARG1, [r10 + DB_H_CTX]
-    mov     ARG2, [r9 + PLAN_TABLE_ID]
-    call    db_catalog_truncate_data
+    mov     ARG2, [rbp - 24]            ; plan
+    lea     ARG3, [rbp - 96]
+    xor     ARG4, ARG4                  ; no row sink
+    xor     eax, eax
+    PASS_ARG5 rax
+    xor     eax, eax
+    PASS_ARG6 rax
+    call    sql_execute_batch
     test    eax, eax
     jnz     .step_mutation_error
+
+    ; Nothing was staged when the predicate matched no rows.
+    mov     r9, [rbp - 24]
+    cmp     qword [r9 + PLAN_DELETE_ROWS], 0
+    je      .step_delete_done
 
     ; Auto-commit if opened read-write and not in explicit transaction
     mov     r10, [r12 + STMT_H_DB]

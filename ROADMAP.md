@@ -21,7 +21,7 @@ maps, a typed catalog and bounded multi-page PAX tables, with complete graph
 validation.
 
 `cyboudb query` runs `CREATE TABLE`, `INSERT`, correctness-first `UPDATE`,
-whole-table `DELETE FROM`, and `SELECT ... WHERE` against real
+`DELETE FROM ... [WHERE]`, and `SELECT ... WHERE` against real
 pages. The executor scans in batches of 64 rows, reads only the columns the
 plan asks for and evaluates predicates through AVX2 SIMD kernels with CPUID dispatch.
 An interactive console (REPL) supports multiline statements, piped scripts,
@@ -46,8 +46,12 @@ performance depends on the query, execution mode and hardware.
 SQL transactions are implemented via Phase 2 COW staging (`BEGIN`,
 `COMMIT`, `ROLLBACK`). `DELETE FROM table` removes every row of one table by
 publishing a schema page whose data root, statistics root and row count are
-back where `CREATE TABLE` left them; a predicated `DELETE` and an ARM64
-backend remain unimplemented. `UPDATE` supports single-column assignments with a mandatory
+back where `CREATE TABLE` left them. `DELETE ... WHERE` counts the matching
+rows first, then rewrites the ones that survive into a fresh graph through
+the ordinary append path, truncation and rewrite staged as one COW
+transaction; it is correctness-first rather than incremental, and is
+currently limited to tables without TEXT, BLOB or VECTOR columns. An ARM64
+backend remains unimplemented. `UPDATE` supports single-column assignments with a mandatory
 predicate across flat and tree-directory PAX tables, including fixed-width and
 persisted variable-width TEXT/BLOB columns. `DROP TABLE` drops tables and
 stages new catalog roots atomically across both CLI and REPL.
@@ -187,8 +191,18 @@ cyboudb query demo.cdb "SELECT id, score FROM runs WHERE score > 90"
 * [x] statement parser, binder and COW executor: whole-table `DELETE FROM`,
       published as the state `CREATE TABLE` leaves a table in, with the
       affected row count reported and an empty table publishing nothing
-* [ ] predicated `DELETE ... WHERE`: needs either row tombstones or leaf
-      compaction, and a decision on which before either is written
+* [x] `DELETE ... WHERE` over fixed-width columns: the predicate is bound
+      exactly as the equivalent `SELECT` binds it, matching rows are counted
+      before anything is staged, and the survivors are rewritten through the
+      append path so that leaf runs, directories and zone maps are rebuilt by
+      the code that already writes them
+* [ ] `DELETE ... WHERE` over TEXT, BLOB and VECTOR columns: the rewrite
+      would have to rebuild the extent chain behind every surviving cell;
+      refused at bind time until it does
+* [ ] incremental deletion: the rewrite is proportional to the table, not to
+      the rows removed, and stages a second copy of what survives. Row
+      tombstones or in-place leaf compaction would fix that, and neither
+      should be written before the rewrite has a benchmark to beat
 * [x] statement parser contract: single-column `UPDATE ... SET literal WHERE ...`
 * [x] binder contract for typed single-column `UPDATE`
 * [x] COW executor for flat multi-leaf, fixed-width `UPDATE`

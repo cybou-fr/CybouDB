@@ -12,7 +12,20 @@
 BITS 64
 default rel
 
+; Frame storage a predicated DELETE stages surviving rows in, below every
+; other local. Nine bytes per cell - eight of value, one of NULL - so the
+; whole region divides once and both arrays are fixed addresses. The borrowed
+; batch views sit in the same region. Deliberately not arena storage: an
+; embedder's statement arena is small, and how many rows a DELETE can stage at
+; a time should not depend on how much of it the plan happened to use.
+%define DELETE_SCRATCH_BASE  36864                  ; lowest frame offset used
+%define DELETE_VIEW_OFF      DELETE_SCRATCH_BASE    ; borrowed batch views
+%define DELETE_VALUES_OFF    35320                  ; DELETE_VIEW_OFF - 1544
+%define DELETE_SCRATCH_CELLS 3696                   ; (35320 - 2052) / 9
+%define DELETE_NULLS_OFF     5752                   ; VALUES_OFF - CELLS * 8
+
 extern db_catalog_put, db_catalog_drop, db_catalog_truncate_data, db_pax_insert, db_pax_update_one, db_pax_capacity, db_commit, db_rollback
+extern db_catalog_get, db_pax_scan_open_bound, db_pax_scan_batch
 extern db_var_write_chain, db_var_read_chain
 extern sql_select_open, sql_select_next
 extern sql_arena_alloc
@@ -499,7 +512,7 @@ eval_predicate_encoded:
 ;  nonzero answer means the sink itself failed and the statement fails with it.
 ; -----------------------------------------------------------------------------
 sql_execute_batch:
-    FRAME_BEGIN 1728, 1
+    FRAME_BEGIN DELETE_SCRATCH_BASE, 1
     mov     [rbp - 8], ARG1
     mov     [rbp - 16], ARG2
     mov     [rbp - 24], ARG3
@@ -604,16 +617,280 @@ sql_execute_batch:
     FRAME_END
     ret
 
-; DELETE-V1: an empty table has nothing to publish, so the generation and the
-; statement both stay where they are rather than committing an identical page.
+; DELETE. Without a predicate the table is truncated; with one, the rows the
+; predicate does not select are rewritten into a fresh graph. Either way an
+; empty result stages nothing, so the generation does not move on a DELETE
+; that removed no rows.
+;
+; Extra locals, all below the SELECT cursor at [rbp-1728]:
+;   [rbp-1736] schema page id    [rbp-1744] schema address
+;   [rbp-1752] rows in the table [rbp-1760] batch view
+;   [rbp-1768] decode storage    [rbp-1776] matching rows
+;   [rbp-1784] columns           [rbp-1792] all-columns request mask
+;   [rbp-1800] rows per leaf     [rbp-1808] rows per staged chunk
+;   [rbp-1824] values scratch    [rbp-1832] NULL scratch
+;   [rbp-1840] rows in the buffer
+;   [rbp-1848] rows in the batch [rbp-1856] surviving lanes
+;   [rbp-1864] lane being copied [rbp-1872] first cell of that row
+;   [rbp-1984] scan cursor (80)  [rbp-2016] insert batch descriptor (32)
 .exec_delete:
-    cmp     qword [r10 + PLAN_DATA1], 0
-    je      .exec_delete_empty
+    ; The row count comes from the catalog rather than the plan: a prepared
+    ; DELETE may be stepped again after other statements changed the table.
     mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    lea     ARG3, [rbp - 1736]
+    call    db_catalog_get
+    test    eax, eax
+    jnz     .storage_done
+    mov     r10, [rbp - 8]
+    mov     rax, [rbp - 1736]
+    shl     rax, CybouDB_PAGE_SHIFT
+    add     rax, [r10 + DB_BASE]
+    mov     [rbp - 1744], rax
+    mov     rcx, [rax + CAT_TABLE_ROWS]
+    mov     [rbp - 1752], rcx
+    mov     r10, [rbp - 16]
+    mov     qword [r10 + PLAN_DELETE_ROWS], 0
+    test    rcx, rcx
+    jz      .exec_delete_none
+    cmp     qword [r10 + PLAN_DATA4], 0
+    jne     .exec_delete_where
+    mov     [r10 + PLAN_DELETE_ROWS], rcx
+
+.exec_delete_truncate:
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
     mov     ARG2, [r10 + PLAN_TABLE_ID]
     call    db_catalog_truncate_data
     jmp     .storage_done
-.exec_delete_empty:
+
+.exec_delete_none:
+    xor     eax, eax
+    jmp     .exec_exit
+
+    ; --- Pass 1: how many rows match --------------------------------------
+    ; Counting first keeps the no-match case free of staged pages, and tells
+    ; the rewrite whether truncation alone would do.
+.exec_delete_where:
+    lea     rax, [rbp - DELETE_VIEW_OFF]
+    mov     [rbp - 1760], rax
+    mov     qword [rbp - 1768], 0
+    mov     r11, [rbp - 8]
+    test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_COMPRESSION
+    jz      .delete_count_open
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, PAX_DECODE_MAX_BYTES
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+    mov     [rbp - 1768], rax
+.delete_count_open:
+    mov     rax, [rbp - 1768]
+    PASS_ARG5 rax
+    lea     ARG1, [rbp - 1728]
+    mov     ARG2, [rbp - 8]
+    mov     ARG3, [rbp - 16]
+    mov     ARG4, [rbp - 1760]
+    call    sql_select_open
+    test    eax, eax
+    jnz     .storage_done
+    mov     qword [rbp - 1776], 0
+.delete_count_scan:
+    lea     ARG1, [rbp - 1728]
+    call    sql_select_next
+    test    eax, eax
+    jnz     .storage_done
+    test    rdx, rdx
+    jz      .delete_counted
+    mov     rax, rdx
+.delete_count_bits:
+    test    rax, rax
+    jz      .delete_count_scan
+    lea     rcx, [rax - 1]
+    and     rax, rcx
+    inc     qword [rbp - 1776]
+    jmp     .delete_count_bits
+.delete_counted:
+    mov     rax, [rbp - 1776]
+    mov     r10, [rbp - 16]
+    mov     [r10 + PLAN_DELETE_ROWS], rax
+    test    rax, rax
+    jz      .exec_delete_none
+    cmp     rax, [rbp - 1752]
+    jae     .exec_delete_truncate       ; everything matched: truncation is it
+
+    ; --- Pass 2: rewrite the survivors ------------------------------------
+    ; The cursor is opened on the graph as it stands and keeps reading it
+    ; after the truncation stages an empty root: append-only COW never
+    ; overwrites a page the live generation still references, so the old
+    ; leaves stay readable until this transaction commits.
+    mov     r11, [rbp - 1744]
+    mov     ecx, [r11 + CAT_COUNT]
+    mov     [rbp - 1784], rcx
+    mov     eax, 64
+    sub     eax, ecx
+    mov     ecx, eax
+    mov     rax, -1
+    shr     rax, cl
+    mov     [rbp - 1792], rax           ; every column of the old row
+
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [rbp - 1744]
+    call    db_pax_capacity
+    test    rax, rax
+    jz      .scan_state
+    mov     [rbp - 1800], rax
+    ; As many rows as the scratch region holds, and never more than one leaf.
+    mov     rax, DELETE_SCRATCH_CELLS
+    xor     edx, edx
+    div     qword [rbp - 1784]
+    cmp     rax, [rbp - 1800]
+    jbe     .delete_chunk_ready
+    mov     rax, [rbp - 1800]
+.delete_chunk_ready:
+    mov     [rbp - 1808], rax
+    lea     rax, [rbp - DELETE_VALUES_OFF]
+    mov     [rbp - 1824], rax
+    lea     rax, [rbp - DELETE_NULLS_OFF]
+    mov     [rbp - 1832], rax
+
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [rbp - 1744]
+    lea     ARG3, [rbp - 1984]
+    call    db_pax_scan_open_bound
+    test    eax, eax
+    jnz     .storage_done
+
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    call    db_catalog_truncate_data
+    test    eax, eax
+    jnz     .storage_done
+    mov     qword [rbp - 1840], 0
+
+.delete_rewrite_scan:
+    lea     ARG1, [rbp - 1984]
+    mov     ARG2, [rbp - 1760]
+    mov     ARG3, [rbp - 1792]
+    mov     ARG4, [rbp - 1768]
+    call    db_pax_scan_batch
+    test    eax, eax
+    jnz     .storage_done
+    test    rdx, rdx
+    jz      .delete_rewrite_tail
+    mov     [rbp - 1848], rdx
+    mov     r10, [rbp - 16]
+    mov     ARG1, [r10 + PLAN_DATA4]
+    mov     ARG2, rdx
+    mov     ARG3, [rbp - 1760]
+    call    eval_predicate
+    ; A row survives unless the predicate selected it. UNKNOWN is not TRUE,
+    ; so a NULL comparison keeps its row, exactly as WHERE does in a SELECT.
+    mov     ecx, 64
+    sub     rcx, [rbp - 1848]
+    mov     rdx, -1
+    shr     rdx, cl
+    not     rax
+    and     rax, rdx
+    mov     [rbp - 1856], rax
+
+.delete_rewrite_row:
+    mov     rax, [rbp - 1840]
+    cmp     rax, [rbp - 1808]
+    jb      .delete_rewrite_pick
+    ; The buffer is full: append it and start the next chunk.
+    mov     [rbp - 2016 + BATCH_ROWS], rax
+    mov     rax, [rbp - 1824]
+    mov     [rbp - 2016 + BATCH_VALUES], rax
+    mov     rax, [rbp - 1832]
+    mov     [rbp - 2016 + BATCH_NULLS], rax
+    mov     qword [rbp - 2016 + BATCH_VAR_LENGTHS], 0
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    lea     ARG3, [rbp - 2016]
+    call    db_pax_insert
+    test    eax, eax
+    jnz     .storage_done
+    mov     qword [rbp - 1840], 0
+    jmp     .delete_rewrite_row
+
+.delete_rewrite_pick:
+    mov     rax, [rbp - 1856]
+    test    rax, rax
+    jz      .delete_rewrite_scan
+    bsf     rcx, rax
+    mov     [rbp - 1864], rcx
+    lea     rdx, [rax - 1]
+    and     rax, rdx
+    mov     [rbp - 1856], rax
+    mov     rax, [rbp - 1840]
+    imul    rax, [rbp - 1784]
+    mov     [rbp - 1872], rax
+    xor     r8d, r8d
+.delete_rewrite_cell:
+    cmp     r8, [rbp - 1784]
+    jae     .delete_rewrite_row_done
+    mov     r9, r8
+    imul    r9, CybouDB_COLVIEW_SIZE
+    add     r9, [rbp - 1760]
+    add     r9, BATCH_VIEW_COLUMNS
+    mov     r10, [rbp - 1872]
+    add     r10, r8
+    mov     r11, [rbp - 1832]
+    mov     byte [r11 + r10], 0
+    mov     rax, [rbp - 1824]
+    mov     qword [rax + r10 * 8], 0
+    mov     rcx, [rbp - 1864]
+    mov     rdx, [r9 + COLVIEW_NULL_MASK]
+    bt      rdx, rcx
+    jnc     .delete_rewrite_value
+    mov     byte [r11 + r10], 1
+    jmp     .delete_rewrite_cell_next
+.delete_rewrite_value:
+    mov     edx, [r9 + COLVIEW_WIDTH]
+    mov     r11, [r9 + COLVIEW_VALUES_PTR]
+    imul    rcx, rdx
+    add     r11, rcx
+    cmp     edx, 8
+    je      .delete_rewrite_w8
+    cmp     edx, 1
+    je      .delete_rewrite_w1
+    mov     ecx, [r11]
+    jmp     .delete_rewrite_store
+.delete_rewrite_w8:
+    mov     rcx, [r11]
+    jmp     .delete_rewrite_store
+.delete_rewrite_w1:
+    movzx   ecx, byte [r11]
+.delete_rewrite_store:
+    mov     [rax + r10 * 8], rcx
+.delete_rewrite_cell_next:
+    inc     r8
+    jmp     .delete_rewrite_cell
+.delete_rewrite_row_done:
+    inc     qword [rbp - 1840]
+    jmp     .delete_rewrite_row
+
+.delete_rewrite_tail:
+    mov     rax, [rbp - 1840]
+    test    rax, rax
+    jz      .delete_rewrite_done
+    mov     [rbp - 2016 + BATCH_ROWS], rax
+    mov     rax, [rbp - 1824]
+    mov     [rbp - 2016 + BATCH_VALUES], rax
+    mov     rax, [rbp - 1832]
+    mov     [rbp - 2016 + BATCH_NULLS], rax
+    mov     qword [rbp - 2016 + BATCH_VAR_LENGTHS], 0
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    lea     ARG3, [rbp - 2016]
+    call    db_pax_insert
+    test    eax, eax
+    jnz     .storage_done
+.delete_rewrite_done:
     xor     eax, eax
     jmp     .exec_exit
 

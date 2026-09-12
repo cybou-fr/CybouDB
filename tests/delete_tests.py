@@ -1,14 +1,19 @@
 # Copyright (c) 2026 Stanislav Saveliev and CybouDB Contributors
 # SPDX-License-Identifier: Apache-2.0
 """
-Automated test suite for DELETE-V1: unqualified `DELETE FROM table`.
+Automated test suite for `DELETE FROM table [WHERE expression]`.
 
-DELETE-V1 removes every row of one table by publishing a schema page whose
-data root, statistics root and row count are back where CREATE TABLE left
-them. The suite checks that this is what actually lands on disk, that the
-whole-file validator accepts the result, that the table is reusable, that a
-transaction can discard the deletion, and that the shapes V1 does not support
-are refused rather than silently mis-executed.
+Without a predicate the table is truncated: the schema page is republished
+with its data root, statistics root and row count back where CREATE TABLE
+left them. With one, the rows the predicate does not select are rewritten
+into a fresh graph, and the truncation plus the rewrite are staged as a
+single COW transaction.
+
+The suite checks what actually lands on disk in both cases: that the
+whole-file validator accepts the result, that the table is reusable, that
+row order and values either side of a deletion are untouched, that a
+transaction can discard the whole thing, and that the shapes this version
+does not support are refused rather than silently mis-executed.
 
 Tests cover:
   1. DELETE on a flat fixed-width table: row count, reported count, `check`.
@@ -18,7 +23,11 @@ Tests cover:
   5. DELETE on a table large enough to need more than one leaf.
   6. DELETE on persisted TEXT and VECTOR columns (create-large features).
   7. DELETE inside BEGIN/COMMIT and BEGIN/ROLLBACK.
-  8. DELETE ... WHERE, unknown tables and bad syntax are rejected.
+  8. DELETE ... WHERE: matching rows go, the rest survive unchanged.
+  9. Three-valued logic: a row whose predicate is UNKNOWN is kept.
+ 10. Predicated DELETE across several leaves, inside transactions, and with
+     compound predicates.
+ 11. Unknown tables, bad syntax and TEXT/VECTOR tables are rejected.
 """
 
 import re
@@ -175,10 +184,152 @@ def main():
         rc, out, err = run_cmd([str(cyboudb), "check", db])
         check("check_after_transactions", rc == 0 and "OK" in out, f"out={out}")
 
-        # --- 8. rejected shapes ----------------------------------------------
-        rc, out, err = query(db, "DELETE FROM t WHERE id = 7;")
-        check("delete_where_rejected",
-              rc != 0 and "DELETE WHERE is not implemented" in out + err,
+        # --- 8. predicated DELETE --------------------------------------------
+        query(db, "CREATE TABLE p (id INT32, v INT64 NULL, f FLOAT32, flag BOOL);")
+        def reseed_p():
+            query(db, "DELETE FROM p;")
+            query(db, "INSERT INTO p VALUES "
+                      "(1, 10, 1.5, TRUE), (2, NULL, 2.5, FALSE), (3, 30, 3.5, TRUE), "
+                      "(4, 40, 4.5, FALSE), (5, 50, 5.5, TRUE);")
+
+        reseed_p()
+        rc, out, err = query(db, "DELETE FROM p WHERE id = 3;")
+        check("delete_one_row", rc == 0 and "DELETE 1" in out, f"out={out}, err={err}")
+        rc, out, _ = query(db, "SELECT id, v, f, flag FROM p;")
+        check("delete_one_row_survivors",
+              count(db, "p") == 4 and "3 | 30" not in out
+              and "1 | 10 | 1.50 | TRUE" in out and "5 | 50 | 5.50 | TRUE" in out,
+              f"out={out}")
+        check("delete_one_row_keeps_null", "2 | NULL | 2.50 | FALSE" in out, f"out={out}")
+        rc, out, err = run_cmd([str(cyboudb), "check", db])
+        check("check_after_predicated_delete", rc == 0 and "OK" in out, f"out={out}")
+
+        # A predicate that is UNKNOWN for a row keeps that row: WHERE removes
+        # only the rows it is TRUE for.
+        reseed_p()
+        rc, out, err = query(db, "DELETE FROM p WHERE v > 20;")
+        check("delete_range", rc == 0 and "DELETE 3" in out, f"out={out}, err={err}")
+        rc, out, _ = query(db, "SELECT id, v FROM p;")
+        check("delete_range_keeps_unknown",
+              count(db, "p") == 2 and "1 | 10" in out and "2 | NULL" in out, f"out={out}")
+
+        reseed_p()
+        rc, out, err = query(db, "DELETE FROM p WHERE v IS NULL;")
+        check("delete_is_null", rc == 0 and "DELETE 1" in out, f"out={out}, err={err}")
+        check("delete_is_null_rows", count(db, "p") == 4)
+
+        reseed_p()
+        rc, out, err = query(db, "DELETE FROM p WHERE flag = TRUE AND id > 1;")
+        check("delete_compound_and", rc == 0 and "DELETE 2" in out, f"out={out}, err={err}")
+        rc, out, _ = query(db, "SELECT id, v FROM p;")
+        ids = set(re.findall(r"^(\d+) \|", out, re.MULTILINE))
+        check("delete_compound_and_rows",
+              count(db, "p") == 3 and ids == {"1", "2", "4"}, f"out={out}")
+
+        reseed_p()
+        rc, out, err = query(db, "DELETE FROM p WHERE f < 2.0 OR f > 5.0;")
+        check("delete_compound_or", rc == 0 and "DELETE 2" in out, f"out={out}, err={err}")
+        check("delete_compound_or_rows", count(db, "p") == 3)
+
+        # Nothing matches: the statement succeeds and stages nothing at all.
+        reseed_p()
+        before = generation_of(db)
+        rc, out, err = query(db, "DELETE FROM p WHERE id > 1000;")
+        after = generation_of(db)
+        check("delete_no_match", rc == 0 and "DELETE 0" in out, f"out={out}")
+        check("delete_no_match_no_commit", before == after, f"{before} -> {after}")
+        check("delete_no_match_rows", count(db, "p") == 5)
+
+        # Everything matches: the table ends up empty and reusable.
+        rc, out, err = query(db, "DELETE FROM p WHERE id > 0;")
+        check("delete_all_match", rc == 0 and "DELETE 5" in out, f"out={out}")
+        check("delete_all_match_rows", count(db, "p") == 0)
+        rc, out, err = query(db, "INSERT INTO p VALUES (9, 90, 9.5, TRUE);")
+        check("insert_after_predicated_delete", rc == 0 and count(db, "p") == 1,
+              f"out={out}, err={err}")
+        rc, out, err = run_cmd([str(cyboudb), "check", db])
+        check("check_after_predicated_all", rc == 0 and "OK" in out, f"out={out}")
+
+        # --- 9. predicated DELETE across several leaves ----------------------
+        query(db, "CREATE TABLE pbig (id INT32, v INT64);")
+        script = "".join(
+            "INSERT INTO pbig VALUES "
+            + ", ".join(f"({i}, {i * 2})" for i in range(chunk, chunk + 100))
+            + ";\n"
+            for chunk in range(1, 2001, 100)
+        )
+        rc, out, err = run_cmd([str(cyboudb), "console", db], stdin_text=script)
+        check("seed_predicated_multi_leaf", rc == 0 and count(db, "pbig") == 2000,
+              f"out={out}, err={err}")
+        rc, out, err = query(db, "DELETE FROM pbig WHERE id <= 500;")
+        check("delete_multi_leaf_prefix", rc == 0 and "DELETE 500" in out,
+              f"out={out}, err={err}")
+        check("delete_multi_leaf_prefix_rows", count(db, "pbig") == 1500)
+        rc, out, _ = query(db, "SELECT id, v FROM pbig WHERE id < 503;")
+        check("delete_multi_leaf_prefix_boundary",
+              "501 | 1002" in out and "502 | 1004" in out and "500 |" not in out,
+              f"out={out}")
+        rc, out, err = run_cmd([str(cyboudb), "check", db])
+        check("check_after_multi_leaf_predicate", rc == 0 and "OK" in out, f"out={out}")
+
+        # Interior deletion: the survivors on both sides keep their values.
+        rc, out, err = query(db, "DELETE FROM pbig WHERE id > 800 AND id <= 1600;")
+        check("delete_multi_leaf_interior", rc == 0 and "DELETE 800" in out,
+              f"out={out}, err={err}")
+        check("delete_multi_leaf_interior_rows", count(db, "pbig") == 700)
+        rc, out, _ = query(db, "SELECT id, v FROM pbig WHERE id > 799 AND id < 1602;")
+        check("delete_multi_leaf_interior_boundary",
+              "800 | 1600" in out and "1601 | 3202" in out and "801 |" not in out,
+              f"out={out}")
+        rc, out, err = run_cmd([str(cyboudb), "check", db])
+        check("check_after_interior_predicate", rc == 0 and "OK" in out, f"out={out}")
+
+        # --- 10. predicated DELETE in a transaction --------------------------
+        rc, out, err = run_cmd([str(cyboudb), "console", db],
+                               stdin_text="BEGIN;\nDELETE FROM pbig WHERE id > 0;\nROLLBACK;\n")
+        check("predicated_rollback_runs", rc == 0 and "ROLLBACK" in out, f"out={out}")
+        check("predicated_rollback_restores", count(db, "pbig") == 700)
+
+        rc, out, err = run_cmd([str(cyboudb), "console", db],
+                               stdin_text="BEGIN;\nDELETE FROM pbig WHERE id <= 1600;\nCOMMIT;\n")
+        check("predicated_commit_runs", rc == 0 and "COMMIT" in out, f"out={out}")
+        check("predicated_commit_persists", count(db, "pbig") == 400)
+        rc, out, err = run_cmd([str(cyboudb), "check", db])
+        check("check_after_predicated_transactions", rc == 0 and "OK" in out, f"out={out}")
+
+        # A DELETE that follows staged writes in the same transaction cannot
+        # use the bound-plan fast path; it has to re-resolve the catalog.
+        query(db, "DELETE FROM p;")
+        query(db, "INSERT INTO p VALUES (1, 10, 1.5, TRUE), (2, 20, 2.5, FALSE);")
+        script = ("BEGIN;\n"
+                  "INSERT INTO p VALUES (3, 30, 3.5, TRUE), (4, 40, 4.5, FALSE);\n"
+                  "DELETE FROM p WHERE id = 2;\n"
+                  "DELETE FROM p WHERE id = 4;\n"
+                  "COMMIT;\n")
+        rc, out, err = run_cmd([str(cyboudb), "console", db], stdin_text=script)
+        check("delete_after_staged_insert", rc == 0 and out.count("DELETE 1") == 2,
+              f"out={out}, err={err}")
+        rc, out, _ = query(db, "SELECT id, v FROM p;")
+        ids = set(re.findall(r"^(\d+) \|", out, re.MULTILINE))
+        check("delete_after_staged_insert_rows", ids == {"1", "3"}, f"out={out}")
+        rc, out, err = run_cmd([str(cyboudb), "check", db])
+        check("check_after_staged_delete", rc == 0 and "OK" in out, f"out={out}")
+
+        # Chained deletes inside a transaction, all discarded together.
+        script = ("BEGIN;\n"
+                  "DELETE FROM p WHERE id = 1;\n"
+                  "DELETE FROM p WHERE id = 3;\n"
+                  "ROLLBACK;\n")
+        rc, out, err = run_cmd([str(cyboudb), "console", db], stdin_text=script)
+        check("chained_delete_rollback", rc == 0 and "ROLLBACK" in out, f"out={out}")
+        check("chained_delete_rollback_rows", count(db, "p") == 2)
+        rc, out, err = run_cmd([str(cyboudb), "check", db])
+        check("check_after_chained_rollback", rc == 0 and "OK" in out, f"out={out}")
+
+        # --- 11. rejected shapes ----------------------------------------------
+        rc, out, err = query(db, "DELETE FROM v WHERE msg = 'again';")
+        check("delete_where_varlen_rejected",
+              rc != 0 and "TEXT, BLOB or VECTOR" in out + err,
               f"rc={rc}, out={out}, err={err}")
 
         rc, out, err = query(db, "DELETE FROM nosuch;")

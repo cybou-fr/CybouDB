@@ -619,9 +619,26 @@ static void test_delete_statement(const char *db_path) {
     ASSERT_EQ(cyboudb_exec(db, "CREATE TABLE del_items (id INT32, score INT64)"), CybouDB_OK, "create delete table");
     ASSERT_EQ(cyboudb_exec(db, "INSERT INTO del_items VALUES (1, 10), (2, 20), (3, 30)"), CybouDB_OK, "seed delete table");
 
-    /* DELETE-V1 removes every row; a predicate is refused at bind time. */
-    ASSERT_EQ(cyboudb_prepare(db, "DELETE FROM del_items WHERE id = 1", &stmt), CybouDB_ERROR, "predicated DELETE rejected");
     ASSERT_EQ(cyboudb_prepare(db, "DELETE FROM del_missing", &stmt), CybouDB_ERROR, "DELETE of unknown table rejected");
+
+    /* A predicate removes the rows it is TRUE for and keeps the rest. */
+    ASSERT_EQ(cyboudb_prepare(db, "DELETE FROM del_items WHERE id = 2", &stmt), CybouDB_OK, "prepare predicated DELETE");
+    ASSERT_EQ(cyboudb_step(stmt), CybouDB_DONE, "step predicated DELETE");
+    cyboudb_finalize(stmt);
+    ASSERT_EQ(cyboudb_prepare(db, "SELECT id, score FROM del_items", &stmt), CybouDB_OK, "prepare survivor read");
+    ASSERT_EQ(cyboudb_step(stmt), CybouDB_ROW, "first survivor");
+    ASSERT_EQ(cyboudb_column_int64(stmt, 1), 10, "first survivor value");
+    ASSERT_EQ(cyboudb_step(stmt), CybouDB_ROW, "second survivor");
+    ASSERT_EQ(cyboudb_column_int64(stmt, 1), 30, "second survivor value");
+    ASSERT_EQ(cyboudb_step(stmt), CybouDB_DONE, "only two survivors");
+    cyboudb_finalize(stmt);
+
+    /* A predicate that matches nothing is not an error. */
+    ASSERT_EQ(cyboudb_exec(db, "DELETE FROM del_items WHERE id = 999"), CybouDB_OK, "predicated DELETE with no match");
+    ASSERT_EQ(cyboudb_prepare(db, "SELECT COUNT(*) FROM del_items", &stmt), CybouDB_OK, "prepare no-match count");
+    ASSERT_EQ(cyboudb_step(stmt), CybouDB_ROW, "no-match count row");
+    ASSERT_EQ(cyboudb_column_int64(stmt, 0), 2, "no rows removed");
+    cyboudb_finalize(stmt);
 
     ASSERT_EQ(cyboudb_prepare(db, "DELETE FROM del_items", &stmt), CybouDB_OK, "prepare DELETE");
     ASSERT_EQ(cyboudb_step(stmt), CybouDB_DONE, "step DELETE");
@@ -1003,6 +1020,28 @@ static void test_varlen_accessors(const char *db_path, int enabled) {
     printf("ok   test_varlen_accessors\n");
 }
 
+static void test_delete_varlen_gate(const char *db_path) {
+    cyboudb_db *db = NULL;
+    cyboudb_stmt *stmt = NULL;
+    ASSERT_EQ(cyboudb_open(db_path, CybouDB_OPEN_READWRITE, &db), CybouDB_OK, "open varlen delete fixture");
+    ASSERT_EQ(cyboudb_exec(db, "CREATE TABLE del_text (id INT32, msg TEXT)"), CybouDB_OK, "create varlen delete table");
+    ASSERT_EQ(cyboudb_exec(db, "INSERT INTO del_text VALUES (1, 'keep'), (2, 'drop')"), CybouDB_OK, "seed varlen delete table");
+
+    /* A predicated DELETE rewrites surviving rows through the append path,
+       which would have to rebuild every extent chain a TEXT cell points at.
+       Refused; removing the whole table's rows is still supported. */
+    ASSERT_EQ(cyboudb_prepare(db, "DELETE FROM del_text WHERE id = 2", &stmt), CybouDB_ERROR, "predicated DELETE over TEXT rejected");
+    ASSERT_EQ(cyboudb_exec(db, "DELETE FROM del_text"), CybouDB_OK, "whole-table DELETE over TEXT allowed");
+    ASSERT_EQ(cyboudb_prepare(db, "SELECT COUNT(*) FROM del_text", &stmt), CybouDB_OK, "prepare varlen delete count");
+    ASSERT_EQ(cyboudb_step(stmt), CybouDB_ROW, "varlen delete count row");
+    ASSERT_EQ(cyboudb_column_int64(stmt, 0), 0, "varlen table emptied");
+    cyboudb_finalize(stmt);
+    ASSERT_EQ(cyboudb_exec(db, "DROP TABLE del_text"), CybouDB_OK, "drop varlen delete table");
+    ASSERT_EQ(cyboudb_close(db), CybouDB_OK, "close varlen delete fixture");
+    total_tests++;
+    printf("ok   test_delete_varlen_gate\n");
+}
+
 static void test_vector_accessors(const char *db_path) {
     cyboudb_db *db = NULL;
     cyboudb_stmt *stmt = NULL;
@@ -1070,6 +1109,7 @@ int main(int argc, char **argv) {
         test_invalid_args();
         test_varlen_accessors(db_path, 1);
         test_vector_accessors(db_path);
+        test_delete_varlen_gate(db_path);
 #ifdef CybouDB_API_TEST_ALLOC
         ASSERT_EQ(api_live_bytes, 0, "all varlen API allocations released");
         ASSERT_EQ(api_live_allocations, 0, "all varlen API handles released");

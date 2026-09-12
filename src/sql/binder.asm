@@ -33,7 +33,7 @@ err_order_pending: db "ORDER BY execution is not implemented yet", 0
 err_varlen_pending: db "TEXT/BLOB storage extents are not implemented yet", 0
 err_vector_pending: db "VECTOR storage extents are not implemented yet", 0
 err_vector_order_limit: db "vector distance ORDER BY requires LIMIT", 0
-err_delete_where_pending: db "DELETE WHERE is not implemented; DELETE FROM table removes all rows", 0
+err_delete_varlen: db "DELETE WHERE cannot rewrite TEXT, BLOB or VECTOR columns yet", 0
 err_oom:             db "memory arena capacity exceeded", 0
 
 section .text
@@ -1547,17 +1547,23 @@ sql_bind:
     jmp     .binder_exit
 
 ; --- BIND DELETE -------------------------------------------------------------
-; DELETE-V1 removes the whole table's rows. The row count is captured here so
-; that the executor can report it and skip an empty commit, and a WHERE clause
-; is refused with a message that says what is supported instead.
+; Without a predicate the whole table goes; with one, DELETE is bound exactly
+; like the SELECT that decides which rows match, and the executor rewrites the
+; survivors. The row count is left to execution time: a prepared plan may be
+; stepped again after other statements have changed the table.
 .bind_delete:
     mov     r10, [rbp - 48]
     mov     qword [r10 + PLAN_TYPE], STMT_DELETE
     mov     qword [r10 + PLAN_DATA1], 0
+    mov     qword [r10 + PLAN_DATA2], 0
+    mov     qword [r10 + PLAN_DATA3], 0
+    mov     qword [r10 + PLAN_DATA4], 0
+    mov     qword [r10 + PLAN_FLAGS], 0
+    mov     qword [r10 + PLAN_REQUIRED_COLS], 0
+    mov     qword [r10 + PLAN_REQUIRED_VALUES], 0
+    mov     qword [r10 + PLAN_DELETE_ROWS], 0
 
     mov     r10, [rbp - 16]
-    cmp     qword [r10 + DELETE_WHERE_EXPR], 0
-    jne     .delete_where_pending
     mov     rcx, [r10 + DELETE_TABLE_NAME_LEN]
     cmp     rcx, 31
     ja      .bad_tbl_len
@@ -1570,21 +1576,72 @@ sql_bind:
     test    rax, rax
     jz      .tbl_not_found
 
-    mov     r11, [rax + CAT_TABLE_ROWS]
+    mov     [rbp - 64], rax             ; schema_ptr
     mov     r10, [rbp - 48]
     mov     rdx, [rbp - 56]
     mov     [r10 + PLAN_TABLE_ID], rdx
     mov     [r10 + PLAN_SCHEMA_PAGE], rax
-    mov     [r10 + PLAN_DATA1], r11     ; rows this statement will remove
+    mov     r11, [rbp - 8]
+    mov     rax, [r11 + DB_GENERATION]
+    mov     [r10 + PLAN_GENERATION], rax
+    mov     rax, [r11 + DB_BASE]
+    mov     [r10 + PLAN_DB_BASE], rax
+    mov     rax, [r11 + DB_ROOT]
+    mov     [r10 + PLAN_DB_ROOT], rax
+    mov     [r10 + PLAN_CTX], r11
 
+    mov     r10, [rbp - 16]
+    mov     ARG1, [r10 + DELETE_WHERE_EXPR]
+    test    ARG1, ARG1
+    jz      .delete_bound               ; whole-table DELETE needs nothing more
+
+    ; A predicated DELETE rewrites the surviving rows through the ordinary
+    ; append path, which would have to rebuild every extent chain a TEXT,
+    ; BLOB or VECTOR cell points at. Refuse rather than copy a descriptor
+    ; whose payload the new table does not own.
+    mov     r11, [rbp - 64]
+    xor     ecx, ecx
+.delete_scan_types:
+    cmp     ecx, [r11 + CAT_COUNT]
+    jae     .delete_bind_where
+    mov     rax, rcx
+    shl     rax, 5
+    mov     eax, [r11 + CAT_COLUMNS + rax]
+    cmp     eax, CAT_TEXT
+    je      .delete_varlen_pending
+    cmp     eax, CAT_BLOB
+    je      .delete_varlen_pending
+    cmp     eax, CAT_VECTOR
+    je      .delete_varlen_pending
+    inc     ecx
+    jmp     .delete_scan_types
+
+.delete_bind_where:
+    mov     r10, [rbp - 16]
+    mov     ARG1, [r10 + DELETE_WHERE_EXPR]
+    mov     ARG2, [rbp - 64]
+    mov     ARG3, [rbp - 24]
+    mov     ARG4, [rbp - 40]
+    call    bind_expr
+    test    rax, rax
+    jz      .fail
+    mov     r10, [rbp - 48]
+    mov     [r10 + PLAN_DATA4], rax
+    mov     ARG1, rax
+    call    required_expr_columns
+    mov     r10, [rbp - 48]
+    mov     [r10 + PLAN_REQUIRED_COLS], rax
+    mov     [r10 + PLAN_REQUIRED_VALUES], rdx
+
+.delete_bound:
     xor     eax, eax
     jmp     .binder_exit
 
-.delete_where_pending:
+.delete_varlen_pending:
     mov     ARG1, [rbp - 40]
     mov     ARG2, SQL_ERR_SYNTAX
     xor     ARG3, ARG3
-    lea     ARG4, [err_delete_where_pending]
+    lea     ARG4, [err_delete_varlen]
     call    set_binder_error
     mov     eax, SQL_ERR_SYNTAX
     jmp     .binder_exit
