@@ -25,9 +25,15 @@ The bitmap occupies the last `ceil(capacity / 8)` bytes of the leaf's body,
 immediately before the run's CRC. Column data is laid out from the start of
 the body, so reserving the tail leaves every existing column offset alone.
 
-Bit `r` of the bitmap is set when row `r` of that leaf is dead. Bits from
-`capacity` upwards are zero and are checked to be zero, as the format does
-everywhere it has a tail.
+Bit `r` of the bitmap is set when row `r` of that leaf is dead. Bits from the
+leaf's row count upwards are zero and are checked to be zero, as the format
+does everywhere it has a tail.
+
+The bitmap is itself carved out of a tail the format already required to be
+zero: a leaf's body from the end of its columns to the run's checksum. That
+rule now stops where the bitmap begins, and the bitmap answers to its own
+rules instead - which is the one place a reader of this format has to look
+twice.
 
 ## What that costs a leaf
 

@@ -14,7 +14,7 @@ extern db_cow_alloc_run, db_cow_copy_run
 extern db_var_validate_chain, db_var_materialize_batch
 extern pax_compress_leaf, pax_decompress_leaf_old, decompress_column
 global db_pax_validate, db_pax_check_new, db_pax_insert, db_pax_read
-global db_pax_update_one
+global db_pax_update_one, db_pax_mark_dead
 global db_pax_capacity
 global db_pax_scan_open, db_pax_scan_open_bound, db_pax_scan_next, db_pax_scan_batch
 global db_pax_scan_batch_ex
@@ -75,6 +75,144 @@ pax_tomb_bytes:
     mov rax, ARG1
     add rax, 7
     shr rax, 3
+    ret
+
+; pax_tomb_at(ARG1 = leaf address, ARG2 = run pages) -> RAX: the bitmap, or
+; zero when the leaf records no capacity to describe.
+;
+; The bitmap is the last bytes of the body, immediately before the run's CRC,
+; and its length follows from the capacity the leaf itself records - so a leaf
+; says where its own tombstones are, and a reader never recomputes the
+; arithmetic that wrote it. Only a caller that has checked the file's feature
+; bit should ask: in a file without them those bytes are column data.
+;
+; Local slots: [rbp-8]=leaf, [rbp-16]=run pages
+pax_tomb_at:
+    FRAME_BEGIN 32, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov r10, ARG1
+    mov eax, [r10 + PAX_CAPACITY]
+    test eax, eax
+    jz .none
+    mov ARG1, rax
+    call pax_tomb_bytes
+    mov r10, rax
+    mov ARG1, [rbp - 16]
+    call pax_crc_offset
+    sub rax, r10
+    jbe .none
+    add rax, [rbp - 8]
+    FRAME_END
+    ret
+.none:
+    xor eax, eax
+    FRAME_END
+    ret
+
+; pax_tomb_tail_clear(ARG1 = leaf, ARG2 = run pages, ARG3 = rows) -> 1 / 0.
+;
+; No row the leaf does not hold may be marked. The rows it does hold are the
+; first ARG3 bits; everything above them is tail, and the format zeroes its
+; tails so that a page means one thing.
+;
+; Local slots: [rbp-8]=bitmap, [rbp-16]=rows, [rbp-24]=bitmap bytes
+pax_tomb_tail_clear:
+    FRAME_BEGIN 48, 0
+    mov [rbp - 16], ARG3
+    mov [rbp - 32], ARG1
+    call pax_tomb_at
+    test rax, rax
+    jz .clear                       ; no bitmap, nothing to be set in
+    mov [rbp - 8], rax
+    mov r10, [rbp - 32]
+    mov eax, [r10 + PAX_CAPACITY]
+    mov ARG1, rax
+    call pax_tomb_bytes
+    mov [rbp - 24], rax
+    ; the byte the rows end in, and the bits of it above them
+    mov rcx, [rbp - 16]
+    mov rax, rcx
+    shr rax, 3                      ; first whole byte past the rows
+    cmp rax, [rbp - 24]
+    jae .clear
+    and ecx, 7
+    jz .whole_bytes
+    mov r10, [rbp - 8]
+    movzx edx, byte [r10 + rax]
+    mov r9d, 1
+    shl r9d, cl
+    dec r9d                         ; bits that belong to rows
+    not r9d
+    test edx, r9d
+    jnz .marked
+    inc rax
+.whole_bytes:
+    mov r10, [rbp - 8]
+.tail_byte:
+    cmp rax, [rbp - 24]
+    jae .clear
+    cmp byte [r10 + rax], 0
+    jne .marked
+    inc rax
+    jmp .tail_byte
+.clear:
+    mov eax, 1
+    FRAME_END
+    ret
+.marked:
+    xor eax, eax
+    FRAME_END
+    ret
+
+; pax_tomb_count(ARG1 = leaf address, ARG2 = run pages) -> RAX: bits set.
+;
+; What PAX_DEAD claims, recomputed from the bitmap. Validation compares the
+; two; nothing on a read path does, which is why the count is in the header at
+; all. Counted a bit at a time rather than with POPCNT: this runs during
+; validation, not in a scan, and the instruction would need the CPUID dance
+; that the checksum and the kernels carry for a gain nobody would measure.
+;
+; Local slots: [rbp-8]=leaf, [rbp-16]=run pages, [rbp-24]=bitmap,
+;              [rbp-32]=bitmap bytes
+pax_tomb_count:
+    FRAME_BEGIN 48, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    call pax_tomb_at
+    test rax, rax
+    jz .empty
+    mov [rbp - 24], rax
+    mov r10, [rbp - 8]
+    mov eax, [r10 + PAX_CAPACITY]
+    mov ARG1, rax
+    call pax_tomb_bytes
+    mov [rbp - 32], rax
+    xor r11d, r11d                  ; bits seen
+    xor ecx, ecx
+.byte_loop:
+    cmp rcx, [rbp - 32]
+    jae .counted
+    mov r10, [rbp - 24]
+    movzx eax, byte [r10 + rcx]
+.bit_loop:
+    test eax, eax
+    jz .byte_done
+    mov edx, eax
+    dec edx
+    and eax, edx                    ; clear the lowest set bit
+    inc r11
+    jmp .bit_loop
+.byte_done:
+    inc rcx
+    jmp .byte_loop
+.counted:
+    mov rax, r11
+    FRAME_END
+    ret
+.empty:
+    xor eax, eax
+    FRAME_END
     ret
 
 ; PAX_CAPACITY_OF <schema>, <ctx> - rows per leaf, in RAX.
@@ -1457,6 +1595,35 @@ pax_init:
     mov eax, [r11 + CAT_COUNT]
     cmp [rbp - 48], rax
     jb .column
+
+    ; The bitmap is part of the body, and a run can be a page reclaimed from an
+    ; earlier generation whose bytes are still there. Every other field of a
+    ; leaf is written outright; these two have to be cleared, or the count and
+    ; the bitmap would start out disagreeing and the leaf would never open.
+    mov r11, [rbp - 16]
+    test qword [r11 + DB_FEATURES], CybouDB_FEATURE_TOMBSTONES
+    jz .init_done
+    mov r10, [rbp - 8]
+    mov dword [r10 + PAX_DEAD], 0
+    PAX_RUN_OF [rbp - 24], [rbp - 16]
+    mov ARG1, [rbp - 8]
+    mov ARG2, rax
+    call pax_tomb_at
+    test rax, rax
+    jz .init_done
+    mov [rbp - 40], rax
+    mov ARG1, [rbp - 32]
+    call pax_tomb_bytes
+    mov rcx, rax
+    mov r10, [rbp - 40]
+.tomb_clear:
+    test rcx, rcx
+    jz .init_done
+    mov byte [r10], 0
+    inc r10
+    dec rcx
+    jmp .tomb_clear
+.init_done:
     FRAME_END
     ret
 
@@ -1514,9 +1681,23 @@ page_valid:
     jne .bad
     cmp dword [r8 + 44], 0
     jne .bad
-    mov rax, [r8 + 48]
-    or rax, [r8 + 56]
+    mov rax, [r8 + 56]
+    test rax, rax
     jnz .bad
+    mov r11, [rbp - 8]
+    test qword [r11 + DB_FEATURES], CybouDB_FEATURE_TOMBSTONES
+    jz .dead_field_zero
+    ; A leaf keeps its dead count here; what it has to agree with is checked
+    ; once the layout below has said how many rows the leaf holds.
+    mov eax, [r8 + PAX_DEAD + 4]    ; the rest of that qword stays reserved
+    test eax, eax
+    jnz .bad
+    jmp .dead_field_done
+.dead_field_zero:
+    mov rax, [r8 + 48]
+    test rax, rax
+    jnz .bad
+.dead_field_done:
     mov ARG3, [r8 + PAX_GENERATION]
     mov ARG1, [rbp - 8]
     mov ARG2, [rbp - 16]
@@ -1546,6 +1727,29 @@ page_valid:
     cmp rcx, rax
     ja .bad
     mov [rbp - 56], rcx
+    mov r11, [rbp - 8]
+    test qword [r11 + DB_FEATURES], CybouDB_FEATURE_TOMBSTONES
+    jz .tombstones_checked
+    ; PAX_DEAD is what the bitmap says, no more rows are dead than the leaf
+    ; holds, and nothing is marked past the rows it holds. A leaf that opens
+    ; can never have a count and a bitmap that disagree.
+    mov ARG1, [rbp - 40]
+    mov ARG2, [rbp - 144]
+    call pax_tomb_count
+    mov r10, [rbp - 40]
+    mov ecx, [r10 + PAX_DEAD]
+    cmp rax, rcx
+    jne .bad
+    cmp rcx, [rbp - 56]
+    ja .bad
+    mov ARG1, [rbp - 40]
+    mov ARG2, [rbp - 144]
+    mov ARG3, [rbp - 56]
+    call pax_tomb_tail_clear
+    test eax, eax
+    jz .bad
+.tombstones_checked:
+    mov r10, [rbp - 40]             ; the checks above called out; reload the leaf
     mov rax, [rbp - 48]
     add rax, PAX_GROUP_ROWS - 1
     shr rax, 6
@@ -1924,6 +2128,20 @@ page_valid:
     mov ARG1, [rbp - 144]
     call pax_crc_offset
     mov rcx, rax                    ; the body ends where the CRC begins
+    ; ...or where the tombstone bitmap begins, which is the one part of the
+    ; tail that is allowed to be anything but zero. Its own contents are
+    ; checked above, against the count in the header.
+    mov r11, [rbp - 8]
+    test qword [r11 + DB_FEATURES], CybouDB_FEATURE_TOMBSTONES
+    jz .tail_end_known
+    mov [rbp - 160], rcx
+    mov r10, [rbp - 40]
+    mov eax, [r10 + PAX_CAPACITY]
+    mov ARG1, rax
+    call pax_tomb_bytes
+    mov rcx, [rbp - 160]
+    sub rcx, rax
+.tail_end_known:
     mov rdx, [rbp - 152]
     mov r10, [rbp - 40]
 .tail:
@@ -2400,6 +2618,31 @@ pax_append_page:
 ; Every unsupported shape is rejected before the first allocation. This is the
 ; deliberately narrow UPDATE-V1 primitive; later versions can copy several
 ; changed paths while retaining this publication contract.
+; db_pax_mark_dead(ctx, table_id, group): mark every row the group selects
+; dead, in the one leaf they belong to.
+;
+; It is db_pax_update_one with a different thing done to the selected rows.
+; Locating the leaf, preflighting it, copying it under COW, relinking the
+; directory above it and publishing the result is the same work, and it is the
+; part worth having exactly one copy of.
+;
+; Physically nothing moves: the row count, the leaf, and every value stay
+; where they were. So this publishes as an exact-row replacement, and keeps
+; the statistics the table already had - a zone map is allowed to describe a
+; superset of the live rows, and after a mark that is what it does.
+db_pax_mark_dead:
+    FRAME_BEGIN 0, 2
+    mov r10, ARG3
+    mov qword [r10 + UPDATE_GROUP_MODE], UPDATE_MODE_DEAD
+    xor ARG3, ARG3                  ; column zero, which every table has
+    xor ARG4, ARG4                  ; no value to write
+    xor eax, eax
+    PASS_ARG5 rax                   ; and not a NULL write either
+    PASS_ARG6 r10
+    call db_pax_update_one
+    FRAME_END
+    ret
+
 db_pax_update_one:
     FRAME_BEGIN 336, 1
     mov [rbp - 8], ARG1             ; ctx
@@ -2409,9 +2652,19 @@ db_pax_update_one:
     mov qword [rbp - 296], 0        ; is_tree = 0
     mov rax, IN_ARG5
     mov [rbp - 40], rax             ; is_null
+    mov qword [rbp - 320], UPDATE_MODE_VALUE
     mov rax, IN_ARG6
     test rax, rax
     jz .upd_rows
+    mov rdx, [rax + UPDATE_GROUP_MODE]
+    mov [rbp - 320], rdx
+    cmp rdx, UPDATE_MODE_DEAD
+    jne .upd_mode_ready
+    mov r11, ARG1
+    test qword [r11 + DB_FEATURES], CybouDB_FEATURE_TOMBSTONES
+    jz .upd_value                   ; no reservation, nowhere to put the bit
+.upd_mode_ready:
+    mov rax, IN_ARG6
     mov rdx, [rax + UPDATE_GROUP_SPANS]
     test rdx, rdx
     jz .upd_rows
@@ -2703,11 +2956,28 @@ db_pax_update_one:
     mov edx, [r10 + 12]
     add rdx, [rbp - 128]
     mov [rbp - 152], rdx
+    cmp qword [rbp - 320], UPDATE_MODE_DEAD
+    jne .upd_rows_ready
+    mov ARG1, [rbp - 128]
+    mov ARG2, [rbp - 104]
+    call pax_tomb_at
+    test rax, rax
+    jz .upd_value
+    mov [rbp - 328], rax
+.upd_rows_ready:
     mov r11, [rbp - 48]
     xor ecx, ecx
 .upd_row:
     bt r11, rcx
     jnc .upd_next_row
+    cmp qword [rbp - 320], UPDATE_MODE_DEAD
+    jne .upd_row_value
+    mov rax, [rbp - 216]
+    add rax, rcx                    ; absolute row inside the only leaf
+    mov rdx, [rbp - 328]
+    bts qword [rdx], rax
+    jmp .upd_next_row
+.upd_row_value:
     mov rax, [rbp - 216]
     add rax, rcx                    ; absolute row inside the only leaf
     mov rdx, [rbp - 160]
@@ -2828,10 +3098,20 @@ db_pax_update_one:
     mov ARG2, [rbp - 64]
     mov ARG3, r10
     call pax_compress_leaf
+    cmp qword [rbp - 320], UPDATE_MODE_DEAD
+    jne .upd_sealed_count
+    mov ARG1, [rbp - 128]
+    mov ARG2, [rbp - 104]
+    call pax_tomb_count
+    mov r10, [rbp - 128]
+    mov [r10 + PAX_DEAD], eax       ; counted before the seal covers it
+.upd_sealed_count:
     mov ARG1, [rbp - 128]
     mov ARG2, [rbp - 104]
     call pax_seal_leaf
 
+    cmp qword [rbp - 320], UPDATE_MODE_DEAD
+    je .upd_stats_kept
     mov ARG1, [rbp - 8]
     mov ARG2, [rbp - 64]
     mov ARG3, [rbp - 208]
@@ -2842,6 +3122,14 @@ db_pax_update_one:
     test eax, eax
     jnz .upd_done
     mov [rbp - 256], rdx            ; exact replacement statistics root
+    jmp .upd_stats_ready
+.upd_stats_kept:
+    ; No value changed, so the statistics still hold. They now describe a
+    ; superset of the live rows, which is what they are permitted to be.
+    mov r10, [rbp - 64]
+    mov rax, [r10 + CAT_STATS_ROOT]
+    mov [rbp - 256], rax
+.upd_stats_ready:
 
     cmp qword [rbp - 88], 0
     je .upd_publish_leaf

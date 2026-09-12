@@ -1091,10 +1091,13 @@ sql_execute_batch:
     mov rax, rcx
     sub rax, [rbp - 200]
     mov [rbp - 232], rax
+    ; The group is three fields at [rbp-296]; [rbp-232] and its neighbours are
+    ; live locals of this loop, so it does not sit on top of them.
     mov rax, [rbp - 208]
-    mov [rbp - 248], rax            ; UPDATE_GROUP_SPANS
+    mov [rbp - 296], rax            ; UPDATE_GROUP_SPANS
     mov rax, [rbp - 232]
-    mov [rbp - 240], rax            ; UPDATE_GROUP_COUNT
+    mov [rbp - 288], rax            ; UPDATE_GROUP_COUNT
+    mov qword [rbp - 280], UPDATE_MODE_VALUE
     mov r10, [rbp - 16]
     mov ARG1, [rbp - 8]
     mov ARG2, [r10 + PLAN_TABLE_ID]
@@ -1102,7 +1105,7 @@ sql_execute_batch:
     mov ARG4, [r10 + PLAN_UPDATE_VALUE]
     mov rax, [r10 + PLAN_UPDATE_IS_NULL]
     PASS_ARG5 rax
-    lea rax, [rbp - 248]
+    lea rax, [rbp - 296]
     PASS_ARG6 rax
     call db_pax_update_one
     test eax, eax

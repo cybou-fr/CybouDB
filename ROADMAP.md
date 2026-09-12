@@ -246,8 +246,15 @@ or validate.
       seven-column benchmark schema stays at 448, the group arithmetic's slack
       having already covered the 56 bytes. Pinned by
       `tests/tombstone_layout_test.c` and `tests/tombstone_tests.py`
-* [ ] `PAX_DEAD` and the bitmap itself: marking rows, the per-leaf dead count,
-      and validating that the two agree
+* [x] `PAX_DEAD` and the bitmap itself. `db_pax_mark_dead` is
+      `db_pax_update_one` with a different thing done to the selected rows -
+      the same leaf location, preflight, copy, relink and publication, with
+      the mode carried in the span group. It publishes as an exact-row
+      replacement and keeps the zone maps, which after a mark describe a
+      superset of the live rows and are allowed to. Validation recomputes the
+      count from the bitmap, requires the two to agree, and refuses a bit set
+      past the rows the leaf holds; the zero-tail rule now stops where the
+      bitmap starts
 * [ ] the scan mask - one 64-bit extract per batch, intersected with the
       predicate's selection where the NULL semantics already meet - and
       `COUNT(*)` over live rows

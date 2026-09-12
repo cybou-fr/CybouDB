@@ -66,10 +66,17 @@
 %define UPDATE_SPAN_START 0
 %define UPDATE_SPAN_MASK  8
 %define UPDATE_SPAN_SIZE  16
-; Consecutive predicate spans coalesced into one physical leaf rewrite.
+; Consecutive predicate spans coalesced into one physical leaf rewrite, and
+; what the rewrite is for. The mode travels in the group rather than in a
+; seventh argument because it describes the spans: locating the leaf,
+; preflighting it, copying it and publishing it is the same work either way,
+; and only what happens to the selected rows differs.
 %define UPDATE_GROUP_SPANS 0
 %define UPDATE_GROUP_COUNT 8
-%define UPDATE_GROUP_SIZE  16
+%define UPDATE_GROUP_MODE  16
+%define UPDATE_GROUP_SIZE  24
+%define UPDATE_MODE_VALUE  0            ; write a literal into one column
+%define UPDATE_MODE_DEAD   1            ; mark the rows dead, touching no column
 ; Row read output: arrays with schema column-count slots/bytes.
 %define ROW_VALUES 0
 %define ROW_NULLS 8
