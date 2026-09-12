@@ -188,6 +188,7 @@ msg_sql_table_created: db "Table created.", 10, 0
 msg_sql_table_dropped: db "Table dropped.", 10, 0
 msg_sql_insert_prefix: db "INSERT ", 0
 msg_sql_update_prefix: db "UPDATE ", 0
+msg_sql_delete_prefix: db "DELETE ", 0
 msg_sql_begin:         db "BEGIN", 10, 0
 msg_sql_commit:        db "COMMIT", 10, 0
 msg_sql_rollback:      db "ROLLBACK", 10, 0
@@ -1083,6 +1084,12 @@ cyboudb_exec_query:
 
     ; A predicate that matched no UPDATE rows staged no pages. Preserve the
     ; generation as well as the data instead of publishing an empty commit.
+    cmp     qword [r10 + PLAN_TYPE], STMT_DELETE
+    jne     .check_empty_update
+    cmp     qword [r10 + PLAN_DATA1], 0
+    je      .mutation_done
+    jmp     .commit_mutation
+.check_empty_update:
     cmp     qword [r10 + PLAN_TYPE], STMT_UPDATE
     jne     .commit_mutation
     cmp     qword [r10 + PLAN_DATA1], 0
@@ -1102,6 +1109,8 @@ cyboudb_exec_query:
     je      .drop_done
     cmp     qword [r10 + PLAN_TYPE], STMT_UPDATE
     je      .update_done
+    cmp     qword [r10 + PLAN_TYPE], STMT_DELETE
+    je      .delete_done
 
     ; Insert completed: print "INSERT <rows>\n"
     PUTS    msg_sql_insert_prefix
@@ -1126,6 +1135,14 @@ cyboudb_exec_query:
 
 .update_done:
     PUTS    msg_sql_update_prefix
+    mov     r10, [rbp - 40]
+    mov     ARG1, [r10 + PLAN_DATA1]
+    call    put_u64
+    PUTS    str_nl
+    jmp     .exec_success
+
+.delete_done:
+    PUTS    msg_sql_delete_prefix
     mov     r10, [rbp - 40]
     mov     ARG1, [r10 + PLAN_DATA1]
     call    put_u64

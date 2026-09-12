@@ -14,6 +14,7 @@ extern db_zone_validate
 global db_catalog_validate, db_catalog_put, db_catalog_get, db_catalog_drop
 global db_catalog_set_data, db_catalog_set_data_stats, db_catalog_replace_data
 global db_catalog_replace_data_stats
+global db_catalog_truncate_data
 section .text
 
 ; name_valid(pointer, width): nonempty ASCII identifier, NUL and zero padding.
@@ -891,7 +892,26 @@ db_catalog_replace_data_stats:
     FRAME_END
     ret
 
+; db_catalog_truncate_data(ctx, owner): DELETE-V1 publication. The table keeps
+; its schema and loses every row: data root, statistics root and row count all
+; return to the state CREATE TABLE left them in, which is the one state the
+; validator, the scan cursor and the append path are already written for. No
+; page is freed here; the retired graph is reclaimed once neither recoverable
+; superblock still references it.
+db_catalog_truncate_data:
+    FRAME_BEGIN 0, 1
+    xor ARG3, ARG3                  ; data root returns to zero
+    xor ARG4, ARG4                  ; and so does the statistics root
+    mov rax, 2
+    PASS_ARG5 rax
+    call catalog_publish_data
+    FRAME_END
+    ret
+
 ; catalog_publish_data(ctx, owner, data_root, stats_root, replace_mode)
+;   replace_mode 0 = append (row count must grow)
+;   replace_mode 1 = replace (row count must be preserved exactly)
+;   replace_mode 2 = truncate (roots zeroed, row count returns to zero)
 catalog_publish_data:
     FRAME_BEGIN 96, 0
     mov rax, IN_ARG5
@@ -909,10 +929,13 @@ catalog_publish_data:
     jz .state
     cmp qword [r10 + DB_GENERATION], -1
     je .generation
+    cmp qword [rbp - 88], 2
+    je .truncate_schema
     mov ARG2, ARG3                  ; the root must be a page this txn allocated
     call db_bitmap_is_fresh
     test eax, eax
     jz .page
+.truncate_schema:
     mov ARG1, [rbp - 8]
     mov ARG2, [rbp - 16]
     lea ARG3, [rbp - 32]
@@ -924,6 +947,8 @@ catalog_publish_data:
     shl rax, CybouDB_PAGE_SHIFT
     add rax, [r10 + DB_BASE]
     mov [rbp - 72], rax
+    cmp qword [rbp - 88], 2
+    je .truncate_rows
     mov ARG1, r10
     mov ARG2, rax
     mov ARG3, [rbp - 24]
@@ -941,6 +966,9 @@ catalog_publish_data:
 .replacement_rows:
     cmp rax, [r11 + CAT_TABLE_ROWS]
     jne .rows
+    jmp .rows_ok
+.truncate_rows:
+    mov qword [rbp - 40], 0
 .rows_ok:
     mov r10, [rbp - 8]
     mov ARG1, [rbp - 8]

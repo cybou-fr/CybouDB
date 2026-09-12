@@ -12,7 +12,7 @@
 BITS 64
 default rel
 
-extern db_catalog_put, db_catalog_drop, db_pax_insert, db_pax_update_one, db_pax_capacity, db_commit, db_rollback
+extern db_catalog_put, db_catalog_drop, db_catalog_truncate_data, db_pax_insert, db_pax_update_one, db_pax_capacity, db_commit, db_rollback
 extern db_var_write_chain, db_var_read_chain
 extern sql_select_open, sql_select_next
 extern sql_arena_alloc
@@ -522,6 +522,8 @@ sql_execute_batch:
     je      .exec_update
     cmp     rax, STMT_DROP_TABLE
     je      .exec_drop
+    cmp     rax, STMT_DELETE
+    je      .exec_delete
     cmp     rax, STMT_BEGIN
     je      .exec_begin
     cmp     rax, STMT_COMMIT
@@ -601,6 +603,19 @@ sql_execute_batch:
     mov     eax, SQL_ERR_EXEC
     FRAME_END
     ret
+
+; DELETE-V1: an empty table has nothing to publish, so the generation and the
+; statement both stay where they are rather than committing an identical page.
+.exec_delete:
+    cmp     qword [r10 + PLAN_DATA1], 0
+    je      .exec_delete_empty
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    call    db_catalog_truncate_data
+    jmp     .storage_done
+.exec_delete_empty:
+    xor     eax, eax
+    jmp     .exec_exit
 
 .exec_drop:
     mov     ARG1, [rbp - 8]

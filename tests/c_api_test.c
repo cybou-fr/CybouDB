@@ -612,6 +612,48 @@ static void test_exec_single_statement(const char *db_path) {
     printf("ok   test_exec_single_statement\n");
 }
 
+static void test_delete_statement(const char *db_path) {
+    cyboudb_db *db = NULL;
+    cyboudb_stmt *stmt = NULL;
+    ASSERT_EQ(cyboudb_open(db_path, CybouDB_OPEN_READWRITE, &db), CybouDB_OK, "open delete fixture");
+    ASSERT_EQ(cyboudb_exec(db, "CREATE TABLE del_items (id INT32, score INT64)"), CybouDB_OK, "create delete table");
+    ASSERT_EQ(cyboudb_exec(db, "INSERT INTO del_items VALUES (1, 10), (2, 20), (3, 30)"), CybouDB_OK, "seed delete table");
+
+    /* DELETE-V1 removes every row; a predicate is refused at bind time. */
+    ASSERT_EQ(cyboudb_prepare(db, "DELETE FROM del_items WHERE id = 1", &stmt), CybouDB_ERROR, "predicated DELETE rejected");
+    ASSERT_EQ(cyboudb_prepare(db, "DELETE FROM del_missing", &stmt), CybouDB_ERROR, "DELETE of unknown table rejected");
+
+    ASSERT_EQ(cyboudb_prepare(db, "DELETE FROM del_items", &stmt), CybouDB_OK, "prepare DELETE");
+    ASSERT_EQ(cyboudb_step(stmt), CybouDB_DONE, "step DELETE");
+    ASSERT_EQ(cyboudb_step(stmt), CybouDB_DONE, "DELETE is idempotent once done");
+    cyboudb_finalize(stmt);
+
+    ASSERT_EQ(cyboudb_prepare(db, "SELECT COUNT(*) FROM del_items", &stmt), CybouDB_OK, "prepare post-DELETE count");
+    ASSERT_EQ(cyboudb_step(stmt), CybouDB_ROW, "post-DELETE count row");
+    ASSERT_EQ(cyboudb_column_int64(stmt, 0), 0, "every row deleted");
+    cyboudb_finalize(stmt);
+
+    /* The table survives the deletion and accepts rows again. */
+    ASSERT_EQ(cyboudb_exec(db, "INSERT INTO del_items VALUES (4, 40)"), CybouDB_OK, "insert after DELETE");
+    ASSERT_EQ(cyboudb_prepare(db, "SELECT score FROM del_items", &stmt), CybouDB_OK, "prepare reuse read");
+    ASSERT_EQ(cyboudb_step(stmt), CybouDB_ROW, "reuse row");
+    ASSERT_EQ(cyboudb_column_int64(stmt, 0), 40, "only the new row remains");
+    ASSERT_EQ(cyboudb_step(stmt), CybouDB_DONE, "no further rows");
+    cyboudb_finalize(stmt);
+
+    /* Deleting an empty table publishes nothing and still reports success. */
+    ASSERT_EQ(cyboudb_exec(db, "DELETE FROM del_items"), CybouDB_OK, "DELETE through exec");
+    ASSERT_EQ(cyboudb_exec(db, "DELETE FROM del_items"), CybouDB_OK, "DELETE of an empty table");
+    ASSERT_EQ(cyboudb_exec(db, "DROP TABLE del_items"), CybouDB_OK, "drop delete fixture");
+    ASSERT_EQ(cyboudb_close(db), CybouDB_OK, "close delete fixture");
+
+    ASSERT_EQ(cyboudb_open(db_path, CybouDB_OPEN_READONLY, &db), CybouDB_OK, "open read-only delete");
+    ASSERT_EQ(cyboudb_exec(db, "DELETE FROM items"), CybouDB_ERROR, "read-only connection refuses DELETE");
+    ASSERT_EQ(cyboudb_close(db), CybouDB_OK, "close read-only delete");
+    total_tests++;
+    printf("ok   test_delete_statement\n");
+}
+
 static void test_independent_decode_views(const char *path) {
     cyboudb_db *a = NULL, *b = NULL;
     cyboudb_stmt *sa = NULL, *sb = NULL;
@@ -1048,6 +1090,7 @@ int main(int argc, char **argv) {
     test_close_and_metadata_lifetime(db_path);
     test_growing_statement_storage(db_path);
     test_exec_single_statement(db_path);
+    test_delete_statement(db_path);
     test_independent_decode_views(db_path);
     test_public_zone_paths(db_path);
     test_encoded_predicates(db_path, argc > 2 && strcmp(argv[2], "compressed") == 0);

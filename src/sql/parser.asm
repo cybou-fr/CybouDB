@@ -1676,6 +1676,8 @@ sql_parse:
     je      .parse_update
     cmp     rax, TOK_DROP
     je      .parse_drop
+    cmp     rax, TOK_DELETE
+    je      .parse_delete
     cmp     rax, TOK_BEGIN
     je      .parse_begin
     cmp     rax, TOK_COMMIT
@@ -2087,6 +2089,59 @@ sql_parse:
     jz      .fail
     mov     r10, [rbp - 48]
     mov     [r10 + UPDATE_WHERE_EXPR], rax
+    jmp     .check_eof
+
+; --- DELETE FROM table [WHERE expression] ------------------------------------
+; The predicate is parsed rather than rejected at the keyword, so that an
+; unsupported DELETE is reported against a statement the parser understood.
+.parse_delete:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_DELETE
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + DELETE_WHERE_EXPR], 0
+
+    ; Expect FROM keyword.
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_FROM
+    jne     .bad_syntax
+
+    ; Expect table name (IDENT).
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_table_name
+
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + DELETE_TABLE_NAME_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + DELETE_TABLE_NAME_LEN], rax
+
+    ; Optional WHERE.
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_peek
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_WHERE
+    jne     .check_eof
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    lea     ARG1, [rbp - 160]
+    mov     ARG2, [rbp - 8]
+    mov     ARG3, [rbp - 24]
+    mov     ARG4, [rbp - 40]
+    mov     rax, 1
+    PASS_ARG5 rax
+    call    parse_expr_prec
+    test    rax, rax
+    jz      .fail
+    mov     r10, [rbp - 48]
+    mov     [r10 + DELETE_WHERE_EXPR], rax
     jmp     .check_eof
 
 ; --- DROP TABLE table --------------------------------------------------------

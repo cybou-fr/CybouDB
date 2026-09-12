@@ -43,6 +43,7 @@ jobs:
           python3 tests/varlen_sql_tests.py ./cyboudb
           python3 tests/vector_sql_tests.py ./cyboudb
           python3 tests/transaction_tests.py ./cyboudb
+          python3 tests/delete_tests.py ./cyboudb
           python3 tests/zone_tests.py ./cyboudb ./build/cow_harness
           python3 tests/zone_validation_tests.py ./cyboudb ./build/cow_harness
           python3 tests/span_tests.py ./cyboudb ./build/cow_harness
@@ -139,6 +140,7 @@ jobs:
           python tests/varlen_sql_tests.py ./cyboudb.exe
           python tests/vector_sql_tests.py ./cyboudb.exe
           python tests/transaction_tests.py ./cyboudb.exe
+          python tests/delete_tests.py ./cyboudb.exe
           python tests/cmdline_tests.py ./cyboudb.exe
           python tests/zone_tests.py ./cyboudb.exe ./build/cow_harness.exe
           python tests/zone_validation_tests.py ./cyboudb.exe ./build/cow_harness.exe

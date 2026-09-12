@@ -33,6 +33,7 @@ err_order_pending: db "ORDER BY execution is not implemented yet", 0
 err_varlen_pending: db "TEXT/BLOB storage extents are not implemented yet", 0
 err_vector_pending: db "VECTOR storage extents are not implemented yet", 0
 err_vector_order_limit: db "vector distance ORDER BY requires LIMIT", 0
+err_delete_where_pending: db "DELETE WHERE is not implemented; DELETE FROM table removes all rows", 0
 err_oom:             db "memory arena capacity exceeded", 0
 
 section .text
@@ -931,6 +932,8 @@ sql_bind:
     je      .bind_update
     cmp     rax, STMT_DROP_TABLE
     je      .bind_drop
+    cmp     rax, STMT_DELETE
+    je      .bind_delete
     cmp     rax, STMT_BEGIN
     je      .bind_begin
     cmp     rax, STMT_COMMIT
@@ -1541,6 +1544,49 @@ sql_bind:
     mov     [r10 + PLAN_REQUIRED_COLS], rax
     mov     [r10 + PLAN_REQUIRED_VALUES], rdx
     xor     eax, eax
+    jmp     .binder_exit
+
+; --- BIND DELETE -------------------------------------------------------------
+; DELETE-V1 removes the whole table's rows. The row count is captured here so
+; that the executor can report it and skip an empty commit, and a WHERE clause
+; is refused with a message that says what is supported instead.
+.bind_delete:
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + PLAN_TYPE], STMT_DELETE
+    mov     qword [r10 + PLAN_DATA1], 0
+
+    mov     r10, [rbp - 16]
+    cmp     qword [r10 + DELETE_WHERE_EXPR], 0
+    jne     .delete_where_pending
+    mov     rcx, [r10 + DELETE_TABLE_NAME_LEN]
+    cmp     rcx, 31
+    ja      .bad_tbl_len
+
+    mov     ARG1, [rbp - 8]             ; db_ctx
+    mov     ARG2, [r10 + DELETE_TABLE_NAME_PTR]
+    mov     ARG3, [r10 + DELETE_TABLE_NAME_LEN]
+    lea     ARG4, [rbp - 56]            ; table_id
+    call    catalog_find_table
+    test    rax, rax
+    jz      .tbl_not_found
+
+    mov     r11, [rax + CAT_TABLE_ROWS]
+    mov     r10, [rbp - 48]
+    mov     rdx, [rbp - 56]
+    mov     [r10 + PLAN_TABLE_ID], rdx
+    mov     [r10 + PLAN_SCHEMA_PAGE], rax
+    mov     [r10 + PLAN_DATA1], r11     ; rows this statement will remove
+
+    xor     eax, eax
+    jmp     .binder_exit
+
+.delete_where_pending:
+    mov     ARG1, [rbp - 40]
+    mov     ARG2, SQL_ERR_SYNTAX
+    xor     ARG3, ARG3
+    lea     ARG4, [err_delete_where_pending]
+    call    set_binder_error
+    mov     eax, SQL_ERR_SYNTAX
     jmp     .binder_exit
 
 ; --- BIND DROP TABLE ---------------------------------------------------------

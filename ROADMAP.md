@@ -20,8 +20,8 @@ in-place page mutation. The separate persisted COW mode now protects allocation
 maps, a typed catalog and bounded multi-page PAX tables, with complete graph
 validation.
 
-`cyboudb query` runs `CREATE TABLE`, `INSERT`, correctness-first `UPDATE`, and
-`SELECT ... WHERE` against real
+`cyboudb query` runs `CREATE TABLE`, `INSERT`, correctness-first `UPDATE`,
+whole-table `DELETE FROM`, and `SELECT ... WHERE` against real
 pages. The executor scans in batches of 64 rows, reads only the columns the
 plan asks for and evaluates predicates through AVX2 SIMD kernels with CPUID dispatch.
 An interactive console (REPL) supports multiline statements, piped scripts,
@@ -44,8 +44,10 @@ conditions are recorded in [benchmarks/README.md](benchmarks/README.md);
 performance depends on the query, execution mode and hardware.
 
 SQL transactions are implemented via Phase 2 COW staging (`BEGIN`,
-`COMMIT`, `ROLLBACK`). `DELETE`, and an ARM64 backend remain
-unimplemented. `UPDATE` supports single-column assignments with a mandatory
+`COMMIT`, `ROLLBACK`). `DELETE FROM table` removes every row of one table by
+publishing a schema page whose data root, statistics root and row count are
+back where `CREATE TABLE` left them; a predicated `DELETE` and an ARM64
+backend remain unimplemented. `UPDATE` supports single-column assignments with a mandatory
 predicate across flat and tree-directory PAX tables, including fixed-width and
 persisted variable-width TEXT/BLOB columns. `DROP TABLE` drops tables and
 stages new catalog roots atomically across both CLI and REPL.
@@ -182,6 +184,11 @@ cyboudb query demo.cdb "SELECT id, score FROM runs WHERE score > 90"
 * [x] expression parser with correct operator precedence
 * [x] statement parser: `CREATE TABLE`, `INSERT`, `SELECT ... FROM ... WHERE`
 * [x] statement parser and catalog executor: `DROP TABLE`
+* [x] statement parser, binder and COW executor: whole-table `DELETE FROM`,
+      published as the state `CREATE TABLE` leaves a table in, with the
+      affected row count reported and an empty table publishing nothing
+* [ ] predicated `DELETE ... WHERE`: needs either row tombstones or leaf
+      compaction, and a decision on which before either is written
 * [x] statement parser contract: single-column `UPDATE ... SET literal WHERE ...`
 * [x] binder contract for typed single-column `UPDATE`
 * [x] COW executor for flat multi-leaf, fixed-width `UPDATE`

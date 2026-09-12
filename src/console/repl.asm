@@ -13,7 +13,8 @@
 ;    - Trailing statement execution on EOF
 ;    - Meta-commands: .tables, .schema [TABLE], .info, .help, .quit / .exit
 ;    - Clean error reporting without terminating the interactive session
-;    - Autocommit after mutating statements (CREATE TABLE, INSERT INTO, UPDATE)
+;    - Autocommit after mutating statements (CREATE TABLE, INSERT INTO, UPDATE,
+;      DELETE, DROP TABLE)
 ; =============================================================================
 
 %include "cyboudb.inc"

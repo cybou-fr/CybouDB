@@ -17,7 +17,7 @@ default rel
 
 ; --- External engine functions -----------------------------------------------
 extern db_open, db_close, db_commit, db_rollback
-extern db_catalog_put, db_catalog_drop, db_pax_insert
+extern db_catalog_put, db_catalog_drop, db_catalog_truncate_data, db_pax_insert
 extern db_var_read_chain
 extern sql_select_open, sql_select_next
 extern sql_arena_init, sql_arena_alloc
@@ -510,6 +510,8 @@ cyboudb_step:
     je      .step_create
     cmp     rcx, STMT_DROP_TABLE
     je      .step_drop
+    cmp     rcx, STMT_DELETE
+    je      .step_delete
     cmp     rcx, STMT_INSERT
     je      .step_insert
     cmp     rcx, STMT_SELECT
@@ -667,6 +669,37 @@ cyboudb_step:
     jnz     .step_mutation_error
 
 .step_drop_done:
+    mov     dword [r12 + STMT_H_STATE], STMT_STATE_DONE
+    mov     eax, CybouDB_C_DONE
+    jmp     .step_exit
+
+; DELETE-V1 through the ABI: the whole table, or nothing to do at all.
+.step_delete:
+    cmp     dword [r12 + STMT_H_STATE], STMT_STATE_DONE
+    je      .step_done_ret
+
+    mov     r9, [rbp - 24]              ; plan
+    cmp     qword [r9 + PLAN_DATA1], 0
+    je      .step_delete_done
+    mov     r10, [r12 + STMT_H_DB]
+    lea     ARG1, [r10 + DB_H_CTX]
+    mov     ARG2, [r9 + PLAN_TABLE_ID]
+    call    db_catalog_truncate_data
+    test    eax, eax
+    jnz     .step_mutation_error
+
+    ; Auto-commit if opened read-write and not in explicit transaction
+    mov     r10, [r12 + STMT_H_DB]
+    test    dword [r10 + DB_H_FLAGS], CybouDB_C_OPEN_READWRITE
+    jz      .step_delete_done
+    cmp     qword [r10 + DB_H_CTX + DB_TX_ACTIVE], 0
+    jne     .step_delete_done
+    lea     ARG1, [r10 + DB_H_CTX]
+    call    db_commit
+    test    eax, eax
+    jnz     .step_mutation_error
+
+.step_delete_done:
     mov     dword [r12 + STMT_H_STATE], STMT_STATE_DONE
     mov     eax, CybouDB_C_DONE
     jmp     .step_exit

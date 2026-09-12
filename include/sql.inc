@@ -121,6 +121,7 @@
 %define STMT_BEGIN          6
 %define STMT_COMMIT         7
 %define STMT_ROLLBACK       8
+%define STMT_DELETE         9
 
 ; --- AST Statement header and statement-specific payload --------------------
 %define AST_STMT_TYPE       0           ; qword: STMT_*
@@ -159,6 +160,14 @@
 %define UPDATE_WHERE_EXPR      40       ; AST_EXPR*; mandatory in V1
 %define UPDATE_PAYLOAD_SIZE    48
  
+; DELETE-V1: the whole table, published as one COW truncation. A WHERE clause
+; parses so that the error names the clause rather than the keyword, and the
+; binder refuses it until predicated deletion exists.
+%define DELETE_TABLE_NAME_PTR  0
+%define DELETE_TABLE_NAME_LEN  8
+%define DELETE_WHERE_EXPR     16       ; AST_EXPR*, or zero
+%define DELETE_PAYLOAD_SIZE   24
+
 %define DROP_TABLE_NAME_PTR    0
 %define DROP_TABLE_NAME_LEN    8
 %define DROP_PAYLOAD_SIZE      16

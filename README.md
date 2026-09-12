@@ -39,7 +39,7 @@ underlying CPU.
 | Multi-page PAX tables | working; two-level directory tree (up to 28M rows per table), cross-page batches |
 | Paired multi-page allocation map | working; `create-large`, 63 GiB ceiling, page reclamation |
 | SQL engine: parser, binder, executor | working; pure x86-64 scalar and batch execution |
-| SQL statements | working; `CREATE TABLE`, `INSERT INTO` (multi-row), fixed-width flat-PAX `UPDATE ... SET literal WHERE`, `SELECT ... WHERE`, stable single-key `ORDER BY`, `LIMIT [OFFSET]`, correctness-first `INNER JOIN`/`LEFT JOIN` on qualified INT32/INT64 equi-keys |
+| SQL statements | working; `CREATE TABLE`, `INSERT INTO` (multi-row), fixed-width flat-PAX `UPDATE ... SET literal WHERE`, whole-table `DELETE FROM`, `SELECT ... WHERE`, stable single-key `ORDER BY`, `LIMIT [OFFSET]`, correctness-first `INNER JOIN`/`LEFT JOIN` on qualified INT32/INT64 equi-keys |
 | SQL types and semantics | fixed-width storage working for `INT32`, `INT64`, `FLOAT32`, `BOOL`; persistent `TEXT`/`BLOB` storage working for `create-large` databases |
 | CLI: `query` | working; executes statements, autocommits mutations, tabular output |
 | CLI: `create`, `info`, `check`, `alloc`, `free` | working |
@@ -129,7 +129,7 @@ id | score
 (1 row)
 ```
 
-Mutating statements (`CREATE TABLE`, `INSERT INTO`, `UPDATE`) automatically commit changes
+Mutating statements (`CREATE TABLE`, `INSERT INTO`, `UPDATE`, `DELETE`) automatically commit changes
 to disk upon success. `SELECT` statements open the database in read-only mode,
 evaluating predicates using Three-Valued Logic (3VL) and pruning unreferenced
 columns during columnar batch scans.
