@@ -295,6 +295,8 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     echo Build OK -^> build\c_api_test.exe
     cl.exe /O2 /W3 /nologo tests\compress_harness.c /Febuild\compress_harness.exe /Fobuild\compress_harness.obj /link build\cyboudb.lib kernel32.lib
     if errorlevel 1 goto :fail
+    cl.exe /O2 /W3 /nologo /Iinclude tests\commit_guard_test.c /Febuild\commit_guard_test.exe /Fobuild\commit_guard_test.obj /link build\cyboudb.lib kernel32.lib
+    if errorlevel 1 goto :fail
     cl.exe /O2 /W3 /nologo /Iinclude tests\vector_topk_test.c /Febuild\vector_topk_test.exe /Fobuild\vector_topk_test.obj /link build\cyboudb.lib kernel32.lib
     if errorlevel 1 goto :fail
     endlocal

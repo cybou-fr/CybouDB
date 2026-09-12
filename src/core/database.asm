@@ -1060,6 +1060,10 @@ db_commit:
     call    db_bitmap_validate
     test    eax, eax
     jz      .e_bitmap
+    ; db_bitmap_validate walks the typed graph as well, so the staged graph is
+    ; proved here, before any of it can outlive the process. That is what lets
+    ; appends inside the transaction stop walking it one at a time - see
+    ; current_valid and db_pax_check_new.
 .state_checked:
     mov     r10, [rbp - 8]
     cmp     qword [r10 + DB_MODE], 1
@@ -1178,6 +1182,7 @@ db_commit:
     mov     [r10 + DB_COW_FLOOR], rax
 .floor_preserved:
     mov     qword [r10 + DB_DIRTY_HI], 0
+    mov     qword [r10 + DB_VALIDATED], 0
     mov     ARG1, r10
     call    db_bitmap_recount           ; the pages this generation retired
 
@@ -1247,6 +1252,7 @@ db_rollback:
 
     mov     qword [r10 + DB_DIRTY_LO], 0
     mov     qword [r10 + DB_DIRTY_HI], 0
+    mov     qword [r10 + DB_VALIDATED], 0
 
     ; In span layout, copy active leaves to inactive copy
     test    qword [r10 + DB_FEATURES], CybouDB_FEATURE_MAP_SPAN

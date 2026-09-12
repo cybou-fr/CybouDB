@@ -107,6 +107,7 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         "$CC" -O2 -no-pie -Wall -DCybouDB_API_TEST_ALLOC=1 -Iinclude tests/c_api_test.c build/abi_probe.o build/libcyboudb.a -o build/c_api_test
         echo "Build OK -> build/c_api_test"
         "$CC" -O2 -no-pie -Wall tests/compress_harness.c build/libcyboudb.a -o build/compress_harness
+        "$CC" -O2 -no-pie -Wall -Iinclude tests/commit_guard_test.c build/libcyboudb.a -o build/commit_guard_test
         "$CC" -O2 -no-pie -Wall -Iinclude tests/vector_topk_test.c build/libcyboudb.a -o build/vector_topk_test
     fi
     if [ "${1:-}" = "--c-api-bench" ]; then

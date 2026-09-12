@@ -373,9 +373,28 @@ db_catalog_validate:
     ret
 
 ; Validate the descriptor's current (possibly staged) catalog graph.
+; current_valid(ctx): the typed graph as this transaction has staged it.
+;
+; The walk deep-verifies every page whose generation matches the candidate
+; superblock, and the candidate stands at the staged generation, so it checks
+; exactly the pages this transaction wrote. Repeating that per append is
+; quadratic - the Nth append re-checksums what the first N-1 staged - so the
+; result is remembered for the length of the transaction. What the flag is
+; allowed to skip is only work this writer would be doing on its own staged
+; pages: the single-writer lock means nothing else can have touched them, and
+; db_commit validates the graph again before any of it becomes durable.
 current_valid:
-    FRAME_BEGIN CybouDB_SB_SIZE, 0
+    FRAME_BEGIN CybouDB_SB_SIZE + 16, 0
+    mov [rbp - CybouDB_SB_SIZE - 8], ARG1
     mov r10, ARG1
+    cmp qword [r10 + DB_WRITABLE], 0
+    je .walk                        ; a reader has staged nothing to trust
+    cmp qword [r10 + DB_VALIDATED], 0
+    je .walk
+    mov eax, 1
+    FRAME_END
+    ret
+.walk:
     mov rax, [r10 + DB_GENERATION]
     cmp rax, -1
     je .generation
@@ -391,6 +410,14 @@ current_valid:
     mov dword [rbp - CybouDB_SB_SIZE + SB_STAGED], 1
     lea ARG2, [rbp - CybouDB_SB_SIZE]
     call db_catalog_validate
+    test eax, eax
+    jz .done
+    mov r10, [rbp - CybouDB_SB_SIZE - 8]
+    cmp qword [r10 + DB_WRITABLE], 0
+    je .done                        ; nothing to remember on a read-only open
+    mov qword [r10 + DB_VALIDATED], 1
+    mov eax, 1
+.done:
     FRAME_END
     ret
 

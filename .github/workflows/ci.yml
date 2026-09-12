@@ -82,6 +82,8 @@ jobs:
           ./build/c_api_test build/test_ci_c.cdb
           ./cyboudb create-compressed build/test_ci_compressed_c.cdb 10000 --force
           ./build/c_api_test build/test_ci_compressed_c.cdb compressed
+          ./cyboudb create-large build/test_ci_guard.cdb 10000 --force
+          ./build/commit_guard_test build/test_ci_guard.cdb
           ./build/vector_topk_test
           sh build.sh --vector-example
           ./build/vector_search_example

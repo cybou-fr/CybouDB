@@ -204,9 +204,10 @@ cyboudb query demo.cdb "SELECT id, score FROM runs WHERE score > 90"
 * [x] a benchmark for the rewrite, at 100 000 and 1 000 000 rows and across
       selectivities - see
       [benchmarks/results/2026-09-12-delete.md](benchmarks/results/2026-09-12-delete.md).
-      Truncation is 1-3 ms whatever the table holds. The rewrite costs 1.4 us
-      per surviving row at 10 000 survivors and 126 us at 990 000, so the
-      total is quadratic, and it stages up to 4.8x the table's own pages
+      Truncation is under 2 ms whatever the table holds; the rewrite costs
+      about 180 ns per surviving row, flat, and stages up to 4.8x the table's
+      own pages. The commit that follows is now the larger number: it flushes
+      the mapping, so it tracks the file rather than the work
 * [x] identify the per-append cost that makes it quadratic. It is
       `db_catalog_get`, which `db_pax_insert` calls to resolve the schema and
       `catalog_publish_data` calls again to publish it. It revalidates the
@@ -217,11 +218,18 @@ cyboudb query demo.cdb "SELECT id, score FROM runs WHERE score > 90"
       staged pages (45 us at 123 pages, 338 us at 1,281), a control call
       beside it stays flat, committing periodically holds it at 16-26 us, and
       forcing the scalar CRC-32C multiplies it by eighty
-* [ ] a validated append that does not revalidate: the read side already has
-      `db_pax_scan_open_bound` so that a bound query skips catalog
-      revalidation per batch, and the write side needs the same. Checksumming
-      pages this writer staged itself, in its own address space, verifies
-      nothing a commit does not already guarantee
+* [x] a validated append that does not revalidate, the write side's answer to
+      `db_pax_scan_open_bound`: `current_valid` remembers that this writer
+      proved the graph and skips the walk for the rest of the transaction, and
+      `db_pax_check_new` checks the header of the root it was handed instead
+      of walking the table. `db_commit` already validated the typed graph
+      before publishing, so the boundary that decides durability is unchanged;
+      `tests/commit_guard_test.c` pins it against a staged catalog root, a
+      staged leaf, and a row count resealed to keep its checksum valid.
+      Appends in one transaction went from 1,091 us at 1,281 staged pages to a
+      flat 16 us, 90 000 rows in one transaction from 1,004 ms to 153 ms, and
+      `DELETE` of 1% of a million rows from 124,452 ms to 177 ms with the cost
+      per surviving row constant across selectivities
 * [ ] incremental deletion: the rewrite is proportional to the survivors, not
       to the rows removed, and stages a second copy of what survives. Row
       tombstones or in-place leaf compaction would fix that, and neither

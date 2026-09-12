@@ -53,7 +53,14 @@
 %define DB_VERIFY         152           ; 1 = check every page, not just the new
 %define DB_TX_ACTIVE      160           ; qword: 1 if inside explicit transaction, 0 if autocommit
 %define DB_TX_ID          168           ; qword: monotonic transaction sequence counter
-%define CybouDB_DB_SIZE      176
+; Nonzero once this writer has validated the typed graph while the pages it
+; staged were still unpublished. The walk deep-verifies exactly those pages,
+; so repeating it per append costs time proportional to what is already
+; staged; doing it once per transaction, and again at the commit that decides
+; durability, protects the same boundary without the quadratic term. Cleared
+; wherever staged state is published or discarded.
+%define DB_VALIDATED      176           ; qword: graph checked in this transaction
+%define CybouDB_DB_SIZE      184
 
 ; --- Transaction States ---
 %define CybouDB_TX_NONE      0

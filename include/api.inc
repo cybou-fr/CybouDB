@@ -25,12 +25,12 @@
 %define CybouDB_C_OPEN_READWRITE   0x0002
 
 ; --- cyboudb_db structure layout (4096 bytes) ---
-%define DB_H_CTX                0               ; CybouDB_DB_SIZE = 176 bytes
-%define DB_H_FLAGS              176             ; dword: open flags
-%define DB_H_OPEN               180             ; dword: 1 if open, 0 if closed
-%define DB_H_ERRCODE            184             ; dword: internal error code
-%define DB_H_ERRMSG             192             ; 256 bytes: error message string
-%define DB_H_STMT_COUNT         448             ; qword: live successfully prepared statements
+%define DB_H_CTX                0               ; CybouDB_DB_SIZE = 184 bytes
+%define DB_H_FLAGS              184             ; dword: open flags
+%define DB_H_OPEN               188             ; dword: 1 if open, 0 if closed
+%define DB_H_ERRCODE            192             ; dword: internal error code
+%define DB_H_ERRMSG             200             ; 256 bytes: error message string
+%define DB_H_STMT_COUNT         456             ; qword: live successfully prepared statements
 %define CybouDB_DB_H_SIZE          4096
 
 ; --- cyboudb_stmt header followed by a geometrically grown prepare arena ---

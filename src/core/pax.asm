@@ -1901,8 +1901,58 @@ db_pax_validate:
 
 ; Internal: validate a newly built page against the staged allocation state.
 ; db_pax_check_new(ctx, schema, page_id) -> pointer or zero
+; db_pax_check_new(ctx, schema, new_root) -> the mapped root, or zero.
+;
+; The full form walks the table's whole graph against a superblock standing at
+; the staged generation, which deep-verifies every page of it this transaction
+; has written. Inside one transaction that is quadratic: each append copies
+; another leaf into the staged set, and the next append re-checksums all of
+; them. Once the transaction has proved the graph through current_valid, and
+; with db_commit proving it again before anything becomes durable, what this
+; call still has to establish is only that the root it was handed is the root
+; this writer just wrote - which is a header, not a walk.
 db_pax_check_new:
     FRAME_BEGIN CybouDB_SB_SIZE, 0
+    mov r10, ARG1
+    cmp qword [r10 + DB_WRITABLE], 0
+    je .full
+    cmp qword [r10 + DB_VALIDATED], 0
+    je .full
+    cmp qword [r10 + DB_VERIFY], 0
+    jne .full                       ; check reads everything, by request
+
+    mov rax, ARG3
+    cmp rax, CybouDB_MIN_PAGES
+    jb .shallow_bad
+    cmp rax, [r10 + DB_ALLOC]
+    jae .shallow_bad
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
+    mov r11d, [rax]
+    cmp r11d, PAX_MAGIC_VALUE
+    je .shallow_header
+    cmp r11d, PAX_DIR_MAGIC
+    jne .shallow_bad
+.shallow_header:
+    mov r11, ARG3
+    cmp [rax + PAX_PAGE_ID], r11
+    jne .shallow_bad
+    mov r11, ARG2
+    mov r11, [r11 + CAT_OWNER]
+    cmp [rax + PAX_OWNER], r11
+    jne .shallow_bad
+    mov r11, [r10 + DB_GENERATION]
+    inc r11
+    cmp [rax + PAX_GENERATION], r11
+    jne .shallow_bad                ; not a root this transaction wrote
+    FRAME_END
+    ret
+.shallow_bad:
+    xor eax, eax
+    FRAME_END
+    ret
+
+.full:
     mov r10, ARG1
     mov r11, ARG2
     mov r8, ARG3
