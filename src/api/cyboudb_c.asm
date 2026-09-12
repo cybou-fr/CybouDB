@@ -566,10 +566,22 @@ cyboudb_step:
     mov     r10, [r12 + STMT_H_DB]
     mov     qword [r10 + DB_H_CTX + DB_TX_ACTIVE], 0
     test    eax, eax
-    jnz     .step_mutation_error
+    jnz     .step_commit_failed
     mov     dword [r12 + STMT_H_STATE], STMT_STATE_DONE
     mov     eax, CybouDB_C_DONE
     jmp     .step_exit
+
+.step_commit_failed:
+    ; A refused commit leaves its pages staged and the transaction over.
+    ; Discard them here, or the next statement - which autocommits - would
+    ; publish them alongside its own work. The rollback's own result must
+    ; not displace the code that says why the commit failed.
+    mov     [rbp - 32], eax
+    mov     r10, [r12 + STMT_H_DB]
+    lea     ARG1, [r10 + DB_H_CTX]
+    call    db_rollback
+    mov     eax, [rbp - 32]
+    jmp     .step_mutation_error
 
 .step_commit_no_active:
     mov     dword [r12 + STMT_H_STATE], STMT_STATE_ERROR

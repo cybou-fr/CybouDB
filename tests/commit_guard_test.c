@@ -188,6 +188,50 @@ int main(int argc, char **argv) {
        published. */
     check("table still readable", cyboudb_exec(db, "SELECT a, b FROM guard_t") == CybouDB_OK);
     check("still writable", cyboudb_exec(db, "INSERT INTO guard_t VALUES (99, 1)") == CybouDB_OK);
+    /* The SQL layer has to discard a refused commit itself. Nothing between
+       the failed COMMIT and the next statement would otherwise drop the pages
+       the transaction staged, and that statement autocommits: a staged graph
+       that validates on the second attempt would be published along with the
+       row the new statement wrote, rows the user was told had failed. */
+    {
+        uint64_t tx_table = 0, tx_root, rows_before, rows_after;
+
+        check("tx table created",
+              cyboudb_exec(db, "CREATE TABLE guard_tx (a INT64, b INT32)") == CybouDB_OK);
+        check("tx table found", catalog_find_table(ctx, "guard_tx", 8, &tx_table) != 0);
+        check("committed row", cyboudb_exec(db, "INSERT INTO guard_tx VALUES (1, 1)") == CybouDB_OK);
+
+        schema = (unsigned char *)catalog_find_table(ctx, "guard_tx", 8, &tx_table);
+        memcpy(&rows_before, schema + CAT_TABLE_ROWS_OFFSET, sizeof rows_before);
+
+        check("BEGIN", cyboudb_exec(db, "BEGIN") == CybouDB_OK);
+        check("staged row", cyboudb_exec(db, "INSERT INTO guard_tx VALUES (2, 2)") == CybouDB_OK);
+
+        schema = (unsigned char *)catalog_find_table(ctx, "guard_tx", 8, &tx_table);
+        tx_root = field(schema, CAT_DATA_ROOT_OFFSET);
+        check("staged data root", tx_root != 0);
+        base = field(ctx, DB_BASE_OFFSET);
+        page = (unsigned char *)(uintptr_t)base + (tx_root << PAGE_SHIFT);
+
+        saved = page[128];
+        page[128] ^= 0xFF;
+        check("SQL COMMIT refuses the corrupted graph",
+              cyboudb_exec(db, "COMMIT") != CybouDB_OK);
+        page[128] = saved;
+
+        /* The next statement must publish only itself. */
+        check("statement after the refused COMMIT",
+              cyboudb_exec(db, "INSERT INTO guard_tx VALUES (3, 3)") == CybouDB_OK);
+        schema = (unsigned char *)catalog_find_table(ctx, "guard_tx", 8, &tx_table);
+        memcpy(&rows_after, schema + CAT_TABLE_ROWS_OFFSET, sizeof rows_after);
+        check("the refused transaction did not surface later",
+              rows_after == rows_before + 1);
+
+        check("tx table still usable",
+              cyboudb_exec(db, "SELECT a, b FROM guard_tx") == CybouDB_OK);
+        check("drop tx table", cyboudb_exec(db, "DROP TABLE guard_tx") == CybouDB_OK);
+    }
+
     check("drop", cyboudb_exec(db, "DROP TABLE guard_t") == CybouDB_OK);
     check("close", cyboudb_close(db) == CybouDB_OK);
 

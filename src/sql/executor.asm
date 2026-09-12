@@ -577,9 +577,22 @@ sql_execute_batch:
     mov     r10, [rbp - 8]
     mov     qword [r10 + DB_TX_ACTIVE], 0
     test    rax, rax
-    jnz     .storage_done
+    jnz     .commit_failed
     xor     eax, eax
     jmp     .exec_exit
+
+.commit_failed:
+    ; A refused commit leaves its pages staged, and the transaction is over.
+    ; Discard them here: the next statement autocommits, and a staged graph
+    ; that validates on the second attempt would otherwise be published along
+    ; with whatever that statement wrote. db_rollback may itself refuse - a
+    ; failed sync poisons the handle - and its code must not displace the one
+    ; that explains why the commit did not happen.
+    mov     [rbp - 48], rax
+    mov     ARG1, [rbp - 8]
+    call    db_rollback
+    mov     rax, [rbp - 48]
+    jmp     .storage_done
 
 .commit_no_active:
     lea     r11, [exec_no_active_tx_commit_msg]

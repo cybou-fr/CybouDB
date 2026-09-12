@@ -67,10 +67,17 @@ uncertain outcome — the write may or may not have reached stable storage — a
 the only honest response is to stop trusting the in-memory picture and reopen,
 which re-derives everything from whichever generation actually survived.
 
-A refused commit does not roll itself back. The staged pages are still staged
-and the caller is expected to call `db_rollback`; that is the sequence the
-commit-guard suite exercises, and it is what keeps a refusal from leaving the
-database half-published.
+`db_commit` does not roll itself back: a refusal leaves the staged pages
+staged, and the caller discards them with `db_rollback`. The layers above do
+exactly that. A refused `COMMIT` — through SQL or through `cyboudb_step` —
+rolls back before returning the error, so the transaction is over in both name
+and effect.
+
+This matters because the next statement autocommits. Without that rollback, a
+staged graph that failed validation once and would pass it the second time
+would be published along with whatever that next statement wrote: rows the user
+was told had failed, surfacing inside someone else's transaction. The rollback's
+own result never displaces the code that explains why the commit failed.
 
 ## Rollback
 
