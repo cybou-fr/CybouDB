@@ -68,7 +68,7 @@ typedef struct cyboudb_batch_view {
 } cyboudb_batch_view;
 
 /* --- Allocation-free Vector Runtime -------------------------------------- */
-#define CybouDB_VECTOR_ABI_VERSION 1
+#define CybouDB_VECTOR_ABI_VERSION 2
 
 #define CybouDB_VECTOR_OK          0
 #define CybouDB_VECTOR_INVALID    -1
@@ -100,6 +100,7 @@ typedef struct cyboudb_vector_topk {
     uint64_t out_count;
     const uint64_t *candidates;
     uint64_t evaluated_count;
+    uint64_t reverse;           /* 0: keep the k nearest; 1: keep the k farthest */
 } cyboudb_vector_topk;
 
 /**

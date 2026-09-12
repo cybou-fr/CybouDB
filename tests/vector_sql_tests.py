@@ -413,7 +413,7 @@ def main():
         # 15c. L2 DESC
         res = run_cmd(['query', topk_db, 'SELECT id FROM items ORDER BY L2_DISTANCE(emb, [1.0, 2.0, 3.0]) DESC LIMIT 3;'])
         lines = [line.strip() for line in res.stdout.strip().splitlines() if line.strip() and not line.startswith('-') and not line.startswith('id') and not line.startswith('(')]
-        test('topk_l2_desc', res.returncode == 0 and lines == ['4', '2', '1'], res.stdout)
+        test('topk_l2_desc', res.returncode == 0 and lines == ['3', '5', '4'], res.stdout)
 
         # 15d. L2 with OFFSET
         res = run_cmd(['query', topk_db, 'SELECT id FROM items ORDER BY L2_DISTANCE(emb, [1.0, 2.0, 3.0]) LIMIT 2 OFFSET 1;'])
@@ -444,6 +444,11 @@ def main():
         res = run_cmd(['query', topk_db, 'SELECT id FROM items WHERE id > 3 ORDER BY COSINE_DISTANCE(emb, [1.0, 2.0, 3.0]) LIMIT 1;'])
         lines = [line.strip() for line in res.stdout.strip().splitlines() if line.strip() and not line.startswith('-') and not line.startswith('id') and not line.startswith('(')]
         test('topk_cosine_where', res.returncode == 0 and lines == ['4'], res.stdout)
+
+        # 15g2. Cosine descending: the opposite-direction vector is farthest
+        res = run_cmd(['query', topk_db, 'SELECT id FROM items ORDER BY COSINE_DISTANCE(emb, [1.0, 2.0, 3.0]) DESC LIMIT 1;'])
+        lines = [line.strip() for line in res.stdout.strip().splitlines() if line.strip() and not line.startswith('-') and not line.startswith('id') and not line.startswith('(')]
+        test('topk_cosine_desc', res.returncode == 0 and lines == ['5'], res.stdout)
 
         # 15h. Missing LIMIT rejected
         res = run_cmd(['query', topk_db, 'SELECT id FROM items ORDER BY L2_DISTANCE(emb, [1.0, 2.0, 3.0]);'])

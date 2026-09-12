@@ -1534,6 +1534,12 @@ sql_vector_topk_execute:
     mov     [r10 + VTOPK_STRIDE], rax
     mov     rax, [rbp - 128]            ; K
     mov     [r10 + VTOPK_K], rax
+    ; DESC is the k farthest rows, not the k nearest read backwards.
+    mov     r11, [rbp - 16]             ; plan
+    xor     eax, eax
+    cmp     qword [r11 + PLAN_ORDER_DESC], 0
+    setne   al
+    mov     [r10 + VTOPK_REVERSE], rax
 
     mov     ARG1, r10
     cmp     qword [rbp - 104], 1        ; is_cosine
@@ -1663,25 +1669,7 @@ sql_vector_topk_execute:
     test    rax, rax
     jz      .vtopk_success
 
-    ; Reverse out_ids if PLAN_ORDER_DESC
-    mov     r11, [rbp - 16]
-    cmp     qword [r11 + PLAN_ORDER_DESC], 0
-    jz      .vtopk_order_ready
-    mov     r8, [r10 + VTOPK_OUT_IDS]
-    xor     ecx, ecx
-    mov     rdx, [rbp - 112]
-    dec     rdx
-.vtopk_reverse_loop:
-    cmp     rcx, rdx
-    jae     .vtopk_order_ready
-    mov     r12, [r8 + rcx * 8]
-    mov     r13, [r8 + rdx * 8]
-    mov     [r8 + rcx * 8], r13
-    mov     [r8 + rdx * 8], r12
-    inc     rcx
-    dec     rdx
-    jmp     .vtopk_reverse_loop
-.vtopk_order_ready:
+
 
     ; Pass 2: Re-open scan to materialize winning rows
     mov     qword [rbp - 208], 0        ; found_count = 0

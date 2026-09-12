@@ -125,6 +125,8 @@ vector_topk_init:
     je %%begin_invalid
     cmp qword [ARG1 + VTOPK_OUT_SCORES], 0
     je %%begin_invalid
+    cmp qword [ARG1 + VTOPK_REVERSE], 1
+    ja %%begin_invalid
     mov rax, [ARG1 + VTOPK_DIM]
     mov rdx, 0x3fffffffffffffff
     cmp rax, rdx
@@ -271,8 +273,15 @@ vector_topk_cosine_feed:
     cmp r11, r9
     jae .cfeed_pos_ready
     mov rax, [r12 + VTOPK_OUT_SCORES]
+    cmp qword [r12 + VTOPK_REVERSE], 0
+    jne .cfeed_find_rev
     ucomiss xmm0, [rax + r11 * 4]
     ja .cfeed_pos_ready
+    jmp .cfeed_find_next
+.cfeed_find_rev:
+    ucomiss xmm0, [rax + r11 * 4]
+    jb .cfeed_pos_ready
+.cfeed_find_next:
     inc r11
     jmp .cfeed_find
 .cfeed_pos_ready:
@@ -404,8 +413,15 @@ vector_topk_l2sq_feed:
     cmp r11, r9
     jae .lfeed_pos_ready
     mov rax, [r12 + VTOPK_OUT_SCORES]
+    cmp qword [r12 + VTOPK_REVERSE], 0
+    jne .lfeed_find_rev
     ucomiss xmm0, [rax + r11 * 4]
     jb .lfeed_pos_ready
+    jmp .lfeed_find_next
+.lfeed_find_rev:
+    ucomiss xmm0, [rax + r11 * 4]
+    ja .lfeed_pos_ready
+.lfeed_find_next:
     inc r11
     jmp .lfeed_find
 .lfeed_pos_ready:
@@ -479,6 +495,8 @@ vector_topk_cosine_f32:
     je .invalid
     cmp qword [r12 + VTOPK_K], 0
     je .invalid
+    cmp qword [r12 + VTOPK_REVERSE], 1
+    ja .invalid
     cmp qword [r12 + VTOPK_QUERY], 0
     je .invalid
     cmp qword [r12 + VTOPK_VECTORS], 0
@@ -529,8 +547,16 @@ vector_topk_cosine_f32:
     cmp r11, r15
     jae .position_ready
     mov rax, [r12 + VTOPK_OUT_SCORES]
+    cmp qword [r12 + VTOPK_REVERSE], 0
+    jne .find_position_rev
     ucomiss xmm0, [rax + r11 * 4]
     ja .position_ready
+    jmp .find_position_next
+    ; Equal scores stay behind earlier (therefore smaller) vector ids.
+.find_position_rev:
+    ucomiss xmm0, [rax + r11 * 4]
+    jb .position_ready
+.find_position_next:
     ; Equal scores stay behind earlier (therefore smaller) vector ids.
     inc r11
     jmp .find_position
@@ -604,6 +630,8 @@ vector_topk_l2sq_f32:
     je .l2_invalid
     cmp qword [r12 + VTOPK_K], 0
     je .l2_invalid
+    cmp qword [r12 + VTOPK_REVERSE], 1
+    ja .l2_invalid
     cmp qword [r12 + VTOPK_QUERY], 0
     je .l2_invalid
     cmp qword [r12 + VTOPK_VECTORS], 0
@@ -654,8 +682,15 @@ vector_topk_l2sq_f32:
     cmp r11, r15
     jae .l2_position
     mov rax, [r12 + VTOPK_OUT_SCORES]
+    cmp qword [r12 + VTOPK_REVERSE], 0
+    jne .l2_find_rev
     ucomiss xmm0, [rax + r11 * 4]
     jb .l2_position
+    jmp .l2_find_next
+.l2_find_rev:
+    ucomiss xmm0, [rax + r11 * 4]
+    ja .l2_position
+.l2_find_next:
     inc r11
     jmp .l2_find
 .l2_position:

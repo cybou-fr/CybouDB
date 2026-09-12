@@ -55,6 +55,14 @@ Results are sorted deterministically:
 - Cosine: score descending, then vector id ascending.
 - Squared L2: distance ascending, then vector id ascending.
 
+`reverse` inverts which end of the ranking is retained, not the order of an
+already-chosen set: `reverse = 1` keeps the *k* worst rows — the least similar
+vectors for cosine, the most distant for squared L2 — and emits them worst
+first, with ties still putting the smaller vector id first. This is what SQL
+`ORDER BY <distance> DESC LIMIT k` means, and it is not the same set as the
+*k* nearest read backwards. Any value other than 0 or 1 is rejected with
+`VECTOR_INVALID`.
+
 For integration with vectorized PAX execution and streaming batch pipelines,
 the engine provides the streaming feed API:
 - `cyboudb_vector_topk_cosine_begin(search)` / `cyboudb_vector_topk_l2sq_begin(search)`
@@ -108,7 +116,10 @@ between scalar and SIMD execution.
 
 `include/cyboudb.h` exposes:
 - Public ABI metadata: `CybouDB_VECTOR_ABI_VERSION`, `struct_size`, and `abi_version`
-  in `cyboudb_vector_arena` and `cyboudb_vector_topk`.
+  in `cyboudb_vector_arena` and `cyboudb_vector_topk`. Version 2 adds the
+  `reverse` field to `cyboudb_vector_topk`; a caller compiled against version 1
+  passes a shorter `struct_size` and is rejected with `VECTOR_INVALID` rather
+  than being read past its own allocation.
 - Arena management: `cyboudb_vector_arena_init`, `cyboudb_vector_arena_append_raw`,
   `cyboudb_vector_arena_append_normalized`, `cyboudb_vector_arena_append`, and
   `cyboudb_vector_arena_get`.

@@ -46,6 +46,55 @@ static int run_case(int scalar, uint64_t k) {
     return 0;
 }
 
+/* reverse=1 keeps the k worst: SQL ORDER BY distance DESC, not the k best
+   read backwards. Ties still put the smaller vector id first. */
+static int run_reverse_case(int scalar)
+{
+    static const float query[2] = {1.0f, 0.0f};
+    static const float vectors[7][2] = {
+        {0.0f, 1.0f}, {1.0f, 0.0f}, {-1.0f, 0.0f},
+        {0.5f, 0.8660254f}, {1.0f, 0.0f}, {0.8f, 0.6f}, {0.5f, -0.8660254f}
+    };
+    static const uint64_t expected_ids[7] = {2, 0, 3, 6, 5, 1, 4};
+    static const float expected_scores[7] = {-1.0f, 0.0f, 0.5f, 0.5f, 0.8f, 1.0f, 1.0f};
+    uint64_t ids[7] = {99, 99, 99, 99, 99, 99, 99};
+    float scores[7] = {-9, -9, -9, -9, -9, -9, -9};
+    vector_topk_state state = {
+        sizeof(cyboudb_vector_topk), CybouDB_VECTOR_ABI_VERSION,
+        query, &vectors[0][0], 7, 2, 7,
+        sizeof(vectors[0]), ids, scores, 0, NULL, 0, 1
+    };
+    sql_kernel_force_scalar = scalar;
+    CHECK(vector_topk_cosine_f32(&state) == 0);
+    CHECK(state.out_count == 7);
+    for (uint64_t i = 0; i < 7; i++) {
+        CHECK(ids[i] == expected_ids[i]);
+        CHECK(scores[i] == expected_scores[i]);
+    }
+
+    /* A partial k keeps the same prefix: the three least similar vectors. */
+    uint64_t top_ids[3] = {99, 99, 99};
+    float top_scores[3] = {-9, -9, -9};
+    vector_topk_state partial = {
+        sizeof(cyboudb_vector_topk), CybouDB_VECTOR_ABI_VERSION,
+        query, &vectors[0][0], 7, 2, 3,
+        sizeof(vectors[0]), top_ids, top_scores, 0, NULL, 0, 1
+    };
+    CHECK(vector_topk_cosine_f32(&partial) == 0);
+    CHECK(partial.out_count == 3);
+    for (uint64_t i = 0; i < 3; i++) {
+        CHECK(top_ids[i] == expected_ids[i]);
+        CHECK(top_scores[i] == expected_scores[i]);
+    }
+
+    /* Only the two defined directions are accepted. */
+    vector_topk_state bogus = partial;
+    bogus.reverse = 2;
+    bogus.out_count = 0;
+    CHECK(vector_topk_cosine_f32(&bogus) == CybouDB_VECTOR_INVALID);
+    return 0;
+}
+
 int main(void) {
     vector_topk_state bad;
     memset(&bad, 0, sizeof(bad));
@@ -370,6 +419,9 @@ int main(void) {
         CHECK(search.out_count == 3 && search.evaluated_count == 7);
         CHECK(scores[0] == 1.0f && scores[1] == 1.0f && scores[2] == 1.0f);
     }
+
+    if (run_reverse_case(0)) return 1;
+    if (run_reverse_case(1)) return 1;
 
     sql_kernel_force_scalar = 0;
     puts("Vector top-K suite: passed");

@@ -3,7 +3,7 @@
 %ifndef CybouDB_VECTOR_INC
 %define CybouDB_VECTOR_INC
 
-%define CybouDB_VECTOR_ABI_VERSION 1
+%define CybouDB_VECTOR_ABI_VERSION 2
 
 ; Input/output state shared by exact cosine and squared-L2 streaming top-K.
 %define VTOPK_STRUCT_SIZE    0   ; uint32_t: sizeof(cyboudb_vector_topk)
@@ -19,7 +19,8 @@
 %define VTOPK_OUT_COUNT     72   ; written result count
 %define VTOPK_CANDIDATES    80   ; optional uint64_t bitmap; NULL means all rows
 %define VTOPK_EVAL_COUNT    88   ; number of vector distances actually evaluated
-%define VTOPK_STATE_SIZE    96
+%define VTOPK_REVERSE       96   ; 0 keeps the k best, 1 keeps the k worst
+%define VTOPK_STATE_SIZE   104
 
 %define VECTOR_OK          0
 %define VECTOR_INVALID    -1
