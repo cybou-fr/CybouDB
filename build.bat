@@ -259,6 +259,8 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     if "%~1"=="--delete-bench" (
         cl.exe /O2 /W3 /nologo /Iinclude benchmarks\delete_bench.c /Febuild\delete_bench.exe /Fobuild\delete_bench.obj /link build\cyboudb.lib kernel32.lib
         if errorlevel 1 goto :fail
+        cl.exe /O2 /W3 /nologo /Iinclude benchmarks\append_probe.c /Febuild\append_probe.exe /Fobuild\append_probe.obj /link build\cyboudb.lib kernel32.lib
+        if errorlevel 1 goto :fail
     )
     if "%~1"=="--vector-example" (
         cl.exe /O2 /W3 /nologo /Iinclude examples\vector_search.c /Febuild\vector_search_example.exe /Fobuild\vector_search_example.obj /link build\cyboudb.lib kernel32.lib

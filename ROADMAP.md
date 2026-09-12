@@ -207,15 +207,21 @@ cyboudb query demo.cdb "SELECT id, score FROM runs WHERE score > 90"
       Truncation is 1-3 ms whatever the table holds. The rewrite costs 1.4 us
       per surviving row at 10 000 survivors and 126 us at 990 000, so the
       total is quadratic, and it stages up to 4.8x the table's own pages
-* [ ] the per-append cost that makes it quadratic. It is not the DELETE path:
-      a plain INSERT staging the same rows in one transaction has the same
-      shape, it does not depend on the table's size, it is not the zone maps,
-      and it goes away when the work is split across commits. Something on
-      the append path costs time proportional to what the open transaction
-      has already staged. Worth fixing on its own account - it slows every
-      large single-transaction INSERT by the same rule - and a prerequisite
-      for any DELETE performance work, since a better constant factor is
-      worth nothing against a quadratic term
+* [x] identify the per-append cost that makes it quadratic. It is
+      `db_catalog_get`, which `db_pax_insert` calls to resolve the schema and
+      `catalog_publish_data` calls again to publish it. It revalidates the
+      whole typed graph against a synthetic superblock standing at the staged
+      generation, so `db_bitmap_deep` deep-verifies exactly the pages this
+      transaction has staged, and every append re-checksums what the previous
+      appends staged. Measured with `benchmarks/append_probe.c`: cost tracks
+      staged pages (45 us at 123 pages, 338 us at 1,281), a control call
+      beside it stays flat, committing periodically holds it at 16-26 us, and
+      forcing the scalar CRC-32C multiplies it by eighty
+* [ ] a validated append that does not revalidate: the read side already has
+      `db_pax_scan_open_bound` so that a bound query skips catalog
+      revalidation per batch, and the write side needs the same. Checksumming
+      pages this writer staged itself, in its own address space, verifies
+      nothing a commit does not already guarantee
 * [ ] incremental deletion: the rewrite is proportional to the survivors, not
       to the rows removed, and stages a second copy of what survives. Row
       tombstones or in-place leaf compaction would fix that, and neither

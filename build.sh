@@ -124,6 +124,7 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         CC=gcc
         command -v gcc >/dev/null 2>&1 || CC=clang
         "$CC" -O2 -no-pie -Wall -Iinclude benchmarks/delete_bench.c build/libcyboudb.a -o build/delete_bench
+        "$CC" -O2 -no-pie -Wall -Iinclude benchmarks/append_probe.c build/libcyboudb.a -o build/append_probe
         echo "Build OK -> build/delete_bench"
     fi
     if [ "${1:-}" = "--vector-example" ]; then

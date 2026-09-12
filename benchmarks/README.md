@@ -33,6 +33,13 @@ separately rather than folded into the statement. Results and what they say
 about the rewrite's scaling are in
 [results/2026-09-12-delete.md](results/2026-09-12-delete.md).
 
+`append_probe.c`, built by the same target, is the diagnostic behind that
+write-up: it appends chunks into one uncommitted transaction and times the
+calls `db_pax_insert` makes before touching data, so a cost that grows with
+staged state shows up against a control that does not. Its fourth argument
+forces the scalar CRC-32C, which is how the growth was identified as checksum
+work rather than merely located.
+
 ## What is measured
 
 `bench_harness.asm` opens the database once, parses and binds the statement
