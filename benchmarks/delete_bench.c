@@ -8,10 +8,16 @@
  * that executes it falls between the two clock reads.
  *
  * The statement runs inside an explicit transaction, which is the only way to
- * see the rewrite on its own: autocommit would put a flush of the whole
- * mapping inside the same measurement, and on a large file that flush is the
- * larger number by far. The commit is timed separately and reported as its
- * own field.
+ * see the rewrite on its own: autocommit would fold the commit into the same
+ * measurement. The commit is timed separately and reported as its own field.
+ *
+ * An empty transaction is committed first, before anything is timed. The
+ * runner restores the database by copying the file, which leaves the whole of
+ * it dirty in the operating system's cache; the first flush this process
+ * makes writes all of that back, and without the warm-up that cost lands on
+ * the measured commit and swamps it - 726 ms against the 1 ms the commit
+ * itself takes. It is the harness's own doing and has no business in the
+ * measurement.
  *
  * Repetition is the runner's job: it restores a fresh copy of the seeded
  * database before each run, which is far too expensive to sit inside a
@@ -61,6 +67,14 @@ int main(int argc, char **argv) {
     }
 
     before = table_rows(db, argc > 3 ? argv[3] : "SELECT COUNT(*) FROM events");
+
+    /* Absorb the writeback the runner's file copy left behind. */
+    if (cyboudb_exec(db, "BEGIN") != CybouDB_OK ||
+        cyboudb_exec(db, "COMMIT") != CybouDB_OK) {
+        fprintf(stderr, "warm-up commit failed: %s\n", cyboudb_errmsg(db));
+        cyboudb_close(db);
+        return 2;
+    }
 
     if (cyboudb_exec(db, "BEGIN") != CybouDB_OK) {
         fprintf(stderr, "begin failed: %s\n", cyboudb_errmsg(db));

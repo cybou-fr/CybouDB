@@ -206,8 +206,10 @@ cyboudb query demo.cdb "SELECT id, score FROM runs WHERE score > 90"
       [benchmarks/results/2026-09-12-delete.md](benchmarks/results/2026-09-12-delete.md).
       Truncation is under 2 ms whatever the table holds; the rewrite costs
       about 180 ns per surviving row, flat, and stages up to 4.8x the table's
-      own pages. The commit that follows is now the larger number: it flushes
-      the mapping, so it tracks the file rather than the work
+      own pages. The commit that follows tracks what was staged - 470 ms for
+      the 172 MiB of a 1% delete at a million rows, 8.6 ms when nothing was
+      staged - and an empty commit costs 0.3-1.0 ms on a 16 MiB file and on a
+      225 MiB one alike, so `sync_pages` does what its contract says
 * [x] identify the per-append cost that makes it quadratic. It is
       `db_catalog_get`, which `db_pax_insert` calls to resolve the schema and
       `catalog_publish_data` calls again to publish it. It revalidates the
