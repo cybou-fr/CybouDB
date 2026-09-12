@@ -44,16 +44,16 @@
 %define STMT_H_ERRCODE          40              ; dword: error code
 %define STMT_H_ERRMSG           44              ; 128 bytes: error string
 %define STMT_H_PLAN             176             ; qword: pointer to BOUND_PLAN
-%define STMT_H_CURSOR           184             ; CybouDB_SCAN_SIZE = 80 bytes
-%define STMT_H_BATCH_VIEW       264             ; CybouDB_BATCH_VIEW_SIZE = 1544 bytes
-%define STMT_H_ARENA            1808            ; SQL_ARENA_SIZE = 32 bytes
-%define STMT_H_RESULT_COUNT     1840            ; qword: logical result column count
-%define STMT_H_RESULT_INDICES   1848            ; 64 dword physical indices
-%define STMT_H_RESULT_TYPES     2104            ; 64 dword types
-%define STMT_H_RESULT_NAMES     2360            ; 64 names, 24 bytes each
-%define STMT_H_ALLOC_SIZE       3896            ; qword: actual allocation length
-%define STMT_H_SELECT           3904            ; shared pull execution state
-%define STMT_H_DECODE           (3904 + SQL_SELECT_SIZE)
+%define STMT_H_CURSOR           184             ; CybouDB_SCAN_SIZE = 88 bytes
+%define STMT_H_BATCH_VIEW       272             ; CybouDB_BATCH_VIEW_SIZE = 1544 bytes
+%define STMT_H_ARENA            1816            ; SQL_ARENA_SIZE = 32 bytes
+%define STMT_H_RESULT_COUNT     1848            ; qword: logical result column count
+%define STMT_H_RESULT_INDICES   1856            ; 64 dword physical indices
+%define STMT_H_RESULT_TYPES     2112            ; 64 dword types
+%define STMT_H_RESULT_NAMES     2368            ; 64 names, 24 bytes each
+%define STMT_H_ALLOC_SIZE       3904            ; qword: actual allocation length
+%define STMT_H_SELECT           3912            ; shared pull execution state
+%define STMT_H_DECODE           (STMT_H_SELECT + SQL_SELECT_SIZE)
 %define STMT_H_ARENA_BUF        (STMT_H_DECODE + 32768)
 %define CybouDB_STMT_INITIAL_SIZE  65536
 

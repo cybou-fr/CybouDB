@@ -191,6 +191,99 @@ int main(int argc, char **argv) {
         check("close", cyboudb_close(db) == CybouDB_OK, NULL);
     }
 
+    /* A marked row is invisible to a reader. The mask is intersected with the
+       predicate's selection, so it has to hold for a plain scan, for a
+       predicate, and for COUNT(*) - including the count that would otherwise
+       take a leaf whole from the zone map without reading it. */
+    {
+        cyboudb_db *db = NULL;
+        cyboudb_stmt *stmt = NULL;
+        unsigned char *ctx;
+        uint64_t id = 0;
+        span_t span;
+        group_t group;
+        int64_t seen[8];
+        int rows, i;
+
+        if (cyboudb_open(argv[1], CybouDB_OPEN_READWRITE, &db) != CybouDB_OK) {
+            printf("FAIL reopen for visibility\n");
+            return 1;
+        }
+        ctx = (unsigned char *)db;
+        check("visible-case table", cyboudb_exec(db,
+            "CREATE TABLE seen (id INT32, v INT64)") == CybouDB_OK, NULL);
+        check("visible-case rows", cyboudb_exec(db,
+            "INSERT INTO seen VALUES (0,0),(1,10),(2,20),(3,30),(4,40),(5,50)")
+            == CybouDB_OK, NULL);
+        check("visible-case located", catalog_find_table(ctx, "seen", 4, &id) != NULL, NULL);
+
+        /* Rows 1 and 4 of the leaf. */
+        span.start = 0;
+        span.mask = (1ull << 1) | (1ull << 4);
+        group.spans = &span;
+        group.count = 1;
+        group.mode = 0;
+        check("mark two rows", db_pax_mark_dead(ctx, id, &group) == 0, NULL);
+        check("commit the marks", db_commit(ctx) == CybouDB_OK, NULL);
+
+        rows = 0;
+        check("prepare a plain scan", cyboudb_prepare(db, "SELECT id, v FROM seen", &stmt)
+              == CybouDB_OK, NULL);
+        while (cyboudb_step(stmt) == CybouDB_ROW && rows < 8) {
+            seen[rows++] = cyboudb_column_int64(stmt, 0);
+        }
+        cyboudb_finalize(stmt);
+        sprintf(detail, "%d rows came back", rows);
+        check("a scan skips the marked rows", rows == 4, detail);
+        {
+            int ok = 1;
+            for (i = 0; i < rows; i++) {
+                if (seen[i] == 1 || seen[i] == 4) ok = 0;
+            }
+            check("and returns none of them", ok, NULL);
+            check("while keeping the rest",
+                  rows == 4 && seen[0] == 0 && seen[1] == 2 &&
+                  seen[2] == 3 && seen[3] == 5, NULL);
+        }
+
+        check("prepare a count", cyboudb_prepare(db, "SELECT COUNT(*) FROM seen", &stmt)
+              == CybouDB_OK, NULL);
+        check("count steps", cyboudb_step(stmt) == CybouDB_ROW, NULL);
+        {
+            int64_t n = cyboudb_column_int64(stmt, 0);
+            sprintf(detail, "count returned %lld", (long long)n);
+            check("COUNT(*) counts the living", n == 4, detail);
+        }
+        cyboudb_finalize(stmt);
+
+        check("prepare a predicate", cyboudb_prepare(db,
+            "SELECT id FROM seen WHERE id >= 1", &stmt) == CybouDB_OK, NULL);
+        rows = 0;
+        while (cyboudb_step(stmt) == CybouDB_ROW && rows < 8) {
+            seen[rows++] = cyboudb_column_int64(stmt, 0);
+        }
+        cyboudb_finalize(stmt);
+        sprintf(detail, "%d rows matched", rows);
+        check("a predicate sees only the living",
+              rows == 3 && seen[0] == 2 && seen[1] == 3 && seen[2] == 5, detail);
+
+        /* Rows appended after a mark are alive, and land past the dead ones. */
+        check("insert after marking", cyboudb_exec(db,
+            "INSERT INTO seen VALUES (6, 60)") == CybouDB_OK, NULL);
+        check("prepare a second count", cyboudb_prepare(db,
+            "SELECT COUNT(*) FROM seen", &stmt) == CybouDB_OK, NULL);
+        check("second count steps", cyboudb_step(stmt) == CybouDB_ROW, NULL);
+        {
+            int64_t n = cyboudb_column_int64(stmt, 0);
+            sprintf(detail, "count returned %lld", (long long)n);
+            check("the new row is alive", n == 5, detail);
+        }
+        cyboudb_finalize(stmt);
+
+        check("drop seen", cyboudb_exec(db, "DROP TABLE seen") == CybouDB_OK, NULL);
+        check("close after visibility", cyboudb_close(db) == CybouDB_OK, NULL);
+    }
+
     /* Validation has to refuse a leaf whose count and bitmap disagree, and one
        that marks a row it does not hold. Both are resealed, so the checksum
        cannot be what catches them - only the tombstone rules can. */

@@ -91,7 +91,12 @@
 %define SCAN_LEAF 56                    ; leaf the cursor last addressed
 %define SCAN_LEAF_INDEX 64
 %define SCAN_RUN_PAGES 72               ; pages in one leaf of this table
-%define CybouDB_SCAN_SIZE 80
+; Rows of the batch just produced that are dead, one bit per lane, with
+; CybouDB_FEATURE_TOMBSTONES. The cursor is where it belongs: it is the thing
+; that knows which rows it just handed out, and a caller that intersects it
+; with a predicate's selection needs no other bookkeeping.
+%define SCAN_DEAD 80
+%define CybouDB_SCAN_SIZE 88
 ; Scan output: row-major, laid out exactly like a batch insert's input.
 %define SCAN_VALUES 0
 %define SCAN_NULLS 8

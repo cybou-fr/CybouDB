@@ -3461,6 +3461,7 @@ db_pax_scan_open_bound:
     mov     [r8 + SCAN_GENERATION], rax
     mov     qword [r8 + SCAN_LEAF], 0
     mov     qword [r8 + SCAN_LEAF_INDEX], 0
+    mov     qword [r8 + SCAN_DEAD], 0       ; no batch produced yet
     PAX_RUN_OF [rbp - 16], [rbp - 8]
     mov     r8, [rbp - 24]
     mov     [r8 + SCAN_RUN_PAGES], rax
@@ -3866,6 +3867,49 @@ pax_scan_batch_body:
 
 .count_ready:
     mov [rbp - 48], rax              ; rows_to_produce
+
+    ; Which of those rows are dead. One extraction per batch, not per column,
+    ; and zero for a file that reserved no room for the bits.
+    mov r10, [rbp - 8]
+    mov qword [r10 + SCAN_DEAD], 0
+    mov r11, [r10 + SCAN_CTX]
+    test qword [r11 + DB_FEATURES], CybouDB_FEATURE_TOMBSTONES
+    jz .dead_ready
+    mov ARG1, [rbp - 40]
+    mov ARG2, [r10 + SCAN_RUN_PAGES]
+    call pax_tomb_at
+    test rax, rax
+    jz .dead_ready
+    mov r9, rax                      ; bitmap
+    mov rcx, [rbp - 32]              ; row_in_leaf
+    mov rax, rcx
+    shr rax, 6                       ; the qword the batch starts in
+    and ecx, 63
+    mov rdx, [r9 + rax * 8]
+    shr rdx, cl
+    test ecx, ecx
+    jz .dead_masked
+    ; A batch that starts mid-qword takes the rest of its bits from the next
+    ; one, which exists because capacity is a whole number of 64-row groups.
+    mov r8, [r9 + rax * 8 + 8]
+    mov r11d, 64
+    sub r11d, ecx
+    mov ecx, r11d
+    shl r8, cl
+    or rdx, r8
+.dead_masked:
+    mov rcx, [rbp - 48]
+    cmp rcx, 64
+    jae .dead_store
+    mov rax, 1
+    shl rax, cl
+    dec rax
+    and rdx, rax                     ; lanes this batch does not deliver
+.dead_store:
+    mov r10, [rbp - 8]
+    mov [r10 + SCAN_DEAD], rdx
+.dead_ready:
+    mov rax, [rbp - 48]
     mov rdi, [rbp - 16]
     mov [rdi + BATCH_VIEW_ROWS], rax ; record in batch_view
 

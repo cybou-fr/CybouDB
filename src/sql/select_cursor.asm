@@ -220,6 +220,13 @@ sql_select_next:
     jne     .read_batch
     test    qword [r10 + PLAN_FLAGS], PLAN_FLAG_COUNT_STAR
     jz      .projection_only
+    ; Counting a leaf the zone map accepted whole, without reading it, counts
+    ; its dead rows too. The leaf's own count would answer for a whole leaf,
+    ; but this shortcut also covers the part of one a scan has left, so the
+    ; batches are read and the mask does the work.
+    mov     r11, [r12 + SEL_DB]
+    test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_TOMBSTONES
+    jnz     .read_batch
     mov     rax, [r12 + SEL_LEAF_END]
     sub     rax, [r12 + SEL_SCAN + SCAN_NEXT]
     add     [r12 + SEL_COUNT], rax
@@ -272,6 +279,18 @@ sql_select_next:
     shl     rax, cl
     dec     rax
 .selected:
+    ; A dead row is invisible to everything above this point: the predicate
+    ; kernels, LIMIT, the projection and COUNT all work from this mask, so
+    ; intersecting here is the whole of what tombstones mean to a reader.
+    ; A file without them never reaches the intersection at all, so its
+    ; selection is what it always was.
+    mov     r11, [r12 + SEL_DB]
+    test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_TOMBSTONES
+    jz      .selection_live
+    mov     r8, [r12 + SEL_SCAN + SCAN_DEAD]
+    not     r8
+    and     rax, r8
+.selection_live:
     test    rax, rax
     jz      .scan_loop
 

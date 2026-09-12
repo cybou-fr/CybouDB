@@ -7,18 +7,19 @@
 %define SEL_PLAN        8
 %define SEL_BATCH       16
 %define SEL_DECODE      24
-%define SEL_SCAN        32              ; CybouDB_SCAN_SIZE bytes
-%define SEL_SCHEMA      112
-%define SEL_LEAF_END    120
-%define SEL_DECISION    128
-%define SEL_PROJECTION  136
-%define SEL_REQUIRED    144
-%define SEL_LEAF_INDEX  152
-%define SEL_SCHEMA_ID   160
-%define SEL_COUNT       168
-%define SEL_DONE        176
-%define SEL_ERROR       184
-%define SEL_OPTIONS     192             ; PAX_SCANOPT_SIZE private bytes
+%define SEL_SCAN        32              ; CybouDB_SCAN_SIZE bytes; every
+                                        ; field below it follows that size
+%define SEL_SCHEMA      120
+%define SEL_LEAF_END    128
+%define SEL_DECISION    136
+%define SEL_PROJECTION  144
+%define SEL_REQUIRED    152
+%define SEL_LEAF_INDEX  160
+%define SEL_SCHEMA_ID   168
+%define SEL_COUNT       176
+%define SEL_DONE        184
+%define SEL_ERROR       192
+%define SEL_OPTIONS     200             ; PAX_SCANOPT_SIZE private bytes
 %define SEL_ENCODING_VIEWS (SEL_OPTIONS + PAX_SCANOPT_SIZE) ; zero when predicates use typed values
 %define SEL_LIMIT_SKIP  (SEL_ENCODING_VIEWS + 48)
 %define SEL_LIMIT_LEFT  (SEL_LIMIT_SKIP + 8)

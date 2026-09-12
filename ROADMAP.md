@@ -255,9 +255,14 @@ or validate.
       count from the bitmap, requires the two to agree, and refuses a bit set
       past the rows the leaf holds; the zero-tail rule now stops where the
       bitmap starts
-* [ ] the scan mask - one 64-bit extract per batch, intersected with the
-      predicate's selection where the NULL semantics already meet - and
-      `COUNT(*)` over live rows
+* [x] the scan mask. The cursor reports which lanes of the batch it just
+      produced are dead - one extraction from the bitmap per batch, not per
+      column - and the selection is intersected with it in the one place the
+      predicate kernels, LIMIT, the projection and `COUNT(*)` all read from,
+      so a dead row is invisible to every one of them. `COUNT(*)` gives up
+      the shortcut that counts a zone-accepted leaf without reading it, since
+      that would count the dead too. A file without the feature never reaches
+      the intersection
 * [ ] the executor's choice between marking and rewriting, and the benchmark
       that says where the line is
 * [ ] compaction: a leaf whose rows are all dead still occupies its pages, and
