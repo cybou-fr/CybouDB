@@ -10,8 +10,10 @@ extern db_bitmap_candidate_payload, db_bitmap_headroom, db_bitmap_is_fresh
 extern db_bitmap_deep
 extern db_cow_alloc_page, db_cow_copy_page, db_cow_set_root
 extern db_pax_validate, db_pax_check_new
+extern index_page_valid
 extern db_zone_validate
 global db_catalog_validate, db_catalog_put, db_catalog_get, db_catalog_drop
+global db_catalog_put_index, db_catalog_set_index_root
 global db_catalog_set_data, db_catalog_set_data_stats, db_catalog_replace_data
 global db_catalog_replace_data_stats
 global db_catalog_truncate_data
@@ -225,6 +227,14 @@ page_valid:
     mov r10, [rbp - 8]
     test qword [r10 + DB_FEATURES], CybouDB_FEATURE_PAX
     jz .reserved_all
+    ; An index page keeps its root, column, flags and entry count in the same
+    ; span, and answers for them where its tree is validated.
+    cmp dword [r8 + CAT_TYPE], CAT_INDEX
+    jne .not_index
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_INDEX
+    jz .bad
+    jmp .reserved_done
+.not_index:
     cmp dword [r8 + CAT_TYPE], CAT_SCHEMA
     jne .reserved_all
     ; The statistics root is the one reserved field a schema page may fill in,
@@ -312,16 +322,19 @@ db_catalog_validate:
     test rax, rax
     jz .bad
     mov [rbp - 56], rax
-    cmp dword [rax + CAT_TYPE], CAT_SCHEMA
-    jne .bad
     mov r10, [rbp - 48]
     cmp [rax + CAT_OWNER], r10
-    jne .bad
+    jne .bad                        ; a page answers to the id that names it
     mov r10, [rbp - 24]
     mov r11, [rax + CAT_GENERATION]
     cmp r11, [r10 + CAT_GENERATION]
     ja .bad
-    mov ARG1, rax
+    mov r10, [rbp - 56]
+    cmp dword [r10 + CAT_TYPE], CAT_INDEX
+    je .index_entry
+    cmp dword [r10 + CAT_TYPE], CAT_SCHEMA
+    jne .bad
+    mov ARG1, r10
     mov ARG2, [rbp - 8]
     call schema_valid
     test eax, eax
@@ -338,6 +351,15 @@ db_catalog_validate:
     call db_zone_validate
     test eax, eax
     jz .bad
+    jmp .named
+.index_entry:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 56]
+    call index_page_valid
+    test eax, eax
+    jz .bad
+.named:
     mov qword [rbp - 64], 0
 .duplicate:
     mov r10, [rbp - 64]
@@ -504,7 +526,17 @@ db_catalog_get:
 ; tail. The core stamps the remaining header. Existing id means replacement.
 ; Validate and reserve capacity before allocating; root changes only at end.
 db_catalog_put:
+    mov r11d, CAT_SCHEMA
+    jmp catalog_put_common
+; db_catalog_put_index(ctx, index id, page image): the same insertion, for the
+; other kind of page a directory entry can name. What differs is the shape the
+; image has to have and the type stamped into it; finding the slot, copying the
+; directory and publishing the new root is work worth having once.
+db_catalog_put_index:
+    mov r11d, CAT_INDEX
+catalog_put_common:
     FRAME_BEGIN 96, 0
+    mov [rbp - 96], r11
     mov [rbp - 8], ARG1
     mov [rbp - 16], ARG2
     mov [rbp - 24], ARG3
@@ -519,11 +551,34 @@ db_catalog_put:
     je .generation
     test ARG2, ARG2
     jz .schema
+    cmp qword [rbp - 96], CAT_INDEX
+    je .shape_index
     mov ARG1, [rbp - 24]
     mov ARG2, [rbp - 8]
     call schema_valid
     test eax, eax
     jz .schema
+    jmp .shape_ok
+.shape_index:
+    mov r10, [rbp - 8]
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_INDEX
+    jz .state
+    mov r11, [rbp - 24]
+    mov eax, [r11 + IDX_COLUMN]
+    cmp eax, CAT_MAX_COLUMNS
+    jae .schema
+    mov eax, [r11 + IDX_FLAGS]
+    cmp eax, IDX_UNIQUE
+    ja .schema
+    cmp qword [r11 + IDX_TABLE], 0
+    je .schema
+    cmp qword [r11 + IDX_ROOT], 0
+    jne .schema                     ; a new index starts empty
+    cmp qword [r11 + IDX_ROWS], 0
+    jne .schema
+    cmp byte [r11 + IDX_NAME], 0
+    je .schema
+.shape_ok:
     mov ARG1, [rbp - 8]
     call current_valid
     test eax, eax
@@ -562,6 +617,8 @@ db_catalog_put:
     shl rax, CybouDB_PAGE_SHIFT
     mov r11, [rbp - 8]
     add rax, [r11 + DB_BASE]
+    cmp qword [rbp - 96], CAT_SCHEMA
+    jne .state                      ; an index is never replaced in place
     cmp qword [rax + CAT_DATA_ROOT], 0
     jne .state                      ; no schema replacement over existing rows
     mov qword [rbp - 56], 1
@@ -619,7 +676,18 @@ db_catalog_put:
     mov r10, [rbp - 88]
     mov rax, [rbp - 16]
     mov [r10 + CAT_OWNER], rax
-    mov dword [r10 + CAT_TYPE], CAT_SCHEMA
+    mov rax, [rbp - 96]
+    mov [r10 + CAT_TYPE], eax
+    cmp rax, CAT_INDEX
+    jne .typed
+    ; stamp clears the reserved span, which is where an index keeps its column
+    ; and its flags. A schema starts those fields at zero and does not care.
+    mov r11, [rbp - 24]
+    mov eax, [r11 + IDX_COLUMN]
+    mov [r10 + IDX_COLUMN], eax
+    mov eax, [r11 + IDX_FLAGS]
+    mov [r10 + IDX_FLAGS], eax
+.typed:
     mov ARG1, r10
     call seal_page
     mov r10, [rbp - 8]
@@ -1080,6 +1148,149 @@ catalog_publish_data:
     jmp .done
 .rows:
     mov eax, CybouDB_E_ROWS
+    jmp .done
+.full:
+    mov eax, CybouDB_E_FULL
+.done:
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  db_catalog_set_index_root(ctx, index id, tree root, entries)
+;      -> RAX: result code
+;
+;  Publishes a tree the caller has just built or edited: the index page is
+;  copied, given the new root and count, and the directory is copied to name
+;  the copy. Nothing here knows what changed inside the tree - that is the
+;  point of the root being one page id.
+;
+;  The root must be a page this transaction allocated, which is what stops a
+;  published generation from being made to point at a tree it never wrote.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=index id, [rbp-24]=root, [rbp-32]=entries,
+;               [rbp-40]=index page id, [rbp-48]=old directory,
+;               [rbp-56]=new index page, [rbp-64]=new directory, [rbp-72]=address
+; -----------------------------------------------------------------------------
+db_catalog_set_index_root:
+    FRAME_BEGIN 96, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov [rbp - 32], ARG4
+    mov r10, ARG1
+    cmp qword [r10 + DB_WRITABLE], 0
+    je .readonly
+    cmp qword [r10 + DB_MODE], 1
+    jne .state
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_INDEX
+    jz .state
+    cmp qword [r10 + DB_GENERATION], -1
+    je .generation
+    cmp qword [rbp - 24], 0
+    je .located                     ; an emptied index has no root to check
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 24]
+    call db_bitmap_is_fresh
+    test eax, eax
+    jz .page
+.located:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    lea ARG3, [rbp - 40]
+    call db_catalog_get
+    test eax, eax
+    jnz .done
+    mov r10, [rbp - 8]
+    mov rax, [rbp - 40]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
+    cmp dword [rax + CAT_TYPE], CAT_INDEX
+    jne .state
+    ; stamp clears the reserved span on the copy, and the column and the
+    ; flags live there. Carry them across rather than rediscovering them.
+    mov ecx, [rax + IDX_COLUMN]
+    mov [rbp - 80], rcx
+    mov ecx, [rax + IDX_FLAGS]
+    mov [rbp - 88], rcx
+    mov rax, [r10 + DB_ROOT]
+    mov [rbp - 48], rax
+    mov ARG1, [rbp - 8]
+    call db_bitmap_headroom
+    cmp rax, 2                      ; the index page and the directory
+    jb .full
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 40]
+    lea ARG3, [rbp - 56]
+    call db_cow_copy_page
+    test eax, eax
+    jnz .done
+    mov r10, [rbp - 8]
+    mov rax, [rbp - 56]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
+    mov [rbp - 72], rax
+    mov ARG1, rax
+    mov ARG2, r10
+    call stamp
+    mov r10, [rbp - 72]
+    mov rax, [rbp - 24]
+    mov [r10 + IDX_ROOT], rax
+    mov rax, [rbp - 32]
+    mov [r10 + IDX_ROWS], rax
+    mov eax, [rbp - 80]
+    mov [r10 + IDX_COLUMN], eax
+    mov eax, [rbp - 88]
+    mov [r10 + IDX_FLAGS], eax
+    mov ARG1, r10
+    call seal_page
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 48]
+    lea ARG3, [rbp - 64]
+    call db_cow_copy_page
+    test eax, eax
+    jnz .done
+    mov r10, [rbp - 8]
+    mov rax, [rbp - 64]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
+    mov [rbp - 72], rax
+    mov ARG1, rax
+    mov ARG2, r10
+    call stamp
+    mov r10, [rbp - 72]
+    mov ecx, [r10 + CAT_COUNT]
+    mov r11, [rbp - 16]
+    add r10, CAT_DATA
+.entry:
+    cmp [r10], r11
+    je .found
+    add r10, 16
+    dec ecx
+    jnz .entry
+    mov eax, CybouDB_E_CATALOG
+    jmp .done
+.found:
+    mov rax, [rbp - 56]
+    mov [r10 + 8], rax
+    mov ARG1, [rbp - 72]
+    call seal_page
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 64]
+    call db_cow_set_root
+    jmp .done
+.readonly:
+    mov eax, CybouDB_E_READONLY
+    jmp .done
+.state:
+    mov eax, CybouDB_E_STATE
+    jmp .done
+.generation:
+    mov eax, CybouDB_E_GENERATION
+    jmp .done
+.page:
+    mov eax, CybouDB_E_PAGE
     jmp .done
 .full:
     mov eax, CybouDB_E_FULL

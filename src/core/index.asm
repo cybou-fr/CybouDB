@@ -15,7 +15,7 @@ extern db_cow_alloc_page, db_cow_copy_page
 extern db_bitmap_candidate_payload, db_bitmap_deep, db_bitmap_retire
 global db_index_build, db_index_insert, db_index_insert_unique
 global db_index_delete
-global db_index_search, db_index_validate
+global db_index_search, db_index_validate, index_page_valid
 global db_index_node_addr
 
 section .text
@@ -1190,6 +1190,59 @@ db_index_search:
     ret
 
 ; -----------------------------------------------------------------------------
+;  index_page_valid(ctx, candidate_sb, index page) -> RAX: 1 or 0
+;
+;  The catalog directory has already proved this page is payload of the
+;  candidate, checksums, and carries the id that names it. What is left is what
+;  only an index knows: a column that exists, no flag bit nobody defined, a
+;  table to belong to, a zero tail, and a tree that is the tree this page says
+;  it is.
+; -----------------------------------------------------------------------------
+index_page_valid:
+    FRAME_BEGIN 32, 2
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_INDEX
+    jz .bad
+    mov r11, ARG3
+    mov eax, [r11 + IDX_COLUMN]
+    cmp eax, CAT_MAX_COLUMNS
+    jae .bad
+    mov eax, [r11 + IDX_FLAGS]
+    cmp eax, IDX_UNIQUE
+    ja .bad
+    cmp qword [r11 + IDX_TABLE], 0
+    je .bad
+
+    ; Everything past the table it names is zero, as every tail in this format.
+    lea r8, [r11 + IDX_TABLE + 8]
+    lea r9, [r11 + CAT_CRC]
+.tail:
+    cmp r8, r9
+    jae .tree
+    cmp dword [r8], 0
+    jne .bad
+    add r8, 4
+    jmp .tail
+
+.tree:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 24]
+    call db_index_validate
+    test eax, eax
+    jz .bad
+    mov eax, 1
+    FRAME_END
+    ret
+.bad:
+    xor eax, eax
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
 ;  db_index_validate(ctx, candidate_sb, index page) -> RAX: 1 or 0
 ;
 ;  Walks every node of one index and proves the tree is the tree its index
@@ -1270,6 +1323,7 @@ index_node_validate:
     mov ARG3, [rbp - 32]
     call db_bitmap_candidate_payload
     test eax, eax
+    mov rcx, [rbp - 32]
     jz .bad
 
     mov ARG1, [rbp - 8]
@@ -1365,11 +1419,13 @@ index_node_validate:
     jle .bad                        ; strictly increasing by the key it ends at
 .child_end_ok:
     mov [rbp - 80], rdx
-    mov rcx, [r8 + IDX_ENTRIES + rax + IDX_CHILD]
+    ; The child goes into a register no argument aliases: ARG1 is RCX on
+    ; one of the two ABIs, and loading it would take the child with it.
+    mov r9, [r8 + IDX_ENTRIES + rax + IDX_CHILD]
     mov ARG1, [rbp - 8]
     mov ARG2, [rbp - 16]
     mov ARG3, [rbp - 24]
-    mov ARG4, rcx
+    mov ARG4, r9
     mov r10, [rbp - 56]
     mov eax, [r10 + IDX_LEVEL]
     dec rax

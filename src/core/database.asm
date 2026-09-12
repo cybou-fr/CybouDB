@@ -104,7 +104,7 @@ db_create_pax:
     mov     eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX
     jmp     create_common
 db_create_large:
-    mov eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR
+    mov eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR | CybouDB_FEATURE_INDEX
     jmp create_common
 db_create_compressed:
     mov eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_COMPRESSION
@@ -114,7 +114,7 @@ db_create_compressed:
 ; changes how many rows a leaf holds, so it would move every existing
 ; database's layout out from under files that already exist.
 db_create_tombstones:
-    mov eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR | CybouDB_FEATURE_TOMBSTONES
+    mov eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR | CybouDB_FEATURE_TOMBSTONES | CybouDB_FEATURE_INDEX
     jmp create_common
 create_common:
     FRAME_BEGIN 64 + CybouDB_DB_SIZE, 0
@@ -546,7 +546,7 @@ db_open:
     ; A feature bit we do not know about may change the meaning of anything
     ; below, so refuse rather than guess.
     mov     rax, [r10 + HDR_FLAGS_INCOMPAT]
-    test    rax, ~(CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_COMPRESSION | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR | CybouDB_FEATURE_TOMBSTONES)
+    test    rax, ~(CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_COMPRESSION | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR | CybouDB_FEATURE_TOMBSTONES | CybouDB_FEATURE_INDEX)
     jne     .e_features
 
     ; Leaf runs are a choice about the multi-page PAX layout, so the bit means
@@ -604,6 +604,13 @@ db_open:
     jz      .e_features
     and     rax, ~CybouDB_FEATURE_TOMBSTONES
 .tomb_checked:
+    ; An index over a table with no row storage is not a meaningful object.
+    test    rax, CybouDB_FEATURE_INDEX
+    jz      .index_checked
+    test    rax, CybouDB_FEATURE_PAX
+    jz      .e_features
+    and     rax, ~CybouDB_FEATURE_INDEX
+.index_checked:
     test    rax, CybouDB_FEATURE_MAP_SPAN
     jz      .flat_map_flags
     cmp     rax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN

@@ -528,6 +528,110 @@ static void delete_suite(void *ctx) {
     free(entries);
 }
 
+/* --- the index as a catalog entry -------------------------------------- */
+
+extern int db_catalog_put_index(void *ctx, uint64_t index_id, void *page);
+extern int db_catalog_set_index_root(void *ctx, uint64_t index_id,
+                                     uint64_t root, uint64_t rows);
+extern int db_catalog_get(void *ctx, uint64_t id, uint64_t *out_page);
+extern int db_catalog_drop(void *ctx, uint64_t id);
+extern int db_commit(void *ctx);
+
+#define CAT_TYPE_OFF   32
+#define CAT_INDEX_TYPE 3
+#define IDX_ROOT_OFF   40
+#define IDX_COLUMN_OFF 48
+#define IDX_FLAGS_OFF  52
+#define IDX_ROWS_OFF   56
+#define IDX_NAME_OFF   64
+#define IDX_TABLE_OFF  96
+
+/* The page image a caller hands to db_catalog_put_index: what the index is,
+   with the header left to the catalog to stamp. */
+static void index_image(unsigned char *page, const char *name, uint32_t column,
+                        uint32_t flags, uint64_t table) {
+    memset(page, 0, 4096);
+    memcpy(page + IDX_COLUMN_OFF, &column, sizeof column);
+    memcpy(page + IDX_FLAGS_OFF, &flags, sizeof flags);
+    memcpy(page + IDX_TABLE_OFF, &table, sizeof table);
+    strncpy((char *)page + IDX_NAME_OFF, name, 31);
+}
+
+static void catalog_suite(void *ctx, const char *path) {
+    static unsigned char image[4096];
+    cyboudb_db *db = NULL;
+    entry_t *entries = malloc(sizeof(entry_t) * 4000);
+    uint64_t root = 0, page = 0;
+    unsigned char *mapped;
+
+    for (uint64_t i = 0; i < 4000; i++) {
+        entries[i].key = (int64_t)(i * 3) - 4000;
+        entries[i].row = i;
+    }
+
+    index_image(image, "idx_on_a", 1, 0, 77);
+    check("an index goes into the catalog",
+          db_catalog_put_index(ctx, 900001, image) == 0);
+    check("and is found there",
+          db_catalog_get(ctx, 900001, &page) == 0 && page != 0);
+    mapped = db_index_node_addr(ctx, page);
+    check("as an index page", u32(mapped, CAT_TYPE_OFF) == CAT_INDEX_TYPE);
+    check("naming its table", u64(mapped, IDX_TABLE_OFF) == 77);
+    check("and its column", u32(mapped, IDX_COLUMN_OFF) == 1);
+
+    check("an empty index commits", db_commit(ctx) == CybouDB_OK);
+
+    check("a tree for it", db_index_build(ctx, 900001, entries, 4000, &root) == 0);
+    check("published as its root",
+          db_catalog_set_index_root(ctx, 900001, root, 4000) == 0);
+    check("and that commits too", db_commit(ctx) == CybouDB_OK);
+
+    check("close", cyboudb_close((cyboudb_db *)ctx) == CybouDB_OK);
+    check("it opens again", cyboudb_open(path, CybouDB_OPEN_READWRITE, &db)
+          == CybouDB_OK);
+    if (!db) { free(entries); return; }
+    ctx = db;
+
+    check("the index is still there",
+          db_catalog_get(ctx, 900001, &page) == 0 && page != 0);
+    mapped = db_index_node_addr(ctx, page);
+    check("with the tree it was given",
+          u64(mapped, IDX_ROOT_OFF) != 0 && u64(mapped, IDX_ROWS_OFF) == 4000);
+    check("and the column it was created with",
+          u32(mapped, IDX_COLUMN_OFF) == 1 && u64(mapped, IDX_TABLE_OFF) == 77);
+    {
+        uint64_t stored = u64(mapped, IDX_ROOT_OFF);
+        int ok = 1;
+        for (uint64_t i = 0; i < 4000 && ok; i += 37) {
+            int64_t found = 0;
+            uint64_t row = 0;
+            if (!key_at(ctx, stored, entries[i].key, &found, &row)) ok = 0;
+            else if (found != entries[i].key || row != i) ok = 0;
+        }
+        check("and every key it was built from", ok);
+        check("which is the tree the page counts", tree_ok(ctx, stored, 4000));
+    }
+
+    /* A count that disagrees with the leaves is exactly what validation is
+       for, and the commit is where it has to be caught. */
+    {
+        uint64_t bogus = 0;
+        check("rebuilt for the miscount",
+              db_index_build(ctx, 900001, entries, 4000, &bogus) == 0);
+        check("published with a count it does not have",
+              db_catalog_set_index_root(ctx, 900001, bogus, 3999) == 0);
+        check("and the commit refuses it", db_commit(ctx) != CybouDB_OK);
+        db_rollback(ctx);
+    }
+
+    check("dropping the index", db_catalog_drop(ctx, 900001) == 0);
+    check("commits", db_commit(ctx) == CybouDB_OK);
+    check("and it is gone", db_catalog_get(ctx, 900001, &page) != 0);
+
+    free(entries);
+    cyboudb_close((cyboudb_db *)ctx);
+}
+
 int main(int argc, char **argv) {
     cyboudb_db *db = NULL;
     void *ctx;
@@ -558,7 +662,10 @@ int main(int argc, char **argv) {
     delete_suite(ctx);
 
     check("rollback", db_rollback(ctx) == CybouDB_OK);
-    check("close", cyboudb_close(db) == CybouDB_OK);
+
+    /* Everything above works on staged pages that are rolled back. This last
+       part publishes, which is where the catalog and the tree meet. */
+    catalog_suite(ctx, argv[1]);
 
     printf("index tree suite: %d passed, %d failed\n", checks - failures, failures);
     return failures ? 1 : 0;
