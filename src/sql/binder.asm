@@ -2658,18 +2658,21 @@ sql_bind:
 
 ; Return the union of physical column references in a successfully bound tree.
 ; --- CHOOSE AN INDEX ---------------------------------------------------------
-; A SELECT whose whole predicate is one equality over a uniquely indexed column
-; can find its row through the tree instead of by reading the table.
+; A SELECT whose whole predicate is one comparison against an indexed column
+; can find its rows through the tree instead of by reading the whole table.
 ;
-; Unique or not: the cursor walks the tree from the key rather than searching
-; for it once, so equal keys spanning several leaves are read the way a range
-; will be - by keeping the path down and stepping along it.
+; Every shape it takes becomes the same thing: a pair of inclusive bounds. An
+; equality is the pair where both are the key; a range leaves one side at the
+; extreme of what a key can be, and a strict side moves in by one. That is why
+; `> the largest key there is` and `< the smallest` are refused here rather
+; than represented - they are empty, and an empty pair is not a pair.
 ;
-; Nothing here changes what the query returns. The row the tree names is read
-; and the predicate is evaluated against it exactly as a scan would: an index
-; is an access path, and a wrong one has to cost time rather than answers.
+; Nothing here changes what the query returns. The rows the tree names are read
+; and the predicate is evaluated over them exactly as a scan would: an index is
+; an access path, and a wrong one has to cost time rather than answers.
 ;
-; [rbp-48] is the plan, [rbp-8] the ctx, [rbp-64] the schema.
+; Locals: [rbp-8]=ctx, [rbp-16]=plan, [rbp-24]=predicate, [rbp-32]=id walked
+;         past, [rbp-40]=this index's id, [rbp-48]=lo, [rbp-56]=hi
 plan_index_eq:
     FRAME_BEGIN 64, 0
     mov [rbp - 8], ARG1                 ; ctx
@@ -2683,8 +2686,6 @@ plan_index_eq:
     jz .no
     cmp qword [r11 + BEXPR_KIND], BEXPR_COMPARE_COL_LIT
     jne .no
-    cmp qword [r11 + BEXPR_OP], OP_EQ
-    jne .no
     mov rax, [r11 + BEXPR_COL_TYPE]
     cmp rax, CAT_INT32
     je .type_ok
@@ -2692,7 +2693,52 @@ plan_index_eq:
     jne .no
 .type_ok:
 
-    ; An index of this table, over this column, that is unique.
+    ; The key, sign-extended the way the tree orders it.
+    mov rdx, [r11 + BEXPR_LIT_VAL]
+    cmp qword [r11 + BEXPR_COL_TYPE], CAT_INT32
+    jne .key_ready
+    movsxd rdx, edx
+.key_ready:
+    mov rax, 0x8000000000000000
+    mov [rbp - 48], rax                 ; nothing sorts below this
+    not rax
+    mov [rbp - 56], rax                 ; nor above this
+    mov rcx, [r11 + BEXPR_OP]
+    cmp rcx, OP_EQ
+    je .bound_eq
+    cmp rcx, OP_GTE
+    je .bound_from
+    cmp rcx, OP_GT
+    je .bound_after
+    cmp rcx, OP_LTE
+    je .bound_to
+    cmp rcx, OP_LT
+    je .bound_below
+    jmp .no                             ; <> names everything but one key
+.bound_eq:
+    mov [rbp - 48], rdx
+    mov [rbp - 56], rdx
+    jmp .bounds_ready
+.bound_from:
+    mov [rbp - 48], rdx
+    jmp .bounds_ready
+.bound_after:
+    cmp rdx, [rbp - 56]
+    je .no                              ; above the largest key there is
+    inc rdx
+    mov [rbp - 48], rdx
+    jmp .bounds_ready
+.bound_to:
+    mov [rbp - 56], rdx
+    jmp .bounds_ready
+.bound_below:
+    cmp rdx, [rbp - 48]
+    je .no                              ; below the smallest key there is
+    dec rdx
+    mov [rbp - 56], rdx
+.bounds_ready:
+
+    ; An index of this table, over this column.
     mov r10, [rbp - 16]
     mov qword [rbp - 32], 0             ; the id walked past so far
 .next_index:
@@ -2709,17 +2755,14 @@ plan_index_eq:
     cmp rcx, [r11 + BEXPR_COL_IDX]
     jne .skip
 
-    ; The key, sign-extended the way the tree orders it.
-    mov rdx, [r11 + BEXPR_LIT_VAL]
-    cmp qword [r11 + BEXPR_COL_TYPE], CAT_INT32
-    jne .key_ready
-    movsxd rdx, edx
-.key_ready:
     mov r10, [rbp - 16]
     mov rax, [rbp - 40]
     mov [r10 + PLAN_INDEX_ID], rax
-    mov [r10 + PLAN_INDEX_KEY], rdx
-    or qword [r10 + PLAN_FLAGS], PLAN_FLAG_INDEX_EQ
+    mov rax, [rbp - 48]
+    mov [r10 + PLAN_INDEX_LO], rax
+    mov rax, [rbp - 56]
+    mov [r10 + PLAN_INDEX_HI], rax
+    or qword [r10 + PLAN_FLAGS], PLAN_FLAG_INDEX_SEEK
     mov eax, 1
     FRAME_END
     ret

@@ -646,13 +646,14 @@ has the numbers:
 * **CREATE INDEX stages about three pages per row**, because it builds by
   inserting one row at a time. A sort and a bulk build would stage the tree
   itself and nothing else.
-* **A plan consults an index for one shape: `column = literal`.** The tree
-  names the rows, the scan is put where it said, and the
-  predicate runs over that batch exactly as it would have anywhere else - so
-  the index decides where to look and never what the answer is, and a stale
-  entry costs a page read rather than a wrong row. The suite asks the same
-  questions of two tables with the same rows, one indexed and one not, and
-  requires the answers to be identical.
+* **A plan consults an index for one comparison against an indexed column**,
+  of any of the five shapes `=`, `<`, `<=`, `>`, `>=`. Each becomes a pair of
+  inclusive bounds, the tree names the rows between them, the scan is put where
+  it said, and the predicate runs over that batch exactly as it would have
+  anywhere else - so the index decides where to look and never which rows come
+  back, and a stale entry costs a page read rather than a wrong row. The suite
+  asks the same questions of two tables with the same rows, one indexed and one
+  not, and requires the answers to be identical.
 
   A unique index names one row and a lookup is one seek. A non-unique one
   names many, spread across the whole table, so the lookup walks the tree with
@@ -661,8 +662,24 @@ has the numbers:
   `(key, row)` pair a child ends at rather than only the key: equal keys span
   several children, and a separator that was only a key sent every one of them
   to the first child - a tree that validated, answered a unique lookup, and
-  quietly lost two thirds of the rows under a duplicated key. Ranges are the
-  next piece of work, and need a seek to a leaf boundary rather than to a row.
+  quietly lost two thirds of the rows under a duplicated key.
+
+  A range names several keys, and their rows are not in row order, so a group
+  can be entered more than once. A visit therefore delivers the lanes the walk
+  named on that visit rather than the whole batch; each entry is produced once,
+  so no row comes back twice. What does change is the order: a range returns
+  its rows in key order rather than the order a scan produces. A query that did
+  not ask for an order is not owed one, and the cases where an unstated order
+  becomes a different answer - `LIMIT`, `ORDER BY`, `COUNT(*)`, vector top-K -
+  are the cases where the planner does not reach for an index at all.
+
+  Because a group can be entered once per run of entries landing in it, a wide
+  range can cost more reads than reading the table. The plan walks the tree at
+  open until either the range ends or it has named more entries than the table
+  has 64-row groups, and takes the scan in the second case: entries come 167 to
+  a leaf page, so the question costs far less than the reads it decides. An
+  equality is never asked, because its rows leave the walk ascending and each
+  group is entered once however many rows one key names.
 
   The seek lives in sql_select_open, where every reader opens its cursor -
   the batch executor and the pull cursor the ABI steps alike. It was written

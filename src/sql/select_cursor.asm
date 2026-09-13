@@ -29,7 +29,7 @@ index_lookups: dq 0
 
 section .text
 sql_select_open:
-    FRAME_BEGIN 32, 1
+    FRAME_BEGIN 64, 1
     mov [rbp - 8], r12
     mov r12, ARG1
     mov [r12 + SEL_DB], ARG2
@@ -157,11 +157,12 @@ sql_select_open:
     ; how a second copy of a statement's behaviour starts.
     mov qword [r12 + SEL_LOOKUP], 0
     mov r10, [r12 + SEL_PLAN]
-    test qword [r10 + PLAN_FLAGS], PLAN_FLAG_INDEX_EQ
+    test qword [r10 + PLAN_FLAGS], PLAN_FLAG_INDEX_SEEK
     jz .lookup_ready
-    inc qword [rel index_lookups]
-    mov rax, [r10 + PLAN_INDEX_KEY]
-    mov [r12 + SEL_LOOKUP_KEY], rax
+    mov rax, [r10 + PLAN_INDEX_LO]
+    mov [r12 + SEL_LOOKUP_LO], rax
+    mov rax, [r10 + PLAN_INDEX_HI]
+    mov [r12 + SEL_LOOKUP_HI], rax
     mov ARG1, [r12 + SEL_DB]
     mov ARG2, [r10 + PLAN_INDEX_ID]
     call db_catalog_page
@@ -176,16 +177,73 @@ sql_select_open:
     jz .lookup_empty                    ; an empty index names nothing
     mov ARG1, [r12 + SEL_DB]
     mov ARG2, r11
-    mov ARG3, [r12 + SEL_LOOKUP_KEY]
+    mov ARG3, [r12 + SEL_LOOKUP_LO]
     lea ARG4, [r12 + SEL_ITER]
     call db_index_iter_open
     test eax, eax
     jz .lookup_empty
-    mov qword [r12 + SEL_LOOKUP], 1     ; seek before the next batch
 
+    ; Is the tree worth walking? A lookup reads one batch per run of entries
+    ; that land in the same group, so a range naming more entries than the
+    ; table has groups can cost more reads than reading the table would. What
+    ; settles it is walking that far and seeing whether the range ends first:
+    ; entries come 167 to a leaf page, which is small beside the batch reads
+    ; the answer is about, and the walk stops as soon as it has gone too far.
+    ;
+    ; One key is never asked. Its rows come out of the walk in ascending order,
+    ; so each group is entered once and the reads cannot exceed a scan's however
+    ; many rows the key names.
+    mov rax, [r12 + SEL_LOOKUP_LO]
+    cmp rax, [r12 + SEL_LOOKUP_HI]
+    je .lookup_armed                    ; already standing where it starts
+    mov rax, [r12 + SEL_SCAN + SCAN_ROWS]
+    add rax, 63
+    shr rax, 6
+    mov [rbp - 24], rax                 ; groups the table has
+    mov qword [rbp - 32], 0             ; entries the range names so far
+.lookup_probe:
+    mov ARG1, [r12 + SEL_DB]
+    lea ARG2, [r12 + SEL_ITER]
+    lea ARG3, [rbp - 40]
+    lea ARG4, [rbp - 48]
+    call db_index_iter_next
+    test eax, eax
+    jz .lookup_narrow                   ; the tree ended first
+    mov rax, [rbp - 40]
+    cmp rax, [r12 + SEL_LOOKUP_HI]
+    jg .lookup_narrow                   ; and so did the range
+    inc qword [rbp - 32]
+    mov rax, [rbp - 32]
+    cmp rax, [rbp - 24]
+    jbe .lookup_probe
+    ; Wide enough that reading the table is the cheaper way to read the table.
+    mov qword [r12 + SEL_LOOKUP], 0
+    jmp .lookup_ready
+
+.lookup_narrow:
+    ; The walk is spent now, so it starts again from the same bound.
+    mov r10, [r12 + SEL_PLAN]
+    mov ARG1, [r12 + SEL_DB]
+    mov ARG2, [r10 + PLAN_INDEX_ID]
+    call db_catalog_page
+    test rax, rax
+    jz .lookup_empty
+    mov r11, [rax + IDX_ROOT]
+    mov ARG1, [r12 + SEL_DB]
+    mov ARG2, r11
+    mov ARG3, [r12 + SEL_LOOKUP_LO]
+    lea ARG4, [r12 + SEL_ITER]
+    call db_index_iter_open
+    test eax, eax
+    jz .lookup_empty
+.lookup_armed:
+    inc qword [rel index_lookups]
+    mov qword [r12 + SEL_LOOKUP], 1     ; seek before the next batch
     mov qword [r12 + SEL_LOOKUP_ROW], -2
+    mov qword [r12 + SEL_LOOKUP_MASK], 0
     jmp .lookup_ready
 .lookup_empty:
+    inc qword [rel index_lookups]
     mov qword [r12 + SEL_LOOKUP], 0
     mov qword [r12 + SEL_DONE], 1       ; the tree says there is nothing to read
 .lookup_ready:
@@ -304,10 +362,11 @@ sql_select_next:
     jmp     .read_batch
 
 .lookup_seek:
-    ; Where the next rows for this key are. The walk moves forward only, so an
-    ; entry it produces is either inside a batch already delivered - which the
-    ; scan's own position states, rather than a guess about how many rows a
-    ; batch carried - or it is the row the next batch has to start at.
+    ; Where the next rows are. The walk hands back entries in key order, which
+    ; is not row order once the range spans more than one key, so the scan is
+    ; moved to whatever group the next entry lands in - forwards or back - and
+    ; only the lanes this visit named are delivered from it. Each entry is
+    ; produced once, so no row is read twice however often a group is entered.
     cmp     qword [r12 + SEL_LOOKUP_ROW], -1
     je      .lookup_spent
     cmp     qword [r12 + SEL_LOOKUP_ROW], -2
@@ -321,24 +380,54 @@ sql_select_next:
     test    eax, eax
     jz      .lookup_spent
     mov     rax, [rbp - 24]
-    cmp     rax, [r12 + SEL_LOOKUP_KEY]
-    jne     .lookup_spent               ; past every row this key names
+    cmp     rax, [r12 + SEL_LOOKUP_HI]
+    jg      .lookup_spent               ; past the highest key wanted
     mov     rax, [rbp - 32]
     mov     [r12 + SEL_LOOKUP_ROW], rax
 .lookup_have_row:
     mov     rdx, [r12 + SEL_LOOKUP_ROW]
     cmp     rdx, [r12 + SEL_SCAN + SCAN_ROWS]
     jae     .lookup_drop                ; a row the table no longer has
-    cmp     rdx, [r12 + SEL_SCAN + SCAN_NEXT]
-    jb      .lookup_drop                ; a row some batch has already carried
+    mov     rax, rdx
     and     rdx, ~63                    ; the group it sits in
-    cmp     rdx, [r12 + SEL_SCAN + SCAN_NEXT]
-    jb      .lookup_placed              ; that group is the one we stand in
     mov     [r12 + SEL_SCAN + SCAN_NEXT], rdx
     mov     qword [r12 + SEL_LEAF_END], 0   ; enter the leaf it lands in
-.lookup_placed:
-    ; The entry stays where it is. Whether this batch reaches it is the next
-    ; seek's question, and by then the scan's position answers it.
+    mov     [rbp - 40], rdx             ; the group this visit is about
+    sub     rax, rdx
+    mov     rcx, rax
+    mov     rax, 1
+    shl     rax, cl
+    mov     [r12 + SEL_LOOKUP_MASK], rax
+.lookup_gather:
+    ; Everything the walk names next in the same group comes with it.
+    mov     qword [r12 + SEL_LOOKUP_ROW], -2
+    mov     ARG1, [r12 + SEL_DB]
+    lea     ARG2, [r12 + SEL_ITER]
+    lea     ARG3, [rbp - 24]
+    lea     ARG4, [rbp - 32]
+    call    db_index_iter_next
+    test    eax, eax
+    jz      .lookup_ranged
+    mov     rax, [rbp - 24]
+    cmp     rax, [r12 + SEL_LOOKUP_HI]
+    jg      .lookup_ranged
+    mov     rax, [rbp - 32]
+    mov     [r12 + SEL_LOOKUP_ROW], rax ; kept for the visit after this one
+    cmp     rax, [r12 + SEL_SCAN + SCAN_ROWS]
+    jae     .lookup_positioned          ; a row the table no longer has
+    mov     rdx, rax
+    and     rdx, ~63
+    cmp     rdx, [rbp - 40]
+    jne     .lookup_positioned          ; a different group: the next visit
+    sub     rax, rdx
+    mov     rcx, rax
+    mov     rax, 1
+    shl     rax, cl
+    or      [r12 + SEL_LOOKUP_MASK], rax
+    jmp     .lookup_gather
+.lookup_ranged:
+    mov     qword [r12 + SEL_LOOKUP_ROW], -1
+.lookup_positioned:
     mov     qword [r12 + SEL_LOOKUP], 3
     jmp     .scan_loop
 .lookup_drop:
@@ -402,6 +491,14 @@ sql_select_next:
     not     r8
     and     rax, r8
 .selection_live:
+    ; A lookup delivers the lanes its walk named and no others. The predicate
+    ; has already run over the whole batch and would accept the same rows, but
+    ; a group the walk enters more than once must not hand back what an earlier
+    ; visit already did.
+    cmp     qword [r12 + SEL_LOOKUP], 0
+    je      .selection_masked
+    and     rax, [r12 + SEL_LOOKUP_MASK]
+.selection_masked:
     test    rax, rax
     jz      .scan_loop
 

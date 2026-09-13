@@ -79,8 +79,6 @@ int main(int argc, char **argv) {
           lookups_for("SELECT id FROM p WHERE id = 99") == 1);
     check("a different column still scans",
           lookups_for("SELECT id FROM p WHERE w = 2") == 0);
-    check("so does a range",
-          lookups_for("SELECT id FROM p WHERE id > 2") == 0);
     check("so does an inequality",
           lookups_for("SELECT id FROM p WHERE id <> 2") == 0);
     check("so does a COUNT(*), which the tree cannot answer",
@@ -99,6 +97,52 @@ int main(int argc, char **argv) {
           lookups_for("SELECT id FROM p WHERE v = 20") == 1);
     check("including a key it does not hold",
           lookups_for("SELECT id FROM p WHERE v = 21") == 1);
+
+    /* Ranges, which need a table with enough rows for "how many" to mean
+       something: the plan reaches for a tree when the range names fewer
+       entries than the table has 64-row groups, and leaves the table to the
+       scan when it names more. A lookup enters a group once per run of
+       entries that land in it, so past that point reading the table is the
+       cheaper way to read the table. */
+    check("a wider table", cyboudb_exec(db,
+          "CREATE TABLE q (k INT64 NOT NULL, v INT64)") == CybouDB_OK);
+    {
+        char sql[64 * 128 + 64];
+        int ok = 1;
+        for (int base = 0; base < 1280 && ok; base += 128) {
+            int n = sprintf(sql, "INSERT INTO q VALUES ");
+            for (int i = base; i < base + 128; i++)
+                n += sprintf(sql + n, "%s(%d, %d)", i > base ? ", " : "",
+                             i, i % 5);
+            if (cyboudb_exec(db, sql) != CybouDB_OK) {
+                printf("     %s\n", cyboudb_errmsg(db));
+                ok = 0;
+            }
+        }
+        check("with 1280 rows in it", ok);
+    }
+    check("an index over it", cyboudb_exec(db,
+          "CREATE UNIQUE INDEX q_k ON q (k)") == CybouDB_OK);
+
+    /* 1280 rows are 20 groups. */
+    check("a range naming fewer rows than the table has groups",
+          lookups_for("SELECT k FROM q WHERE k < 15") == 1);
+    check("and one at the other end",
+          lookups_for("SELECT k FROM q WHERE k > 1265") == 1);
+    check("a range naming more is left to the scan",
+          lookups_for("SELECT k FROM q WHERE k > 100") == 0);
+    check("and so is one that names the whole table",
+          lookups_for("SELECT k FROM q WHERE k >= 0") == 0);
+
+    /* An equality is never asked the question: its rows come out of the walk
+       in ascending order, so each group is entered once however many rows one
+       key names. */
+    check("a non-unique index over a key naming 256 rows", cyboudb_exec(db,
+          "CREATE INDEX q_v ON q (v)") == CybouDB_OK);
+    check("is looked up all the same",
+          lookups_for("SELECT k FROM q WHERE v = 3") == 1);
+    check("tidy up the wider table", cyboudb_exec(db,
+          "DROP TABLE q") == CybouDB_OK);
 
     check("dropping the unique index", cyboudb_exec(db,
           "DROP INDEX p_id") == CybouDB_OK);

@@ -153,6 +153,43 @@ further. The bulk builder, the other thing that would have wanted a chain,
 keeps one open node per level instead and hands a finished node to the level
 above as soon as the next one starts: no chain, no scratch array, one pass.
 
+## What a plan does with one
+
+A `SELECT` whose whole predicate is one comparison against an indexed `INT32`
+or `INT64` column is read through the tree. Every shape becomes the same
+thing - a pair of inclusive bounds - and the cursor walks the tree between
+them, moving the scan to the 64-row group each entry lands in. The batch is
+then read, the predicate evaluated and the projection taken exactly as they
+would be anywhere else, so a stale entry costs a page read rather than a wrong
+row. `<>` is not a shape: it names everything but one key.
+
+The walk hands back entries in key order, which is row order only while the
+range is one key. So a visit delivers the lanes that visit named rather than
+the whole batch, and a group entered again later hands back what the earlier
+visit did not. Each entry is produced once, so no row is returned twice.
+
+That is also why a range returns its rows in a different order than the scan
+would. A query that did not ask for an order is not owed one, and the cases
+where an unstated order becomes a different answer - `LIMIT`, `ORDER BY`,
+`COUNT(*)`, vector top-K - are the cases where the planner does not reach for
+an index at all.
+
+### When the tree is not worth walking
+
+A lookup reads one batch per run of entries that land in the same group, so a
+range naming more entries than the table has 64-row groups can cost more reads
+than reading the table. The plan settles it by walking that far at open and
+seeing whether the range ends first; entries come 167 to a leaf page, so the
+question costs far less than the reads it is about, and the walk stops the
+moment it has gone too far.
+
+An equality is never asked. Its rows leave the walk in ascending order, so
+each group is entered once and the reads cannot exceed a scan's however many
+rows one key names.
+
+`tests/index_plan_test.c` asserts which path ran rather than only what it
+answered, by counting the times a plan reached for a tree.
+
 ## NULL
 
 A NULL has no key, so an index stores nothing for it. A predicate that can

@@ -359,18 +359,22 @@
 %define PLAN_UPDATE_IS_NULL 264         ; qword boolean
 %define PLAN_VECTOR_TOPK_EXPR 272       ; qword: bound vector distance expr
 %define PLAN_DELETE_ROWS    280         ; qword rows a DELETE removed
-%define BOUND_PLAN_SIZE     304
+%define BOUND_PLAN_SIZE     312
 %define PLAN_PROJ_RIGHT_BIT 0x80000000  ; u32 projection index belongs to RHS
 %define PLAN_FLAG_LIMIT     2           ; bit 1: LIMIT clause is present
 %define PLAN_FLAG_ORDER     4           ; bit 2: ORDER BY is present
 %define PLAN_FLAG_VECTOR_TOPK 8         ; bit 3: vector streaming top-K ORDER BY
-; bit 4: the predicate is one equality over a uniquely indexed column, so the
-; row it names can be found through the tree instead of by reading the table.
-; The row is still read and the predicate still evaluated against it: an index
+; bit 4: the predicate is one comparison over an indexed column, so the rows it
+; names can be found through the tree instead of by reading the whole table.
+; The rows are still read and the predicate still evaluated over them: an index
 ; is an access path, and a wrong one has to cost time rather than answers.
-%define PLAN_FLAG_INDEX_EQ  16
+;
+; The bounds are inclusive and both always present: an equality is the case
+; where they are equal, and an open side is the extreme of the key's range.
+%define PLAN_FLAG_INDEX_SEEK 16
 %define PLAN_INDEX_ID       288         ; the index that lookup uses
-%define PLAN_INDEX_KEY      296         ; the key it looks for
+%define PLAN_INDEX_LO       296         ; the lowest key it wants
+%define PLAN_INDEX_HI       304         ; and the highest
 
 ; Projection descriptor passed to batch result sinks (aliases PLAN_DATA1..3).
 %define RESULT_PROJ_COUNT   0           ; qword: projection count, 1..64

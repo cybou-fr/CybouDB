@@ -23,14 +23,21 @@
 %define SEL_ENCODING_VIEWS (SEL_OPTIONS + PAX_SCANOPT_SIZE) ; zero when predicates use typed values
 %define SEL_LIMIT_SKIP  (SEL_ENCODING_VIEWS + 48)
 %define SEL_LIMIT_LEFT  (SEL_LIMIT_SKIP + 8)
-; Set when the cursor was put where an index said the row is. It delivers
-; that one batch and then reports the scan finished: the tree named one row
-; and the predicate has just been evaluated over the batch holding it.
+; Set when the plan reads through an index. The cursor walks the tree between
+; two inclusive bounds and moves the scan to the 64-row group each entry lands
+; in; the batch is then read, the predicate evaluated and the projection taken
+; exactly as anywhere else. 0 is no lookup, 1 is seek before the next batch,
+; 3 is positioned and the batch not yet read.
 %define SEL_LOOKUP      (SEL_LIMIT_LEFT + 8)
-%define SEL_LOOKUP_KEY  (SEL_LOOKUP + 8)     ; the key the plan is after
-; The row the walk has read but this batch will not deliver: -2 means pull
-; the next one, -1 means the walk is finished.
-%define SEL_LOOKUP_ROW  (SEL_LOOKUP_KEY + 8)
-%define SEL_ITER        (SEL_LOOKUP_ROW + 8) ; IDX_ITER_SIZE bytes
+%define SEL_LOOKUP_LO   (SEL_LOOKUP + 8)     ; the lowest key wanted
+%define SEL_LOOKUP_HI   (SEL_LOOKUP_LO + 8)  ; and the highest
+; The row the walk has read but this batch will not deliver: -2 means pull the
+; next one, -1 means the walk is finished.
+%define SEL_LOOKUP_ROW  (SEL_LOOKUP_HI + 8)
+; The lanes of the coming batch the walk named. A range visits a group once per
+; run of entries that land in it, so the batch cannot simply be delivered whole:
+; what the walk named this time is what this batch may return.
+%define SEL_LOOKUP_MASK (SEL_LOOKUP_ROW + 8)
+%define SEL_ITER        (SEL_LOOKUP_MASK + 8) ; IDX_ITER_SIZE bytes
 %define SQL_SELECT_SIZE (SEL_ITER + IDX_ITER_SIZE)
 %endif

@@ -506,6 +506,61 @@ def main():
         check("and that file checks out too", r.returncode == 0 and
               "Status:          OK" in r.stdout, r.stdout)
 
+        # --- ranges ----------------------------------------------------------
+        # A range names several keys, and their rows are scattered through the
+        # table rather than ascending, so the walk enters a group once per run
+        # of entries that land in it. The rows it returns are the rows a scan
+        # returns; the order is not, because a query that did not ask for one
+        # is not owed the order a scan happens to produce. So these compare the
+        # rows as a multiset.
+        wide = str(Path(tmp) / "wide.cdb")
+        wide_plain = str(Path(tmp) / "wide_plain.cdb")
+        for path in (wide, wide_plain):
+            run("create-large", path, "60000", "--force")
+            query("CREATE TABLE t (id INT64 NOT NULL, v INT32);", path)
+            script = []
+            for base in range(0, 5000, 250):
+                values = ", ".join(f"({(i * 7919) % 5000}, {i})"
+                                   for i in range(base, base + 250))
+                script.append(f"INSERT INTO t VALUES {values};")
+            subprocess.run([str(cyboudb), "console", path],
+                           input=chr(10).join(script) + chr(10),
+                           capture_output=True,
+                           text=True, encoding="utf-8", errors="replace")
+        r = query("CREATE UNIQUE INDEX w_id ON t (id);", wide)
+        check("an index to range over", r.returncode == 0, r.stdout)
+
+        def rows(sql, path):
+            out = query(sql, path).stdout.splitlines()
+            return sorted(line for line in out[2:] if "row" not in line)
+
+        same = True
+        detail = ""
+        for sql in ("SELECT v FROM t WHERE id < 20",
+                    "SELECT v FROM t WHERE id <= 0",
+                    "SELECT v FROM t WHERE id > 4980",
+                    "SELECT v FROM t WHERE id >= 4999",
+                    "SELECT v FROM t WHERE id > 5000",
+                    "SELECT v FROM t WHERE id < 0",
+                    "SELECT id, v FROM t WHERE id >= 2500 AND id <= 2540"):
+            a, b = rows(sql + ";", wide), rows(sql + ";", wide_plain)
+            if a != b:
+                same = False
+                detail = f"{sql}: {len(a)} rows vs {len(b)}"
+                break
+        check("a range answers the rows a scan would", same, detail)
+
+        # A range wide enough that the tree names more entries than the table
+        # has 64-row groups is left to the scan: reading the table is then the
+        # cheaper way to read the table. It still has to answer the same rows.
+        a = rows("SELECT v FROM t WHERE id > 10;", wide)
+        b = rows("SELECT v FROM t WHERE id > 10;", wide_plain)
+        check("and so does one too wide to be worth the tree",
+              a == b and len(a) == 4989, f"{len(a)} vs {len(b)}")
+        r = run("check", wide)
+        check("with a file that checks out", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
+
     print(f"\nIndex SQL suite: {passed} passed, {run_count - passed} failed")
     sys.exit(0 if passed == run_count else 1)
 
