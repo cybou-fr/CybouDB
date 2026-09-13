@@ -111,7 +111,7 @@ dependencies.
 | DELETE strategy | working; truncation, per-row tombstones, or a compacting rewrite, chosen per statement from what the table already holds. No explicit `VACUUM` |
 | SQL types and semantics | working for `INT32`, `INT64`, `FLOAT32`, `BOOL`, and persistent `TEXT`/`BLOB` |
 | CLI: `query` | working; executes statements, autocommits mutations, tabular output |
-| CLI: `create`, `query`, `info`, `check`, `alloc`, `free`, `version` | working; `create` and `cyboudb_create` make the same canonical profile |
+| CLI: `create`, `query`, `console`, `info`, `check`, `version` | working; `create` and `cyboudb_create` make the same canonical profile |
 | Open proportional to the change, not the file | working; `cyboudb check` still reads everything |
 | Linux x86-64, raw syscalls, no libc | working |
 | Windows x64, kernel32 only | working |
@@ -325,17 +325,19 @@ finalize or mutation on the connection. Serialize access to a connection and
 its statements. The ABI remains experimental; see the remaining
 [hardening work](docs/HARDENING.md).
 
-### Page-level Commands
-
-Low-level storage inspection and page allocation commands operate directly
-against database pages:
+### Inspecting a database
 
 ```sh
-cyboudb create demo.cdb 256     # a database of 256 pages (1 MiB)
+cyboudb create demo.cdb 512     # a database of 512 pages (2 MiB)
 cyboudb info   demo.cdb         # metadata, validated before it is printed
-cyboudb alloc  demo.cdb 4       # hand out four pages and commit
-cyboudb free   demo.cdb 5       # return page 5 to the free list and commit
+cyboudb check  demo.cdb         # every page of every generation
 ```
+
+`alloc` and `free` also exist and the test suites drive them, but they are the
+pre-COW allocator's controls and are not listed in `--help`: on the database
+`create` makes, `free` answers *operation not allowed for this storage mode*,
+because a copy-on-write file returns pages through retirement rather than a
+free list.
 
 ```text
 $ cyboudb info demo.cdb

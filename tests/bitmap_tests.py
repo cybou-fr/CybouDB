@@ -55,7 +55,11 @@ with tempfile.TemporaryDirectory() as directory:
     directory = pathlib.Path(directory)
     path = directory / "db.cdb"
     for size in (0, 3, CAPACITY + 1):
-        run(binary, "create-cow", path, size, rc=2, contains="between 4 and 16112")
+        # The message names the single-map ceiling but is shared with the
+        # span profile, which has no such ceiling, so it says what is wrong
+        # rather than only quoting a range.
+        run(binary, "create-cow", path, size, rc=2,
+            contains="does not fit this format")
         assert not path.exists()
     check("COW size bounds checked before creating a file")
 

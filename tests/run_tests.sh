@@ -86,39 +86,60 @@ check() {
 echo "binary: $CybouDB"
 echo
 
+# =========================== the canonical creator =========================
+# Everything below this section drives `create-legacy`, because it is testing
+# the pre-COW allocator, its free list and its damage cases - which is what
+# those checks have always been about. `create` itself is the command a user
+# types, so it is checked here on its own terms: one profile, every capability
+# in it, and the arguments it refuses.
+check "canon/create"            0 "Database created" "$CybouDB" create "$work/canon.cdb" 512
+check "canon/check"             0 "Status:          OK" "$CybouDB" check "$work/canon.cdb"
+check "canon/table"             0 "Table created"   "$CybouDB" query "$work/canon.cdb" "CREATE TABLE t (a INT64, b TEXT)"
+check "canon/index"             0 "Index created"   "$CybouDB" query "$work/canon.cdb" "CREATE INDEX t_a ON t (a)"
+check "canon/queue"             0 "Queue created"   "$CybouDB" query "$work/canon.cdb" "CREATE QUEUE q"
+check "canon/stream"            0 "Stream created"  "$CybouDB" query "$work/canon.cdb" "CREATE STREAM s"
+check "canon/text row"          0 "INSERT 1"        "$CybouDB" query "$work/canon.cdb" "INSERT INTO t VALUES (1, 'hello')"
+# The tombstone reservation can only be made at creation, so a marking DELETE
+# working here is what says `create` made the profile it claims to.
+check "canon/delete"            0 "DELETE 1"        "$CybouDB" query "$work/canon.cdb" "DELETE FROM t WHERE a = 1"
+check "canon/still checks out"  0 "Status:          OK" "$CybouDB" check "$work/canon.cdb"
+check "canon/too few pages"     2 "does not fit this format" "$CybouDB" create "$work/tiny.cdb" 2
+check "canon/refuses existing"  2 "already exists"  "$CybouDB" create "$work/canon.cdb" 512
+check "canon/no historical flag" 1 "Usage"          "$CybouDB" create "$work/flag.cdb" 512 --pax
+
 # =========================== command line ==================================
 check "usage/no arguments"      1 "Usage"          "$CybouDB"
 check "usage/unknown command"   1 "Usage"          "$CybouDB" frobnicate x
-check "usage/create missing arg" 1 "Usage"         "$CybouDB" create "$work/x.cdb"
-check "usage/unknown option"    1 "Usage"          "$CybouDB" create "$work/x.cdb" 8 --wat
+check "usage/create missing arg" 1 "Usage"         "$CybouDB" create-legacy "$work/x.cdb"
+check "usage/unknown option"    1 "Usage"          "$CybouDB" create-legacy "$work/x.cdb" 8 --wat
 
 # =========================== page count parsing ============================
-check "pages/zero"              2 "at least 3"     "$CybouDB" create "$work/p.cdb" 0
-check "pages/below minimum"     2 "at least 3"     "$CybouDB" create "$work/p.cdb" 2
-check "pages/not a number"      2 "-"              "$CybouDB" create "$work/p.cdb" abc
-check "pages/trailing garbage"  2 "-"              "$CybouDB" create "$work/p.cdb" 12abc
-check "pages/empty"             2 "-"              "$CybouDB" create "$work/p.cdb" ""
-check "pages/overflows 64 bits" 2 "-"              "$CybouDB" create "$work/p.cdb" 99999999999999999999
+check "pages/zero"              2 "at least 3"     "$CybouDB" create-legacy "$work/p.cdb" 0
+check "pages/below minimum"     2 "at least 3"     "$CybouDB" create-legacy "$work/p.cdb" 2
+check "pages/not a number"      2 "-"              "$CybouDB" create-legacy "$work/p.cdb" abc
+check "pages/trailing garbage"  2 "-"              "$CybouDB" create-legacy "$work/p.cdb" 12abc
+check "pages/empty"             2 "-"              "$CybouDB" create-legacy "$work/p.cdb" ""
+check "pages/overflows 64 bits" 2 "-"              "$CybouDB" create-legacy "$work/p.cdb" 99999999999999999999
 
 # =========================== create and inspect ============================
-check "create/minimum size"     0 "Database created" "$CybouDB" create "$work/min.cdb" 3
-check "create/normal"           0 "Database created" "$CybouDB" create "$work/db.cdb" 16
+check "create/minimum size"     0 "Database created" "$CybouDB" create-legacy "$work/min.cdb" 3
+check "create/normal"           0 "Database created" "$CybouDB" create-legacy "$work/db.cdb" 16
 check "info/status ok"          0 "Status:          OK" "$CybouDB" info "$work/db.cdb"
 check "info/total pages"        0 "Total Pages:     16" "$CybouDB" info "$work/db.cdb"
 check "info/allocated pages"    0 "Allocated Pages: 3"  "$CybouDB" info "$work/db.cdb"
 check "info/generation"         0 "Generation:      1"  "$CybouDB" info "$work/db.cdb"
 check "info/superblock a"       0 "Superblock:      page 1" "$CybouDB" info "$work/db.cdb"
 check "info/missing file"       2 "no such file"   "$CybouDB" info "$work/nothing.cdb"
-check "create/missing directory" 2 "no such file"  "$CybouDB" create "$work/nodir/x.cdb" 8
+check "create/missing directory" 2 "no such file"  "$CybouDB" create-legacy "$work/nodir/x.cdb" 8
 
 # With stdin closed the database lands on descriptor 0 on Linux. That is a
 # real descriptor, and the engine must not mistake it for "nothing to close".
 check "info/stdin closed"       0 "Status:          OK"       sh -c '"$0" info "$1" 0<&-' "$CybouDB" "$work/db.cdb"
 
 # =========================== destructive create ============================
-check "create/refuses existing" 2 "already exists" "$CybouDB" create "$work/db.cdb" 8
+check "create/refuses existing" 2 "already exists" "$CybouDB" create-legacy "$work/db.cdb" 8
 check "info/survived refusal"   0 "Total Pages:     16" "$CybouDB" info "$work/db.cdb"
-check "create/--force replaces" 0 "Database created" "$CybouDB" create "$work/db.cdb" 8 --force
+check "create/--force replaces" 0 "Database created" "$CybouDB" create-legacy "$work/db.cdb" 8 --force
 check "info/after --force"      0 "Total Pages:     8"  "$CybouDB" info "$work/db.cdb"
 
 # =========================== read-only access ==============================
@@ -161,7 +182,7 @@ check "free/refuses superblock"  2 "outside the allocatable" "$CybouDB" free "$w
 check "free/refuses unallocated" 2 "outside the allocatable" "$CybouDB" free "$work/db.cdb" 7
 check "free/refuses double free" 2 "already free"  sh -c '"$0" free "$1" 5 >/dev/null; "$0" free "$1" 5' "$CybouDB" "$work/db.cdb"
 
-check "alloc/database full"     2 "database is full"       sh -c '"$0" create "$1" 3 >/dev/null && "$0" alloc "$1" 1' "$CybouDB" "$work/full.cdb"
+check "alloc/database full"     2 "database is full"       sh -c '"$0" create-legacy "$1" 3 >/dev/null && "$0" alloc "$1" 1' "$CybouDB" "$work/full.cdb"
 
 cp "$work/db.cdb" "$work/roalloc.cdb"
 chmod a-w "$work/roalloc.cdb" 2>/dev/null

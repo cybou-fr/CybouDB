@@ -93,9 +93,12 @@ msg_usage:
     db "  cyboudb info   <path>           show database metadata", 10
     db "  cyboudb check  <path>           verify every page, not just the", 10
     db "                               newest generation's", 10
-    db "  cyboudb alloc  <path> <count>   allocate pages and commit", 10
-    db "  cyboudb free   <path> <page>    free a page and commit", 10
     db "  cyboudb version                 print the version and exit", 10, 0
+; `alloc` and `free` still work and the tests still drive them, but they are
+; not listed: they are the pre-COW allocator's controls, and on the database
+; `create` makes, `free` answers "operation not allowed for this storage mode".
+; Advertising a command that refuses the file the same binary just made is
+; worse than not mentioning it.
 
 msg_created:     db "Database created", 10
                  db "  Pages:           ", 0
@@ -164,7 +167,12 @@ e_access:        db "error: permission denied", 10, 0
 e_state:         db "error: operation not allowed for this storage mode or handle", 10, 0
 e_generation:    db "error: generation counter exhausted", 10, 0
 e_bitmap:        db "error: staged allocation map or root is inconsistent", 10, 0
-e_cow_pages:     db "error: COW page count must be between 4 and 16112", 10, 0
+; Reached two ways: past the 16112-page ceiling of a single-map COW file,
+; and - on a span-map file, which has no such ceiling - a count too small to
+; leave room for the allocation map itself. Naming only the COW range was
+; wrong for the format `create` now makes, which takes 100,000 pages happily
+; and refused 2 with a sentence about a limit of 16112.
+e_cow_pages:     db "error: the page count does not fit this format: too small, or past the 16112-page limit of a single-map COW file", 10, 0
 e_catalog:       db "error: catalog graph is corrupt", 10, 0
 e_schema:        db "error: invalid schema or duplicate table name", 10, 0
 e_notfound:      db "error: table id not found", 10, 0
