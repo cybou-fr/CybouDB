@@ -135,6 +135,16 @@
 ; a schema page's neighbour in the directory may not be a schema at all.
 %define CybouDB_FEATURE_INDEX 8192
 
+; Durable FIFO queues - requires COW and the catalog. A queue is a fourth page
+; type in the directory, so the same argument the index bit makes applies: a
+; build without this bit would reach a directory entry whose type it cannot
+; interpret, and refusing is the only honest answer to that.
+;
+; A segment page is an ordinary payload page, so the bit changes no existing
+; structure. What it changes is that a directory entry may name a page of a
+; fourth type. See docs/QUEUE.md.
+%define CybouDB_FEATURE_QUEUE 16384
+
 ; Column compression codecs (stored in bits 8..15 of leaf column flags):
 %define PAX_CODEC_RAW       0
 %define PAX_CODEC_CONST     1

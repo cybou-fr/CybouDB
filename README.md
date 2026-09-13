@@ -389,6 +389,9 @@ All test suites run in CI on both Linux and Windows.
 * **[docs/SPAN_MAP.md](docs/SPAN_MAP.md)** - paired multi-page allocation map and recycling.
 * **[docs/INDEX.md](docs/INDEX.md)** - secondary B+tree indexes: the page
   layout, what a row id means, and when an index is rebuilt.
+* **[docs/QUEUE.md](docs/QUEUE.md)** - durable FIFO queues: the page layout,
+  why a message is addressed by position rather than threaded on pointers, and
+  what delivery does and does not promise. Decided, not yet implemented.
 
 ---
 

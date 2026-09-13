@@ -811,6 +811,42 @@ green before the next begins, for the same reason the phases above were.
 
 ---
 
+## Phase 11 - Queues
+
+The decisions are fixed in [docs/QUEUE.md](docs/QUEUE.md). Nothing implements
+them yet, and `CybouDB_FEATURE_QUEUE` is reserved rather than accepted: until
+this build can read a queue page, a file carrying the bit is refused at open
+as a file whose features are unknown, which is the clean refusal the bit
+exists for. Accepting it and then failing on the page type would refuse the
+same file for a worse reason.
+
+What is decided:
+
+* a queue is a fourth catalog page type, in the same id space and the same
+  namespace as tables and indexes;
+* a message is addressed by a 64-bit position that is never reused, and where
+  it lives is arithmetic on that position - there is no pointer chain, for the
+  reason a B+tree here has no sibling pointers and a PAX table has no leaf
+  chain;
+* a payload of 48 bytes or fewer sits in its slot and a longer one is a varlen
+  extent owned by the queue id, which is the machinery TEXT already uses;
+* validation costs the segments a queue is holding, not the messages it has
+  carried, so a drained queue validates in one page;
+* delivery is exactly-once inside the database and at-least-once outside it,
+  and the document says which rather than claiming the stronger one.
+
+What is deliberately absent, and why, is in the document: more than one
+consumer, leases, priorities, delays, and acknowledgement separate from the
+transaction.
+
+The order of work: the catalog page type and its validation first, because
+that is where the last subsystem's bugs hid; then CREATE QUEUE and DROP QUEUE;
+then ENQUEUE and DEQUEUE; then the C ABI, with the statements reaching the
+engine through sql_execute_batch so there is one implementation rather than
+one per caller.
+
+---
+
 ## Known gaps outside the phases
 
 Small, real, and worth fixing when they are next touched:
