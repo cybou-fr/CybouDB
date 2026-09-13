@@ -646,18 +646,23 @@ has the numbers:
 * **CREATE INDEX stages about three pages per row**, because it builds by
   inserting one row at a time. A sort and a bulk build would stage the tree
   itself and nothing else.
-* **A plan consults an index for one shape: `column = literal` over a unique
-  index.** The tree names the row, the scan is put where it said, and the
+* **A plan consults an index for one shape: `column = literal`.** The tree
+  names the rows, the scan is put where it said, and the
   predicate runs over that batch exactly as it would have anywhere else - so
   the index decides where to look and never what the answer is, and a stale
   entry costs a page read rather than a wrong row. The suite asks the same
   questions of two tables with the same rows, one indexed and one not, and
   requires the answers to be identical.
 
-  Unique only, because equal keys are ordered by the row they name and a leaf
-  keeps no pointer to the next one: continuing past a leaf's end needs a search
-  that takes a (key, row) pair, which is the next piece of work. Ranges need
-  that too, and a seek to a leaf boundary rather than to a row.
+  A unique index names one row and a lookup is one seek. A non-unique one
+  names many, spread across the whole table, so the lookup walks the tree with
+  the path it descended and moves the scan to each 64-row group the walk
+  reaches. What makes that walk possible is that an internal entry carries the
+  `(key, row)` pair a child ends at rather than only the key: equal keys span
+  several children, and a separator that was only a key sent every one of them
+  to the first child - a tree that validated, answered a unique lookup, and
+  quietly lost two thirds of the rows under a duplicated key. Ranges are the
+  next piece of work, and need a seek to a leaf boundary rather than to a row.
 
   The seek lives in sql_select_open, where every reader opens its cursor -
   the batch executor and the pull cursor the ABI steps alike. It was written

@@ -11,7 +11,8 @@
 BITS 64
 default rel
 extern db_catalog_get, db_zone_lookup, sql_zone_eval
-extern db_catalog_page, db_index_search, db_index_node_addr
+extern db_catalog_page, db_index_node_addr
+extern db_index_iter_open, db_index_iter_next
 extern db_pax_scan_open_bound, db_pax_scan_batch_ex, eval_predicate_encoded
 extern sql_zone_force_off, sql_zone_trace
 extern sql_zone_leaf_total, sql_zone_leaf_none, sql_zone_leaf_all, sql_zone_leaf_unknown
@@ -152,13 +153,15 @@ sql_select_open:
     ; --- the index, if the plan chose one ---------------------------------
     ; The seek lives here rather than in one executor because every reader
     ; opens its cursor through this function: the batch executor, the pull
-    ; cursor the ABI steps, and whatever reads next. Putting it in a caller
-    ; is how a second copy of a statement's behaviour starts.
+    ; cursor the ABI steps, and whatever reads next. Putting it in a caller is
+    ; how a second copy of a statement's behaviour starts.
     mov qword [r12 + SEL_LOOKUP], 0
     mov r10, [r12 + SEL_PLAN]
     test qword [r10 + PLAN_FLAGS], PLAN_FLAG_INDEX_EQ
     jz .lookup_ready
     inc qword [rel index_lookups]
+    mov rax, [r10 + PLAN_INDEX_KEY]
+    mov [r12 + SEL_LOOKUP_KEY], rax
     mov ARG1, [r12 + SEL_DB]
     mov ARG2, [r10 + PLAN_INDEX_ID]
     call db_catalog_page
@@ -173,41 +176,14 @@ sql_select_open:
     jz .lookup_empty                    ; an empty index names nothing
     mov ARG1, [r12 + SEL_DB]
     mov ARG2, r11
-    mov r10, [r12 + SEL_PLAN]
-    mov ARG3, [r10 + PLAN_INDEX_KEY]
-    lea ARG4, [r12 + SEL_LOOKUP]        ; the leaf it lands in, briefly
-    lea rax, [rbp - 16]
-    PASS_ARG5 rax                       ; and where in it
-    call db_index_search
+    mov ARG3, [r12 + SEL_LOOKUP_KEY]
+    lea ARG4, [r12 + SEL_ITER]
+    call db_index_iter_open
     test eax, eax
-    jnz .open_exit
-    mov r11, [r12 + SEL_LOOKUP]
-    test r11, r11
     jz .lookup_empty
-    mov ARG1, [r12 + SEL_DB]
-    mov ARG2, r11
-    call db_index_node_addr
-    mov ecx, [rax + IDX_COUNT]
-    cmp [rbp - 16], rcx
-    jae .lookup_empty                   ; past everything the tree holds
-    mov rcx, [rbp - 16]
-    shl rcx, 4
-    mov rdx, [rax + IDX_ENTRIES + rcx + IDX_KEY]
-    mov r10, [r12 + SEL_PLAN]
-    cmp rdx, [r10 + PLAN_INDEX_KEY]
-    jne .lookup_empty                   ; the key is not in the tree at all
-    mov rdx, [rax + IDX_ENTRIES + rcx + IDX_ROW]
-    cmp rdx, [r12 + SEL_SCAN + SCAN_ROWS]
-    jae .lookup_empty                   ; a row the table no longer has
+    mov qword [r12 + SEL_LOOKUP], 1     ; seek before the next batch
 
-    ; Put the cursor at the 64-row group the row sits in and let it enter the
-    ; leaf the way it always does. That arithmetic assumes it is standing at a
-    ; leaf boundary, so from here it believes the leaf runs further than it
-    ; does - which never matters, because the cursor stops after this batch.
-    ; A range scan will have to seek to a leaf boundary instead.
-    and rdx, ~63
-    mov [r12 + SEL_SCAN + SCAN_NEXT], rdx
-    mov qword [r12 + SEL_LOOKUP], 1
+    mov qword [r12 + SEL_LOOKUP_ROW], -2
     jmp .lookup_ready
 .lookup_empty:
     mov qword [r12 + SEL_LOOKUP], 0
@@ -220,7 +196,7 @@ sql_select_open:
     ret
 
 sql_select_next:
-    FRAME_BEGIN 16, 1
+    FRAME_BEGIN 64, 1
     mov [rbp - 8], r12
     mov r12, ARG1
     mov rax, [r12 + SEL_ERROR]
@@ -239,21 +215,27 @@ sql_select_next:
     mov     rax, [r11 + DB_GENERATION]
     cmp     rax, [r12 + SEL_SCAN + SCAN_GENERATION]
     jne     .scan_state
-    cmp     qword [r12 + SEL_LOOKUP], 2
-    je      .scan_finished              ; the batch the index pointed at is read
+    cmp     qword [r12 + SEL_LOOKUP], 1
+    je      .lookup_seek                ; the tree says where the next rows are
     mov     rax, [r12 + SEL_SCAN + SCAN_NEXT]
     cmp     rax, [r12 + SEL_SCAN + SCAN_ROWS]
     jae     .scan_finished
     cmp     rax, [r12 + SEL_LEAF_END]
     jb      .read_batch
-    ; We are at a leaf boundary. Geometry comes from the validated cursor;
+    ; We have entered a leaf. Geometry comes from the validated cursor;
     ; neither NONE nor COUNT/ALL needs to resolve or touch the PAX leaf.
+    ;
+    ; A scan enters a leaf at its first row, but a lookup enters one wherever
+    ; the tree pointed. What is left of the leaf is its capacity less how far
+    ; into it we already stand - the same number a scan has always seen, since
+    ; for a scan that distance is zero.
     xor     edx, edx
     div     qword [r12 + SEL_SCAN + SCAN_CAPACITY]
     mov     [r12 + SEL_LEAF_INDEX], rax
-    mov     rax, [r12 + SEL_SCAN + SCAN_ROWS]
-    sub     rax, [r12 + SEL_SCAN + SCAN_NEXT]
-    mov     rcx, [r12 + SEL_SCAN + SCAN_CAPACITY]
+    mov     rax, [r12 + SEL_SCAN + SCAN_CAPACITY]
+    sub     rax, rdx                    ; the part of this leaf still ahead
+    mov     rcx, [r12 + SEL_SCAN + SCAN_ROWS]
+    sub     rcx, [r12 + SEL_SCAN + SCAN_NEXT]
     cmp     rax, rcx
     cmova   rax, rcx
     add     rax, [r12 + SEL_SCAN + SCAN_NEXT]
@@ -319,12 +301,59 @@ sql_select_next:
     bts     rax, rcx
 .proj_only_store:
     mov     [r12 + SEL_REQUIRED], rax
+    jmp     .read_batch
+
+.lookup_seek:
+    ; Where the next rows for this key are. The walk moves forward only, so an
+    ; entry it produces is either inside a batch already delivered - which the
+    ; scan's own position states, rather than a guess about how many rows a
+    ; batch carried - or it is the row the next batch has to start at.
+    cmp     qword [r12 + SEL_LOOKUP_ROW], -1
+    je      .lookup_spent
+    cmp     qword [r12 + SEL_LOOKUP_ROW], -2
+    jne     .lookup_have_row
+.lookup_pull:
+    mov     ARG1, [r12 + SEL_DB]
+    lea     ARG2, [r12 + SEL_ITER]
+    lea     ARG3, [rbp - 24]
+    lea     ARG4, [rbp - 32]
+    call    db_index_iter_next
+    test    eax, eax
+    jz      .lookup_spent
+    mov     rax, [rbp - 24]
+    cmp     rax, [r12 + SEL_LOOKUP_KEY]
+    jne     .lookup_spent               ; past every row this key names
+    mov     rax, [rbp - 32]
+    mov     [r12 + SEL_LOOKUP_ROW], rax
+.lookup_have_row:
+    mov     rdx, [r12 + SEL_LOOKUP_ROW]
+    cmp     rdx, [r12 + SEL_SCAN + SCAN_ROWS]
+    jae     .lookup_drop                ; a row the table no longer has
+    cmp     rdx, [r12 + SEL_SCAN + SCAN_NEXT]
+    jb      .lookup_drop                ; a row some batch has already carried
+    and     rdx, ~63                    ; the group it sits in
+    cmp     rdx, [r12 + SEL_SCAN + SCAN_NEXT]
+    jb      .lookup_placed              ; that group is the one we stand in
+    mov     [r12 + SEL_SCAN + SCAN_NEXT], rdx
+    mov     qword [r12 + SEL_LEAF_END], 0   ; enter the leaf it lands in
+.lookup_placed:
+    ; The entry stays where it is. Whether this batch reaches it is the next
+    ; seek's question, and by then the scan's position answers it.
+    mov     qword [r12 + SEL_LOOKUP], 3
+    jmp     .scan_loop
+.lookup_drop:
+    mov     qword [r12 + SEL_LOOKUP_ROW], -2
+    jmp     .lookup_pull
+.lookup_spent:
+    mov     qword [r12 + SEL_DONE], 1
+    jmp     .done
+
 .read_batch:
-    ; A lookup reads the batch its row is in and then the scan is over,
-    ; whether or not the predicate kept anything in it.
-    cmp     qword [r12 + SEL_LOOKUP], 1
+    ; A lookup reads the batch its rows are in and then asks the tree again,
+    ; whether or not the predicate kept anything in this one.
+    cmp     qword [r12 + SEL_LOOKUP], 3
     jne     .lookup_noted
-    mov     qword [r12 + SEL_LOOKUP], 2
+    mov     qword [r12 + SEL_LOOKUP], 1
 .lookup_noted:
     cmp     dword [sql_zone_trace], 0
     je      .batch_args

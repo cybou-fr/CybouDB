@@ -27,5 +27,10 @@
 ; that one batch and then reports the scan finished: the tree named one row
 ; and the predicate has just been evaluated over the batch holding it.
 %define SEL_LOOKUP      (SEL_LIMIT_LEFT + 8)
-%define SQL_SELECT_SIZE (SEL_LOOKUP + 8)
+%define SEL_LOOKUP_KEY  (SEL_LOOKUP + 8)     ; the key the plan is after
+; The row the walk has read but this batch will not deliver: -2 means pull
+; the next one, -1 means the walk is finished.
+%define SEL_LOOKUP_ROW  (SEL_LOOKUP_KEY + 8)
+%define SEL_ITER        (SEL_LOOKUP_ROW + 8) ; IDX_ITER_SIZE bytes
+%define SQL_SELECT_SIZE (SEL_ITER + IDX_ITER_SIZE)
 %endif

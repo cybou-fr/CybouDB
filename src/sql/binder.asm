@@ -2661,10 +2661,9 @@ sql_bind:
 ; A SELECT whose whole predicate is one equality over a uniquely indexed column
 ; can find its row through the tree instead of by reading the table.
 ;
-; Unique only, for now. Equal keys are ordered by the row they name and a leaf
-; keeps no pointer to the next one, so continuing past a leaf's end means
-; descending again from a (key, row) pair the search cannot yet take. A unique
-; index has at most one answer and never needs to continue.
+; Unique or not: the cursor walks the tree from the key rather than searching
+; for it once, so equal keys spanning several leaves are read the way a range
+; will be - by keeping the path down and stepping along it.
 ;
 ; Nothing here changes what the query returns. The row the tree names is read
 ; and the predicate is evaluated against it exactly as a scan would: an index
@@ -2709,8 +2708,6 @@ plan_index_eq:
     mov ecx, [rax + IDX_COLUMN]
     cmp rcx, [r11 + BEXPR_COL_IDX]
     jne .skip
-    test dword [rax + IDX_FLAGS], IDX_UNIQUE
-    jz .skip
 
     ; The key, sign-extended the way the tree orders it.
     mov rdx, [r11 + BEXPR_LIT_VAL]

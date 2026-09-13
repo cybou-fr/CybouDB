@@ -22,9 +22,9 @@ dependencies.
 > in [docs/FORMAT.md](docs/FORMAT.md), [docs/TRANSACTIONS.md](docs/TRANSACTIONS.md)
 > and [docs/RECOVERY.md](docs/RECOVERY.md). SQL, the columnar executor, exact
 > vector search, tombstoned DELETE with compaction and secondary B+tree indexes
-> are implemented and tested on Linux and Windows. No query plan uses an index
-> yet, and an ARM64 backend does not exist. There is no release, and CybouDB is
-> not production-ready.
+> are implemented and tested on Linux and Windows. A plan uses an index for an
+> equality; ranges still scan, and an ARM64 backend does not exist. There is
+> no release, and CybouDB is not production-ready.
 
 ---
 
@@ -43,7 +43,7 @@ dependencies.
 | Paired multi-page allocation map | working; `create-large`, 63 GiB ceiling, page reclamation |
 | SQL engine: parser, binder, executor | working; pure x86-64 scalar and batch execution |
 | SQL statements | working; `CREATE TABLE`, `DROP TABLE`, `INSERT INTO` (multi-row), fixed-width flat-PAX `UPDATE ... SET literal WHERE`, `DELETE FROM ... [WHERE]`, `SELECT ... WHERE`, stable single-key `ORDER BY`, `LIMIT [OFFSET]`, correctness-first `INNER JOIN`/`LEFT JOIN` on qualified INT32/INT64 equi-keys, `BEGIN`/`COMMIT`/`ROLLBACK`, `CREATE [UNIQUE] INDEX` / `DROP INDEX` |
-| Secondary indexes | working; copy-on-write B+tree on INT32/INT64 columns, unique or not, maintained by every statement that changes a table. No query plan consults one yet: see [docs/INDEX.md](docs/INDEX.md) |
+| Secondary indexes | working; copy-on-write B+tree on INT32/INT64 columns, unique or not, maintained by every statement that changes a table. A plan uses one for `column = literal`; ranges still scan: see [docs/INDEX.md](docs/INDEX.md) |
 | DELETE strategy | working; truncation, per-row tombstones, or a compacting rewrite, chosen per statement from what the table already holds. No explicit `VACUUM` |
 | SQL types and semantics | fixed-width storage working for `INT32`, `INT64`, `FLOAT32`, `BOOL`; persistent `TEXT`/`BLOB` storage working for `create-large` databases |
 | CLI: `query` | working; executes statements, autocommits mutations, tabular output |

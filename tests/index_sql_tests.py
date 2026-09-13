@@ -74,11 +74,11 @@ def read_tree(path, name):
             n = u32(base + 36)
             if u32(base + 32) == 0:                  # a leaf
                 for j in range(n):
-                    off = base + 64 + j * 16
+                    off = base + 64 + j * 24
                     entries.append((i64(off), u64(off + 8)))
                 return
             for j in range(n):
-                visit(u64(base + 64 + j * 16 + 8))
+                visit(u64(base + 64 + j * 24 + 16))
 
         tree_root = u64(page + 40)
         if tree_root:
@@ -451,6 +451,59 @@ def main():
         check("and after the rows move under it", same, detail)
         r = run("check", lookup)
         check("with a file that checks out", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
+
+        # --- a key that names many rows --------------------------------------
+        # A unique index answers with one row and never has to continue past
+        # the entry it found. A non-unique one does, and the rows it names are
+        # spread across every leaf of the table, so this is the case where the
+        # walk either keeps its place or quietly loses rows. Comparing counts
+        # against the same table without an index is what makes a loss visible:
+        # a short answer is still a well-formed one.
+        many = str(Path(tmp) / "many.cdb")
+        many_plain = str(Path(tmp) / "many_plain.cdb")
+        for path in (many, many_plain):
+            run("create-large", path, "60000", "--force")
+            query("CREATE TABLE t (id INT64 NOT NULL, g INT64);", path)
+            script = []
+            for base in range(0, 5000, 250):
+                values = ", ".join(f"({i}, {i % 7})" for i in range(base, base + 250))
+                script.append(f"INSERT INTO t VALUES {values};")
+            subprocess.run([str(cyboudb), "console", path],
+                           input=chr(10).join(script) + chr(10),
+                           capture_output=True,
+                           text=True, encoding="utf-8", errors="replace")
+        r = query("CREATE INDEX g_idx ON t (g);", many)
+        check("a non-unique index to look through", r.returncode == 0, r.stdout)
+
+        same = True
+        detail = ""
+        for key in (0, 1, 3, 6, 7, -1):
+            sql = f"SELECT id FROM t WHERE g = {key};"
+            a = query(sql, many).stdout
+            b = query(sql, many_plain).stdout
+            if a != b:
+                same = False
+                detail = (f"g={key}: index {a.count(chr(10))} lines, "
+                          f"scan {b.count(chr(10))} lines")
+                break
+        check("a key naming hundreds of rows answers as the scan does",
+              same, detail)
+
+        # The same, with a LIMIT, because the limit is applied to the rows the
+        # lookup produced and not to the entries the tree walked.
+        a = query("SELECT id FROM t WHERE g = 3 LIMIT 5;", many).stdout
+        b = query("SELECT id FROM t WHERE g = 3 LIMIT 5;", many_plain).stdout
+        check("and so does a limited one", a == b, f"{a!r} vs {b!r}")
+
+        query("DELETE FROM t WHERE id = 700;", many)
+        query("DELETE FROM t WHERE id = 700;", many_plain)
+        a = query("SELECT id FROM t WHERE g = 0;", many).stdout
+        b = query("SELECT id FROM t WHERE g = 0;", many_plain).stdout
+        check("a deleted row leaves both answers equal", a == b,
+              f"{len(a)} vs {len(b)} bytes")
+        r = run("check", many)
+        check("and that file checks out too", r.returncode == 0 and
               "Status:          OK" in r.stdout, r.stdout)
 
     print(f"\nIndex SQL suite: {passed} passed, {run_count - passed} failed")

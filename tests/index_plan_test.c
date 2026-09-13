@@ -90,12 +90,15 @@ int main(int argc, char **argv) {
        The planner refuses the index for it all the same, which the CLI
        exercises. */
 
-    /* A non-unique index is not chosen: equal keys can span leaves, and a
-       leaf keeps no pointer to the next one. */
+    /* A non-unique index is chosen too. One key can name many rows, so the
+       lookup walks the tree rather than reading a single entry, and the walk
+       is what makes the count one per statement rather than one per row. */
     check("a non-unique index", cyboudb_exec(db,
           "CREATE INDEX p_v ON p (v)") == CybouDB_OK);
-    check("is not used for an equality",
-          lookups_for("SELECT id FROM p WHERE v = 20") == 0);
+    check("is used for an equality",
+          lookups_for("SELECT id FROM p WHERE v = 20") == 1);
+    check("including a key it does not hold",
+          lookups_for("SELECT id FROM p WHERE v = 21") == 1);
 
     check("dropping the unique index", cyboudb_exec(db,
           "DROP INDEX p_id") == CybouDB_OK);
