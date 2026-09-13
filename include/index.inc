@@ -55,22 +55,39 @@
 %define IDX_CRC 4092
 %define IDX_LEAF 0
 
-; An entry is 16 bytes in both node kinds, which is what caps a node at 251 of
-; them - the fan-out the PAX directory has, for the same reason.
-%define IDX_ENTRY_SIZE 16
-%define IDX_MAX_ENTRIES 251              ; (4092 - 64) / 16
-
-; The ordering key is the first qword of an entry in both node kinds, so one
-; comparison and one ordering check serve the whole tree.
+; An entry is 24 bytes in both node kinds, which is what caps a node at 167 of
+; them.
 ;
-; Leaf entry: the key, sign-extended to 64 bits, and the row it names.
+; The order the tree keeps is on the pair (key, row), not on the key: a key may
+; name many rows, more of them than one leaf holds, so equal keys span several
+; children and a separator that carried only a key could not say which of them
+; an entry belongs to. Every entry therefore carries both halves of the order,
+; and a comparison anywhere in the tree is the same lexicographic comparison.
+%define IDX_ENTRY_SIZE 24
+%define IDX_MAX_ENTRIES 167              ; (4092 - 64) / 24
+
+; Leaf entry: the key, sign-extended to 64 bits, the row it names, and a word
+; that is zero - the payload an internal entry spends on its child.
 %define IDX_KEY 0
 %define IDX_ROW 8
 
-; Internal entry: the largest key anywhere beneath a child, and that child.
-; Strictly increasing by IDX_KEY_END, so a search takes the first entry whose
-; end is not smaller than the key it wants.
+; Internal entry: the largest (key, row) anywhere beneath a child, and that
+; child. Strictly increasing by that pair, so a search takes the first entry
+; whose end is not smaller than the pair it wants.
 %define IDX_KEY_END 0
-%define IDX_CHILD 8
+%define IDX_ROW_END 8
+%define IDX_CHILD 16
+
+; --- Walking a tree in key order ---------------------------------------------
+; The iterator keeps the path it descended. Moving to the next leaf is walking
+; up to the deepest node that still has a child to its right and descending
+; that child's left edge - what a sibling pointer would have done, without a
+; pointer copy-on-write would have to maintain backwards. See docs/INDEX.md.
+%define IDX_ITER_MAX 8                   ; deeper than this format can grow
+%define ITER_CTX 0
+%define ITER_DEPTH 8
+%define ITER_NODE 16                     ; IDX_ITER_MAX page ids, root first
+%define ITER_SLOT 80                     ; and where the walk stands in each
+%define IDX_ITER_SIZE 144
 
 %endif ; CybouDB_INDEX_INC

@@ -85,18 +85,26 @@ everywhere:
 | 64 | 4028 | Entries |
 | 4092 | 4 | CRC-32C over bytes [0, 4092) |
 
-An entry is 16 bytes in both node kinds, which caps a node at 251 of them — the
-same fan-out the PAX directory has, for the same reason.
+An entry is 24 bytes in both node kinds, which caps a node at 167 of them.
 
-* **Leaf entry**: `(key, row)` — the key sign-extended to 64 bits, and the
-  row's position in the table.
-* **Internal entry**: `(key_end, child_page)` — the largest key anywhere
-  beneath a child, and that child. Entries are strictly increasing by
-  `key_end`, and a search takes the first entry whose `key_end` is not smaller
-  than the key it wants.
+* **Leaf entry**: `(key, row, 0)` — the key sign-extended to 64 bits, the
+  row's position in the table, and the word an internal entry spends on its
+  child.
+* **Internal entry**: `(key_end, row_end, child_page)` — the largest
+  `(key, row)` anywhere beneath a child, and that child. Entries are strictly
+  increasing by that pair, and a search takes the first entry whose end is not
+  smaller than the pair it wants.
 
-The ordering key is the first field of an entry in both node kinds, so one
-comparison and one ordering check serve the whole tree.
+The order the tree keeps is on the pair, not on the key. A key may name more
+rows than one leaf holds, so equal keys span several children, and a separator
+carrying only a key could not say which of them an entry belongs to: every
+descent would send them all to the first child, and the tree would stop being
+sorted. Both halves of the order therefore travel in every entry, and one
+lexicographic comparison serves the whole tree.
+
+The cost is fan-out: 167 rather than the 251 a 16-byte entry would allow. Four
+levels still reach 777 million rows, past what this format addresses, so the
+height a lookup pays is unchanged.
 
 Keys are ordered as signed 64-bit integers. An `INT32` column is sign-extended
 on the way in, so one comparison serves both types and a negative key sorts
@@ -121,7 +129,7 @@ are recomputed from the children and compared rather than believed.
 Every writer adjusts the number where it makes the change: an insert adds one
 to each node on the path it copied, a delete takes one away, and a split gives
 each half what it holds. Recomputing it from the children at every seal was
-tried first and measured: it reads one header per child, up to 251 random
+tried first and measured: it reads one header per child, up to 167 random
 pages on a node that is otherwise four page copies, and it was most of what
 an indexed insert cost. What makes the cheaper version safe is that
 `cyboudb check` recomputes every size from the children and compares - a

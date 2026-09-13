@@ -34,7 +34,8 @@ extern void *db_index_node_addr(void *ctx, uint64_t page);
 #define IDX_LEVEL   32
 #define IDX_COUNT   36
 #define IDX_ENTRIES 64
-#define IDX_MAX_ENTRIES 251u
+#define IDX_MAX_ENTRIES 167u
+#define IDX_ENTRY 24
 
 typedef struct { int64_t key; uint64_t row; } entry_t;
 
@@ -77,14 +78,14 @@ static int visit(void *ctx, uint64_t page, entry_t *out, uint64_t max,
         if (depth > *out_height) *out_height = depth;
         for (uint32_t i = 0; i < count; i++) {
             if (*seen >= max) return 0;
-            out[*seen].key = (int64_t)u64(node, IDX_ENTRIES + i * 16);
-            out[*seen].row = u64(node, IDX_ENTRIES + i * 16 + 8);
+            out[*seen].key = (int64_t)u64(node, IDX_ENTRIES + i * IDX_ENTRY);
+            out[*seen].row = u64(node, IDX_ENTRIES + i * IDX_ENTRY + 8);
             (*seen)++;
         }
         return 1;
     }
     for (uint32_t i = 0; i < count; i++) {
-        uint64_t child = u64(node, IDX_ENTRIES + i * 16 + 8);
+        uint64_t child = u64(node, IDX_ENTRIES + i * IDX_ENTRY + 16);
         if (!visit(ctx, child, out, max, seen, depth + 1, out_height)) return 0;
         node = db_index_node_addr(ctx, page);   /* recursion does not move it */
     }
@@ -111,8 +112,8 @@ static int key_at(void *ctx, uint64_t root, int64_t key, int64_t *out_key,
     if (db_index_search(ctx, root, key, &leaf, &slot) != 0 || !leaf) return 0;
     node = db_index_node_addr(ctx, leaf);
     if (slot >= u32(node, IDX_COUNT)) return 0;  /* past everything it holds */
-    if (out_key) *out_key = (int64_t)u64(node, IDX_ENTRIES + slot * 16);
-    if (out_row) *out_row = u64(node, IDX_ENTRIES + slot * 16 + 8);
+    if (out_key) *out_key = (int64_t)u64(node, IDX_ENTRIES + slot * IDX_ENTRY);
+    if (out_row) *out_row = u64(node, IDX_ENTRIES + slot * IDX_ENTRY + 8);
     return 1;
 }
 
@@ -215,7 +216,7 @@ static int64_t audit(void *ctx, uint64_t page, int level, int64_t *low,
 
     if (level == 0) {
         for (uint32_t i = 0; i < count; i++) {
-            int64_t key = (int64_t)u64(node, IDX_ENTRIES + i * 16);
+            int64_t key = (int64_t)u64(node, IDX_ENTRIES + i * IDX_ENTRY);
             if (i == 0) *low = key;
             else if (key < *high) return -1;
             *high = key;
@@ -223,8 +224,8 @@ static int64_t audit(void *ctx, uint64_t page, int level, int64_t *low,
         return count;
     }
     for (uint32_t i = 0; i < count; i++) {
-        int64_t end = (int64_t)u64(node, IDX_ENTRIES + i * 16);
-        uint64_t child = u64(node, IDX_ENTRIES + i * 16 + 8);
+        int64_t end = (int64_t)u64(node, IDX_ENTRIES + i * IDX_ENTRY);
+        uint64_t child = u64(node, IDX_ENTRIES + i * IDX_ENTRY + 16);
         int64_t sub_low = 0, sub_high = 0;
         int64_t under = audit(ctx, child, level - 1, &sub_low, &sub_high);
         if (under < 0) return -1;
@@ -298,6 +299,77 @@ static void insert_case(void *ctx, const char *what, uint64_t count,
     db_rollback(ctx);
 }
 
+/* --- walking in key order ---------------------------------------------- */
+
+extern int db_index_iter_open(void *ctx, uint64_t root, int64_t key, void *iter);
+extern int db_index_iter_next(void *ctx, void *iter, int64_t *key, uint64_t *row);
+
+#define ITER_BYTES 144
+
+/* Every entry from a key onwards, which is what a range scan reads and what a
+   non-unique equality needs to continue past a leaf. */
+static void iter_case(void *ctx, const char *what, uint64_t count,
+                      uint64_t duplicates) {
+    entry_t *entries = malloc(sizeof(entry_t) * (size_t)count);
+    unsigned char iter[ITER_BYTES];
+    uint64_t root = 0, seen = 0;
+    int64_t key = 0;
+    uint64_t row = 0;
+    int ok = 1;
+    char label[128];
+
+    for (uint64_t i = 0; i < count; i++) {
+        entries[i].key = (int64_t)(i / duplicates) - (int64_t)(count / 2);
+        entries[i].row = i;
+    }
+    check("a tree to walk", db_index_build(ctx, 11, entries, count, &root) == 0);
+
+    /* From below everything: the walk must produce the whole tree, in order. */
+    if (!db_index_iter_open(ctx, root, entries[0].key - 1, iter)) ok = 0;
+    while (ok && db_index_iter_next(ctx, iter, &key, &row)) {
+        if (seen >= count) { ok = 0; break; }
+        if (key != entries[seen].key || row != entries[seen].row) ok = 0;
+        seen++;
+    }
+    snprintf(label, sizeof label, "%s: walks every entry in order", what);
+    check(label, ok && seen == count);
+
+    /* From a key in the middle: everything at or after it, and nothing before. */
+    {
+        uint64_t start = count / 3;
+        int64_t from = entries[start].key;
+        while (start > 0 && entries[start - 1].key == from) start--;
+        seen = 0;
+        ok = db_index_iter_open(ctx, root, from, iter) ? 1 : 0;
+        while (ok && db_index_iter_next(ctx, iter, &key, &row)) {
+            if (start + seen >= count) { ok = 0; break; }
+            if (key != entries[start + seen].key ||
+                row != entries[start + seen].row) ok = 0;
+            seen++;
+        }
+        snprintf(label, sizeof label, "%s: and from a key in the middle", what);
+        check(label, ok && start + seen == count);
+    }
+
+    /* Past the last key: nothing at all. */
+    snprintf(label, sizeof label, "%s: past the end it opens on nothing", what);
+    check(label, db_index_iter_open(ctx, root,
+                                    entries[count - 1].key + 1, iter) == 0);
+
+    free(entries);
+    db_rollback(ctx);
+}
+
+static void iter_suite(void *ctx) {
+    iter_case(ctx, "one leaf", 200, 1);
+    iter_case(ctx, "two leaves", 400, 1);
+    iter_case(ctx, "three levels", 27890, 1);
+    /* Equal keys spanning leaves is the case a search alone cannot continue:
+       a descent knows the key and not the row, so it would land in a leaf
+       whose matching entries were already read. */
+    iter_case(ctx, "keys repeated across leaves", 4000, 500);
+}
+
 static void insert_suite(void *ctx) {
     uint64_t root = 0, next = 0;
 
@@ -318,26 +390,26 @@ static void insert_suite(void *ctx) {
     insert_case(ctx, "scattered", 3000, 1009, 1);
     insert_case(ctx, "one full leaf plus one", IDX_MAX_ENTRIES + 1, 1, 1);
     /* Inserting into a tree that is already three levels deep. Building it
-       costs one page per 251 entries where inserting costs the height per
+       costs one page per 167 entries where inserting costs the height per
        entry, so this reaches the depth without paying for it. */
     {
-        entry_t *entries = malloc(sizeof(entry_t) * 63002);
+        entry_t *entries = malloc(sizeof(entry_t) * 27890);
         uint64_t built = 0;
         int ok = 1;
-        for (uint64_t i = 0; i < 63002; i++) {
-            entries[i].key = (int64_t)(i * 4) - 63002;
+        for (uint64_t i = 0; i < 27890; i++) {
+            entries[i].key = (int64_t)(i * 4) - 27890;
             entries[i].row = i;
         }
         check("a three-level tree to insert into",
-              db_index_build(ctx, 11, entries, 63002, &built) == 0 &&
+              db_index_build(ctx, 11, entries, 27890, &built) == 0 &&
               (int)u32(db_index_node_addr(ctx, built), IDX_LEVEL) == 2);
         for (uint64_t i = 0; i < 300 && ok; i++) {
             if (db_index_insert(ctx, 11, built, (int64_t)(i * 4) - 63000,
-                                63002 + i, &next) != 0) ok = 0;
+                                27890 + i, &next) != 0) ok = 0;
             built = next;
         }
         check("300 inserts into it", ok);
-        check("it still holds together", tree_ok(ctx, built, 63302));
+        check("it still holds together", tree_ok(ctx, built, 28190));
         check("its root did not move level",
               (int)u32(db_index_node_addr(ctx, built), IDX_LEVEL) == 2);
         ok = 1;
@@ -345,7 +417,7 @@ static void insert_suite(void *ctx) {
             int64_t key = (int64_t)(i * 4) - 63000, found = 0;
             uint64_t row = 0;
             if (!key_at(ctx, built, key, &found, &row)) ok = 0;
-            else if (found != key || row != 63002 + i) ok = 0;
+            else if (found != key || row != 27890 + i) ok = 0;
         }
         check("and every inserted key is found in it", ok);
         free(entries);
@@ -471,31 +543,31 @@ static void delete_suite(void *ctx) {
     delete_case(ctx, "back to front", 3000, 2999);
     delete_case(ctx, "scattered", 3000, 1009);
 
-    /* A root that has to lose a level. A bulk build of 63002 entries leaves
-       252 leaves, so the level above holds 251 of them in its first node and
-       one in its second, and the root names just those two. Removing the one
-       entry under the second collapses the root into the first - one delete
-       rather than sixty thousand. */
+    /* A root that has to lose a level. A bulk build of 167*167+1 entries
+       leaves 168 leaves, so the level above holds 167 of them in its first
+       node and one in its second, and the root names just those two. Removing
+       the one entry under the second collapses the root into the first - one
+       delete rather than twenty-seven thousand. */
     {
-        entry_t *deep = malloc(sizeof(entry_t) * 63002);
+        entry_t *deep = malloc(sizeof(entry_t) * 27890);
         uint64_t deep_root = 0;
-        for (uint64_t i = 0; i < 63002; i++) {
-            deep[i].key = (int64_t)i - 31501;
+        for (uint64_t i = 0; i < 27890; i++) {
+            deep[i].key = (int64_t)i - 13945;
             deep[i].row = i;
         }
         check("a three-level tree to shrink",
-              db_index_build(ctx, 11, deep, 63002, &deep_root) == 0 &&
+              db_index_build(ctx, 11, deep, 27890, &deep_root) == 0 &&
               (int)u32(db_index_node_addr(ctx, deep_root), IDX_LEVEL) == 2);
         check("its last entry removed",
-              db_index_delete(ctx, 11, deep_root, deep[63001].key,
-                              deep[63001].row, &next) == 0);
+              db_index_delete(ctx, 11, deep_root, deep[27889].key,
+                              deep[27889].row, &next) == 0);
         deep_root = next;
         check("the root came down a level",
               (int)u32(db_index_node_addr(ctx, deep_root), IDX_LEVEL) == 1);
         check("and what is left is still a tree",
-              tree_ok(ctx, deep_root, 63001));
+              tree_ok(ctx, deep_root, 27889));
         ok = 1;
-        for (uint64_t i = 0; i < 63001 && ok; i += 137) {
+        for (uint64_t i = 0; i < 27889 && ok; i += 137) {
             int64_t found = 0;
             uint64_t row = 0;
             if (!key_at(ctx, deep_root, deep[i].key, &found, &row)) ok = 0;
@@ -503,7 +575,7 @@ static void delete_suite(void *ctx) {
         }
         check("every surviving key is still found", ok);
         check("and the one that went is not",
-              !key_at(ctx, deep_root, deep[63001].key, NULL, NULL));
+              !key_at(ctx, deep_root, deep[27889].key, NULL, NULL));
         free(deep);
         db_rollback(ctx);
     }
@@ -713,6 +785,7 @@ int main(int argc, char **argv) {
     build_case(ctx, 4000, 2);
     build_case(ctx, IDX_MAX_ENTRIES * IDX_MAX_ENTRIES + 1, 3);
 
+    iter_suite(ctx);
     insert_suite(ctx);
     delete_suite(ctx);
 

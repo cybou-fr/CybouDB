@@ -17,6 +17,7 @@ extern db_bitmap_is_fresh
 global db_index_build, db_index_insert, db_index_insert_unique
 global db_index_delete
 global db_index_search, db_index_validate, index_page_valid
+global db_index_iter_open, db_index_iter_next
 global db_index_node_addr, db_index_of_table, db_index_retire_tree
 
 section .data
@@ -147,7 +148,15 @@ index_new_node:
 %define BS_LAST     208                 ; the largest key under it so far
 %define BS_MADE     272                 ; nodes created at this level
 %define BS_SUB      336                 ; entries under the open node
-%define BS_SIZE     400
+%define BS_LAST_ROW 400                 ; the row that key ends at
+%define BS_SIZE     464
+
+; A slot number becomes a byte offset into IDX_ENTRIES. Both node kinds use
+; the same stride, so this is the only place that knows what it is.
+%macro IDX_SLOT 1
+    lea %1, [%1 + %1 * 2]
+    shl %1, 3
+%endmacro
 %define IDX_MAX_LEVELS 8
 
 ; index_close(ARG1 = state, ARG2 = level): write the open node's count and seal
@@ -171,16 +180,20 @@ index_close:
     FRAME_END
     ret
 
-; index_push(ARG1 = state, ARG2 = level, ARG3 = key, ARG4 = payload)
-;   -> RAX: result code.
+; index_push(ARG1 = state, ARG2 = level, ARG3 = key, ARG4 = row, ARG5 = payload)
+;   -> RAX: result code. The pair (key, row) is what the entry is ordered by
+;   at every level; the payload is a child below the leaves and zero at them.
 ;
 ; Recursive, and a full node handed to the level above is the only way it
 ; recurses, so its depth is the height of the tree.
 ;
-;  Local slots: [rbp-8]=state, [rbp-16]=level, [rbp-24]=key, [rbp-32]=payload,
-;               [rbp-40]=a node being handed up, [rbp-48]=its largest key
+;  Local slots: [rbp-8]=state, [rbp-16]=level, [rbp-24]=key, [rbp-32]=row,
+;               [rbp-40]=a node being handed up, [rbp-48]=its largest key,
+;               [rbp-56]=payload, [rbp-64]=the row that key ends at
 index_push:
-    FRAME_BEGIN 64, 0
+    FRAME_BEGIN 80, 1
+    mov rax, IN_ARG5
+    mov [rbp - 56], rax
     mov [rbp - 8], ARG1
     mov [rbp - 16], ARG2
     mov [rbp - 24], ARG3
@@ -203,12 +216,16 @@ index_push:
     mov [rbp - 40], rcx
     mov rcx, [r10 + BS_LAST + rax * 8]
     mov [rbp - 48], rcx
+    mov rcx, [r10 + BS_LAST_ROW + rax * 8]
+    mov [rbp - 64], rcx
     mov qword [r10 + BS_OPEN + rax * 8], 0
+    mov rax, [rbp - 40]
+    PASS_ARG5 rax
     mov ARG1, r10
     mov ARG2, [rbp - 16]
     inc ARG2
     mov ARG3, [rbp - 48]
-    mov ARG4, [rbp - 40]
+    mov ARG4, [rbp - 64]
     call index_push
     test eax, eax
     jnz .done
@@ -234,14 +251,20 @@ index_push:
     mov r11, [r10 + BS_ADDR + rax * 8]
     mov rcx, [r10 + BS_COUNT + rax * 8]
     mov rdx, rcx
-    shl rdx, 4
+    IDX_SLOT rdx
     mov r8, [rbp - 24]
-    mov [r11 + IDX_ENTRIES + rdx], r8            ; the key, in both node kinds
+    mov [r11 + IDX_ENTRIES + rdx + IDX_KEY], r8  ; the order, in both kinds
     mov r9, [rbp - 32]
-    mov [r11 + IDX_ENTRIES + rdx + 8], r9        ; the row, or the child
+    mov [r11 + IDX_ENTRIES + rdx + IDX_ROW], r9
+    mov rcx, [rbp - 56]
+    mov [r11 + IDX_ENTRIES + rdx + IDX_CHILD], rcx   ; zero at a leaf
+    mov r9, rcx
+    mov rcx, [r10 + BS_COUNT + rax * 8]
     inc rcx
     mov [r10 + BS_COUNT + rax * 8], rcx
     mov [r10 + BS_LAST + rax * 8], r8
+    mov rcx, [rbp - 32]
+    mov [r10 + BS_LAST_ROW + rax * 8], rcx
     ; What this entry adds: one row at a leaf, and at a level above, whatever
     ; the child it names already counted.
     mov rdx, 1
@@ -274,7 +297,7 @@ index_push:
 ;               [rbp-32]=cursor, [rbp-40]=level; the builder state sits below.
 ; -----------------------------------------------------------------------------
 db_index_build:
-    FRAME_BEGIN 64 + BS_SIZE, 0
+    FRAME_BEGIN 64 + BS_SIZE, 1
     mov [rbp - 8], ARG3
     mov [rbp - 16], ARG4
     mov rax, IN_ARG5
@@ -292,6 +315,7 @@ db_index_build:
     mov qword [r10 + BS_LAST + rcx * 8], 0
     mov qword [r10 + BS_SUB + rcx * 8], 0
     mov qword [r10 + BS_MADE + rcx * 8], 0
+    mov qword [r10 + BS_LAST_ROW + rcx * 8], 0
     inc ecx
     cmp ecx, IDX_MAX_LEVELS
     jb .clear
@@ -305,8 +329,10 @@ db_index_build:
     jae .finish
     shl rax, 4
     add rax, [rbp - 8]
-    mov ARG3, [rax + IDX_KEY]
-    mov ARG4, [rax + IDX_ROW]
+    mov ARG3, [rax + 0]
+    mov ARG4, [rax + 8]
+    xor rax, rax
+    PASS_ARG5 rax                       ; a leaf entry names no child
     lea ARG1, [rbp - 64 - BS_SIZE]
     xor ARG2, ARG2                      ; level 0, the leaves
     call index_push
@@ -333,9 +359,11 @@ db_index_build:
     mov rax, [rbp - 40]
     mov rcx, [r10 + BS_OPEN + rax * 8]
     mov rdx, [r10 + BS_LAST + rax * 8]
+    mov r8, [r10 + BS_LAST_ROW + rax * 8]
     mov qword [r10 + BS_OPEN + rax * 8], 0
+    PASS_ARG5 rcx
     mov ARG3, rdx
-    mov ARG4, rcx
+    mov ARG4, r8
     lea ARG1, [rbp - 64 - BS_SIZE]
     mov ARG2, [rbp - 40]
     inc ARG2
@@ -382,16 +410,20 @@ db_index_build:
 %define II_KEY      16
 %define II_ROW      24
 %define II_UNIQUE   32
-%define II_SIZE     40
+%define II_CHILD    40                  ; the payload to place: zero at a leaf
+%define II_SIZE     48
 
-; What a level hands back to the one above it.
+; What a level hands back to the one above it. The end of a node is a pair,
+; because that is what the level above orders its children by.
 %define IO_NODE     0                   ; the copy that replaces the node
 %define IO_SIB      8                   ; its new right half, or zero
 %define IO_SIB_END  16                  ; the largest key in that half
-%define IO_END      24                  ; the largest key in the copy
-%define IO_SIZE     32
+%define IO_SIB_ROW  24                  ; and the row that key ends at
+%define IO_END      32                  ; the largest key in the copy
+%define IO_END_ROW  40                  ; and the row that key ends at
+%define IO_SIZE     48
 
-%define IDX_SPLIT_LEFT 126              ; (IDX_MAX_ENTRIES + 1) / 2
+%define IDX_SPLIT_LEFT 84               ; (IDX_MAX_ENTRIES + 1) / 2
 
 ; index_restamp(ARG1 = node, ARG2 = ctx, ARG3 = new page id)
 ; A copied page still carries the id and generation of the page it came from.
@@ -411,29 +443,38 @@ index_entry_open:
     cmp rax, ARG3
     jbe .done
     mov r10, rax
-    shl r10, 4
-    mov r11, [ARG1 + IDX_ENTRIES + r10 - 16]
+    IDX_SLOT r10
+    mov r11, [ARG1 + IDX_ENTRIES + r10 - IDX_ENTRY_SIZE]
     mov [ARG1 + IDX_ENTRIES + r10], r11
-    mov r11, [ARG1 + IDX_ENTRIES + r10 - 8]
+    mov r11, [ARG1 + IDX_ENTRIES + r10 - IDX_ENTRY_SIZE + 8]
     mov [ARG1 + IDX_ENTRIES + r10 + 8], r11
+    mov r11, [ARG1 + IDX_ENTRIES + r10 - IDX_ENTRY_SIZE + 16]
+    mov [ARG1 + IDX_ENTRIES + r10 + 16], r11
     dec rax
     jmp .shift
 .done:
     ret
 
-; index_entry_put(ARG1 = node, ARG2 = slot, ARG3 = key, ARG4 = payload)
+; index_entry_put(ARG1 = node, ARG2 = slot, ARG3 = key, ARG4 = row,
+;                 ARG5 = payload)
 index_entry_put:
+    FRAME_BEGIN 0, 0
     mov rax, ARG2
-    shl rax, 4
-    mov [ARG1 + IDX_ENTRIES + rax], ARG3
-    mov [ARG1 + IDX_ENTRIES + rax + 8], ARG4
+    IDX_SLOT rax
+    mov [ARG1 + IDX_ENTRIES + rax + IDX_KEY], ARG3
+    mov [ARG1 + IDX_ENTRIES + rax + IDX_ROW], ARG4
+    mov r10, IN_ARG5
+    mov [ARG1 + IDX_ENTRIES + rax + IDX_CHILD], r10
+    FRAME_END
     ret
 
-; index_node_end(ARG1 = node) -> RAX: the largest key it holds.
+; index_node_end(ARG1 = node) -> RAX: the largest key it holds, RDX: the row
+; that key ends at. The pair is what the level above orders it by.
 index_node_end:
     mov eax, [ARG1 + IDX_COUNT]
     dec rax
-    shl rax, 4
+    IDX_SLOT rax
+    mov rdx, [ARG1 + IDX_ENTRIES + rax + 8]
     mov rax, [ARG1 + IDX_ENTRIES + rax]
     ret
 
@@ -444,10 +485,11 @@ index_node_end:
 ;  Local slots: [rbp-8]=state, [rbp-16]=node id, [rbp-24]=out, [rbp-32]=copy id,
 ;               [rbp-40]=copy address, [rbp-48]=count, [rbp-56]=slot,
 ;               [rbp-64]=sibling id, [rbp-72]=sibling address,
-;               [rbp-80]=child out block (IO_SIZE), [rbp-112]=moved entries
+;               [rbp-120]..[rbp-152]=the split's own counts,
+;               [rbp-224]=child out block (IO_SIZE)
 ; -----------------------------------------------------------------------------
 index_insert_node:
-    FRAME_BEGIN 160, 2
+    FRAME_BEGIN 240, 2
     mov [rbp - 8], ARG1
     mov [rbp - 16], ARG2
     mov [rbp - 24], ARG3
@@ -487,14 +529,14 @@ index_insert_node:
     cmp rcx, [rbp - 48]
     jae .leaf_slot_ready
     mov rax, rcx
-    shl rax, 4
-    mov rdx, [r10 + IDX_ENTRIES + rax]
+    IDX_SLOT rax
+    mov rdx, [r10 + IDX_ENTRIES + rax + IDX_KEY]
     cmp rdx, r8
     jg .leaf_slot_ready
     jl .leaf_slot_next
     cmp qword [r11 + II_UNIQUE], 0
     jne .duplicate
-    mov rdx, [r10 + IDX_ENTRIES + rax + 8]
+    mov rdx, [r10 + IDX_ENTRIES + rax + IDX_ROW]
     cmp rdx, r9
     jg .leaf_slot_ready
 .leaf_slot_next:
@@ -505,42 +547,52 @@ index_insert_node:
     jmp .place
 
 .internal:
-    ; --- an internal node: the first child that could hold the key ---------
+    ; --- an internal node: the first child that could hold the entry -------
+    ; By the pair, because a key that names many rows spans several children
+    ; and the key alone would send every one of them to the first.
     xor ecx, ecx
     mov r11, [rbp - 8]
     mov r8, [r11 + II_KEY]
+    mov r9, [r11 + II_ROW]
 .child_slot:
     inc rcx
     cmp rcx, [rbp - 48]
     jae .child_ready
     mov rax, rcx
     dec rax
-    shl rax, 4
-    mov rdx, [r10 + IDX_ENTRIES + rax]
+    IDX_SLOT rax
+    mov rdx, [r10 + IDX_ENTRIES + rax + IDX_KEY_END]
     cmp rdx, r8
-    jl .child_slot
+    jl .child_slot                      ; this child ends below the key
+    jg .child_ready
+    mov rdx, [r10 + IDX_ENTRIES + rax + IDX_ROW_END]
+    cmp rdx, r9
+    jl .child_slot                      ; same key, and it ends below the row
 .child_ready:
     dec rcx
     mov [rbp - 56], rcx
     mov rax, rcx
-    shl rax, 4
+    IDX_SLOT rax
     mov r10, [rbp - 40]
-    mov rax, [r10 + IDX_ENTRIES + rax + 8]
+    mov rax, [r10 + IDX_ENTRIES + rax + IDX_CHILD]
     mov ARG1, [rbp - 8]
     mov ARG2, rax
-    lea ARG3, [rbp - 112]
+    lea ARG3, [rbp - 224]
     call index_insert_node
     test eax, eax
     jnz .done
-    ; The child was replaced by its copy, and its largest key may have grown.
+    ; The child was replaced by its copy, and the pair it ends at may have
+    ; grown.
     mov r10, [rbp - 40]
     mov rax, [rbp - 56]
-    shl rax, 4
-    mov rdx, [rbp - 112 + IO_END]
-    mov [r10 + IDX_ENTRIES + rax], rdx
-    mov rdx, [rbp - 112 + IO_NODE]
-    mov [r10 + IDX_ENTRIES + rax + 8], rdx
-    cmp qword [rbp - 112 + IO_SIB], 0
+    IDX_SLOT rax
+    mov rdx, [rbp - 224 + IO_END]
+    mov [r10 + IDX_ENTRIES + rax + IDX_KEY_END], rdx
+    mov rdx, [rbp - 224 + IO_END_ROW]
+    mov [r10 + IDX_ENTRIES + rax + IDX_ROW_END], rdx
+    mov rdx, [rbp - 224 + IO_NODE]
+    mov [r10 + IDX_ENTRIES + rax + IDX_CHILD], rdx
+    cmp qword [rbp - 224 + IO_SIB], 0
     jne .child_split
     ; The child did not split, so this node gains no entry - but the row
     ; went in below it all the same.
@@ -550,10 +602,12 @@ index_insert_node:
     ; The child split, so this node gains the entry naming its right half.
     inc qword [rbp - 56]
     mov r11, [rbp - 8]
-    mov rax, [rbp - 112 + IO_SIB_END]
-    mov [r11 + II_KEY], rax             ; the key and payload to place
-    mov rax, [rbp - 112 + IO_SIB]
+    mov rax, [rbp - 224 + IO_SIB_END]
+    mov [r11 + II_KEY], rax             ; the pair and payload to place
+    mov rax, [rbp - 224 + IO_SIB_ROW]
     mov [r11 + II_ROW], rax
+    mov rax, [rbp - 224 + IO_SIB]
+    mov [r11 + II_CHILD], rax
 
 .place:
     ; --- place one entry, splitting the node when it does not fit ----------
@@ -564,9 +618,11 @@ index_insert_node:
     mov ARG2, [rbp - 48]
     mov ARG3, [rbp - 56]
     call index_entry_open
+    mov r11, [rbp - 8]
+    mov rax, [r11 + II_CHILD]
+    PASS_ARG5 rax
     mov ARG1, [rbp - 40]
     mov ARG2, [rbp - 56]
-    mov r11, [rbp - 8]
     mov ARG3, [r11 + II_KEY]
     mov ARG4, [r11 + II_ROW]
     call index_entry_put
@@ -611,12 +667,16 @@ index_insert_node:
     cmp rcx, [rbp - 48]
     jae .split_counts
     mov rax, rcx
-    shl rax, 4
+    IDX_SLOT rax
     mov r11, [r8 + IDX_ENTRIES + rax]
     mov [rbp - 120], r11
     mov r11, [r8 + IDX_ENTRIES + rax + 8]
+    mov [rbp - 152], r11
+    mov r11, [r8 + IDX_ENTRIES + rax + 16]
     mov rax, rdx
-    shl rax, 4
+    IDX_SLOT rax
+    mov [r9 + IDX_ENTRIES + rax + 16], r11
+    mov r11, [rbp - 152]
     mov [r9 + IDX_ENTRIES + rax + 8], r11
     mov r11, [rbp - 120]
     mov [r9 + IDX_ENTRIES + rax], r11
@@ -638,7 +698,7 @@ index_insert_node:
     cmp rcx, rdx
     jae .split_sum_done
     mov r11, rcx
-    shl r11, 4
+    IDX_SLOT r11
     mov r11, [r9 + IDX_ENTRIES + r11 + IDX_CHILD]
     shl r11, CybouDB_PAGE_SHIFT
     mov r8, [rbp - 8]
@@ -668,9 +728,11 @@ index_insert_node:
     mov ARG2, [rbp - 136]
     mov ARG3, [rbp - 56]
     call index_entry_open
+    mov r11, [rbp - 8]
+    mov rax, [r11 + II_CHILD]
+    PASS_ARG5 rax
     mov ARG1, [rbp - 40]
     mov ARG2, [rbp - 56]
-    mov r11, [rbp - 8]
     mov ARG3, [r11 + II_KEY]
     mov ARG4, [r11 + II_ROW]
     call index_entry_put
@@ -696,9 +758,11 @@ index_insert_node:
     mov ARG2, [rbp - 128]
     mov ARG3, rax
     call index_entry_open
+    mov r11, [rbp - 8]
+    mov rax, [r11 + II_CHILD]
+    PASS_ARG5 rax
     mov ARG1, [rbp - 72]
     mov ARG2, [rbp - 56]
-    mov r11, [rbp - 8]
     mov ARG3, [r11 + II_KEY]
     mov ARG4, [r11 + II_ROW]
     call index_entry_put
@@ -728,6 +792,7 @@ index_insert_node:
     call index_node_end
     mov r10, [rbp - 24]
     mov [r10 + IO_SIB_END], rax
+    mov [r10 + IO_SIB_ROW], rdx
     mov rax, [rbp - 64]
     mov r10, [rbp - 24]
     mov [r10 + IO_SIB], rax
@@ -743,6 +808,7 @@ index_insert_node:
     call index_node_end
     mov r10, [rbp - 24]
     mov [r10 + IO_END], rax
+    mov [r10 + IO_END_ROW], rdx
     mov rax, [rbp - 32]
     mov [r10 + IO_NODE], rax
     cmp qword [rbp - 64], 0
@@ -762,7 +828,7 @@ index_insert_node:
 ; a split leaves the vacated half of a node naming pages it no longer owns.
 index_tail_clear:
     mov eax, [ARG1 + IDX_COUNT]
-    shl rax, 4
+    IDX_SLOT rax
     lea r10, [ARG1 + IDX_ENTRIES + rax]
     lea r11, [ARG1 + IDX_CRC]
 .loop:
@@ -783,8 +849,9 @@ index_tail_clear:
 ;  in registers on both platforms, and the flag is a property of the index
 ;  rather than of the row being inserted.
 ;
-;  Local slots: [rbp-8]=out_root, [rbp-16]=root, [rbp-64]=state (II_SIZE),
-;               [rbp-96]=new root id, [rbp-128]=out block, [rbp-144]=level
+;  Local slots: [rbp-8]=out_root, [rbp-16]=root, [rbp-80]=state (II_SIZE),
+;               [rbp-88]=new root id, [rbp-96]=level, [rbp-104]=the new root,
+;               [rbp-160]=out block (IO_SIZE)
 ; -----------------------------------------------------------------------------
 db_index_insert_unique:
     mov r11d, 1
@@ -793,11 +860,12 @@ db_index_insert:
     xor r11d, r11d
 index_insert_common:
     FRAME_BEGIN 192, 2
-    lea r10, [rbp - 64]                 ; the state, built once for the descent
+    lea r10, [rbp - 80]                 ; the state, built once for the descent
     mov [r10 + II_CTX], ARG1
     mov [r10 + II_OWNER], ARG2
     mov [r10 + II_KEY], ARG4
     mov [r10 + II_UNIQUE], r11
+    mov qword [r10 + II_CHILD], 0       ; a row is being placed, not a child
     mov [rbp - 16], ARG3
     mov rax, IN_ARG5
     mov [r10 + II_ROW], rax
@@ -808,47 +876,49 @@ index_insert_common:
     jne .descend
 
     ; An empty index: the first entry is a leaf, and that leaf is the root.
-    lea r10, [rbp - 64]
+    lea r10, [rbp - 80]
     mov ARG1, [r10 + II_CTX]
     mov ARG2, [r10 + II_OWNER]
     xor ARG3, ARG3
-    lea ARG4, [rbp - 96]
+    lea ARG4, [rbp - 88]
     call index_new_node
     test eax, eax
     jnz .done
+    xor rax, rax
+    PASS_ARG5 rax
     mov ARG1, rdx
     xor ARG2, ARG2
-    lea r10, [rbp - 64]
+    lea r10, [rbp - 80]
     mov ARG3, [r10 + II_KEY]
     mov ARG4, [r10 + II_ROW]
     call index_entry_put
-    mov r10, [rbp - 96]
-    lea r11, [rbp - 64]
+    mov r10, [rbp - 88]
+    lea r11, [rbp - 80]
     mov ARG1, [r11 + II_CTX]
     mov ARG2, r10
     call index_node_addr
     mov dword [rax + IDX_COUNT], 1
     mov qword [rax + IDX_SUBTREE], 1
     mov ARG1, rax
-    lea r10, [rbp - 64]
+    lea r10, [rbp - 80]
     mov ARG2, [r10 + II_CTX]
     call index_seal
-    mov rax, [rbp - 96]
+    mov rax, [rbp - 88]
     mov r10, [rbp - 8]
     mov [r10], rax
     xor eax, eax
     jmp .done
 
 .descend:
-    lea ARG1, [rbp - 64]
+    lea ARG1, [rbp - 80]
     mov ARG2, [rbp - 16]
-    lea ARG3, [rbp - 128]
+    lea ARG3, [rbp - 160]
     call index_insert_node
     test eax, eax
     jnz .done
-    cmp qword [rbp - 128 + IO_SIB], 0
+    cmp qword [rbp - 160 + IO_SIB], 0
     jne .grow
-    mov rax, [rbp - 128 + IO_NODE]
+    mov rax, [rbp - 160 + IO_NODE]
     mov r10, [rbp - 8]
     mov [r10], rax
     xor eax, eax
@@ -856,50 +926,54 @@ index_insert_common:
 
 .grow:
     ; The root split, so the tree gains a level: one node naming both halves.
-    lea r10, [rbp - 64]
+    lea r10, [rbp - 80]
     mov ARG1, [r10 + II_CTX]
-    mov ARG2, [rbp - 128 + IO_NODE]
+    mov ARG2, [rbp - 160 + IO_NODE]
     call index_node_addr
     mov ecx, [rax + IDX_LEVEL]
     inc rcx
-    mov [rbp - 144], rcx
-    lea r10, [rbp - 64]
+    mov [rbp - 96], rcx
+    lea r10, [rbp - 80]
     mov ARG1, [r10 + II_CTX]
     mov ARG2, [r10 + II_OWNER]
-    mov ARG3, [rbp - 144]
-    lea ARG4, [rbp - 96]
+    mov ARG3, [rbp - 96]
+    lea ARG4, [rbp - 88]
     call index_new_node
     test eax, eax
     jnz .done
-    mov [rbp - 152], rdx
+    mov [rbp - 104], rdx
+    mov rax, [rbp - 160 + IO_NODE]
+    PASS_ARG5 rax
     mov ARG1, rdx
     xor ARG2, ARG2
-    mov ARG3, [rbp - 128 + IO_END]
-    mov ARG4, [rbp - 128 + IO_NODE]
+    mov ARG3, [rbp - 160 + IO_END]
+    mov ARG4, [rbp - 160 + IO_END_ROW]
     call index_entry_put
-    mov ARG1, [rbp - 152]
+    mov rax, [rbp - 160 + IO_SIB]
+    PASS_ARG5 rax
+    mov ARG1, [rbp - 104]
     mov ARG2, 1
-    mov ARG3, [rbp - 128 + IO_SIB_END]
-    mov ARG4, [rbp - 128 + IO_SIB]
+    mov ARG3, [rbp - 160 + IO_SIB_END]
+    mov ARG4, [rbp - 160 + IO_SIB_ROW]
     call index_entry_put
-    mov r10, [rbp - 152]
+    mov r10, [rbp - 104]
     mov dword [r10 + IDX_COUNT], 2
-    lea r11, [rbp - 64]
+    lea r11, [rbp - 80]
     mov r11, [r11 + II_CTX]
-    mov rax, [rbp - 128 + IO_NODE]
+    mov rax, [rbp - 160 + IO_NODE]
     shl rax, CybouDB_PAGE_SHIFT
     add rax, [r11 + DB_BASE]
     mov rcx, [rax + IDX_SUBTREE]
-    mov rax, [rbp - 128 + IO_SIB]
+    mov rax, [rbp - 160 + IO_SIB]
     shl rax, CybouDB_PAGE_SHIFT
     add rax, [r11 + DB_BASE]
     add rcx, [rax + IDX_SUBTREE]
     mov [r10 + IDX_SUBTREE], rcx
     mov ARG1, r10
-    lea r10, [rbp - 64]
+    lea r10, [rbp - 80]
     mov ARG2, [r10 + II_CTX]
     call index_seal
-    mov rax, [rbp - 96]
+    mov rax, [rbp - 88]
     mov r10, [rbp - 8]
     mov [r10], rax
     xor eax, eax
@@ -942,11 +1016,13 @@ index_entry_close:
     cmp rax, ARG2
     jae .done
     mov r10, rax
-    shl r10, 4
+    IDX_SLOT r10
     mov r11, [ARG1 + IDX_ENTRIES + r10]
-    mov [ARG1 + IDX_ENTRIES + r10 - 16], r11
+    mov [ARG1 + IDX_ENTRIES + r10 - IDX_ENTRY_SIZE], r11
     mov r11, [ARG1 + IDX_ENTRIES + r10 + 8]
-    mov [ARG1 + IDX_ENTRIES + r10 - 8], r11
+    mov [ARG1 + IDX_ENTRIES + r10 - IDX_ENTRY_SIZE + 8], r11
+    mov r11, [ARG1 + IDX_ENTRIES + r10 + 16]
+    mov [ARG1 + IDX_ENTRIES + r10 - IDX_ENTRY_SIZE + 16], r11
     jmp .shift
 .done:
     ret
@@ -986,10 +1062,10 @@ index_copy_for_edit:
 ;
 ;  Local slots: [rbp-8]=state, [rbp-16]=node id, [rbp-24]=out, [rbp-32]=address,
 ;               [rbp-40]=count, [rbp-48]=slot, [rbp-56]=copy id,
-;               [rbp-64]=copy address, [rbp-96]=child out block
+;               [rbp-64]=copy address, [rbp-160]=child out block
 ; -----------------------------------------------------------------------------
 index_delete_node:
-    FRAME_BEGIN 128, 2
+    FRAME_BEGIN 192, 2
     mov [rbp - 8], ARG1
     mov [rbp - 16], ARG2
     mov [rbp - 24], ARG3
@@ -1014,12 +1090,12 @@ index_delete_node:
     cmp rcx, [rbp - 40]
     jae .absent
     mov rax, rcx
-    shl rax, 4
-    mov rdx, [r10 + IDX_ENTRIES + rax]
+    IDX_SLOT rax
+    mov rdx, [r10 + IDX_ENTRIES + rax + IDX_KEY]
     cmp rdx, r8
     jg .absent                          ; past where it would have been
     jne .leaf_next
-    mov rdx, [r10 + IDX_ENTRIES + rax + 8]
+    mov rdx, [r10 + IDX_ENTRIES + rax + IDX_ROW]
     cmp rdx, r9
     je .leaf_found
 .leaf_next:
@@ -1053,34 +1129,39 @@ index_delete_node:
     jmp .shrunk
 
 .internal:
-    ; --- the first child that could hold the key ---------------------------
+    ; --- the first child that could hold the entry -------------------------
     xor ecx, ecx
     mov r11, [rbp - 8]
     mov r8, [r11 + II_KEY]
+    mov r9, [r11 + II_ROW]
 .child_slot:
     inc rcx
     cmp rcx, [rbp - 40]
     jae .child_ready
     mov rax, rcx
     dec rax
-    shl rax, 4
-    mov rdx, [r10 + IDX_ENTRIES + rax]
+    IDX_SLOT rax
+    mov rdx, [r10 + IDX_ENTRIES + rax + IDX_KEY_END]
     cmp rdx, r8
+    jl .child_slot
+    jg .child_ready
+    mov rdx, [r10 + IDX_ENTRIES + rax + IDX_ROW_END]
+    cmp rdx, r9
     jl .child_slot
 .child_ready:
     dec rcx
     mov [rbp - 48], rcx
     mov rax, rcx
-    shl rax, 4
+    IDX_SLOT rax
     mov r10, [rbp - 32]
-    mov rax, [r10 + IDX_ENTRIES + rax + 8]
+    mov rax, [r10 + IDX_ENTRIES + rax + IDX_CHILD]
     mov ARG1, [rbp - 8]
     mov ARG2, rax
-    lea ARG3, [rbp - 96]
+    lea ARG3, [rbp - 160]
     call index_delete_node
     test eax, eax
     jnz .done
-    cmp qword [rbp - 96 + IO_NODE], 0
+    cmp qword [rbp - 160 + IO_NODE], 0
     jne .child_kept
 
     ; The child is gone. If it was the only one, so is this node.
@@ -1117,11 +1198,13 @@ index_delete_node:
     jnz .done
     mov [rbp - 64], rdx
     mov rax, [rbp - 48]
-    shl rax, 4
-    mov rcx, [rbp - 96 + IO_END]
-    mov [rdx + IDX_ENTRIES + rax], rcx
-    mov rcx, [rbp - 96 + IO_NODE]
-    mov [rdx + IDX_ENTRIES + rax + 8], rcx
+    IDX_SLOT rax
+    mov rcx, [rbp - 160 + IO_END]
+    mov [rdx + IDX_ENTRIES + rax + IDX_KEY_END], rcx
+    mov rcx, [rbp - 160 + IO_END_ROW]
+    mov [rdx + IDX_ENTRIES + rax + IDX_ROW_END], rcx
+    mov rcx, [rbp - 160 + IO_NODE]
+    mov [rdx + IDX_ENTRIES + rax + IDX_CHILD], rcx
     mov r10, [rbp - 64]
     mov rax, [rbp - 40]
     mov [r10 + IDX_COUNT], eax
@@ -1149,6 +1232,7 @@ index_delete_node:
     call index_node_end
     mov r10, [rbp - 24]
     mov [r10 + IO_END], rax
+    mov [r10 + IO_END_ROW], rdx
     mov rax, [rbp - 56]
     mov [r10 + IO_NODE], rax
     xor eax, eax
@@ -1164,12 +1248,13 @@ index_delete_node:
 ;  db_index_delete(ctx, owner, root, key, row, out_root) -> RAX: result code,
 ;  CybouDB_E_NOTFOUND when the tree holds no such entry.
 ;
-;  Local slots: [rbp-8]=out_root, [rbp-16]=root, [rbp-64]=state,
-;               [rbp-96]=out block, [rbp-104]=root address
+;  Local slots: [rbp-8]=out_root, [rbp-16]=root, [rbp-80]=state (II_SIZE),
+;               [rbp-88]=root address, [rbp-96]=the child that replaces it,
+;               [rbp-160]=out block (IO_SIZE)
 ; -----------------------------------------------------------------------------
 db_index_delete:
-    FRAME_BEGIN 128, 2
-    lea r10, [rbp - 64]
+    FRAME_BEGIN 192, 2
+    lea r10, [rbp - 80]
     mov [r10 + II_CTX], ARG1
     mov [r10 + II_OWNER], ARG2
     mov [r10 + II_KEY], ARG4
@@ -1183,36 +1268,36 @@ db_index_delete:
     cmp qword [rbp - 16], 0
     je .absent
 
-    lea ARG1, [rbp - 64]
+    lea ARG1, [rbp - 80]
     mov ARG2, [rbp - 16]
-    lea ARG3, [rbp - 96]
+    lea ARG3, [rbp - 160]
     call index_delete_node
     test eax, eax
     jnz .done
-    mov rax, [rbp - 96 + IO_NODE]
+    mov rax, [rbp - 160 + IO_NODE]
     test rax, rax
     jz .publish                         ; the tree is empty now
 
     ; A root left naming one child is a level nobody needs.
-    lea r10, [rbp - 64]
+    lea r10, [rbp - 80]
     mov ARG1, [r10 + II_CTX]
     mov ARG2, rax
     call index_node_addr
-    mov [rbp - 104], rax
+    mov [rbp - 88], rax
     cmp dword [rax + IDX_LEVEL], IDX_LEAF
     je .keep_root
     cmp dword [rax + IDX_COUNT], 1
     jne .keep_root
-    mov rcx, [rax + IDX_ENTRIES + 8]    ; its only child becomes the root
-    mov [rbp - 112], rcx
-    lea r10, [rbp - 64]
+    mov rcx, [rax + IDX_ENTRIES + IDX_CHILD]  ; its only child is the root
+    mov [rbp - 96], rcx
+    lea r10, [rbp - 80]
     mov ARG1, [r10 + II_CTX]
-    mov ARG2, [rbp - 96 + IO_NODE]
+    mov ARG2, [rbp - 160 + IO_NODE]
     call index_node_drop
-    mov rax, [rbp - 112]
+    mov rax, [rbp - 96]
     jmp .publish
 .keep_root:
-    mov rax, [rbp - 96 + IO_NODE]
+    mov rax, [rbp - 160 + IO_NODE]
 .publish:
     mov r10, [rbp - 8]
     mov [r10], rax
@@ -1275,14 +1360,14 @@ db_index_search:
     jae .child_ready
     mov rax, rcx
     dec rax
-    shl rax, 4
+    IDX_SLOT rax
     mov rdx, [r8 + IDX_ENTRIES + rax + IDX_KEY_END]
     cmp rdx, [rbp - 24]
     jl .child
 .child_ready:
     dec ecx
     mov rax, rcx
-    shl rax, 4
+    IDX_SLOT rax
     mov rax, [r8 + IDX_ENTRIES + rax + IDX_CHILD]
     mov [rbp - 16], rax
     jmp .descend
@@ -1294,7 +1379,7 @@ db_index_search:
     cmp ecx, r9d
     jae .slot_ready
     mov rax, rcx
-    shl rax, 4
+    IDX_SLOT rax
     mov rdx, [r8 + IDX_ENTRIES + rax + IDX_KEY]
     cmp rdx, [rbp - 24]
     jge .slot_ready
@@ -1404,7 +1489,7 @@ db_index_retire_tree:
     cmp [rbp - 32], rax
     jae .retire
     mov rax, [rbp - 32]
-    shl rax, 4
+    IDX_SLOT rax
     mov r9, [r10 + IDX_ENTRIES + rax + IDX_CHILD]
     mov ARG1, [rbp - 8]
     mov ARG2, r9
@@ -1525,6 +1610,248 @@ index_page_valid:
     ret
 
 ; -----------------------------------------------------------------------------
+;  Walking a tree in key order
+;
+;  A search lands on one entry. Reading the entries after it is a different
+;  problem, and the obvious answer - descend again from the key that follows -
+;  does not work here: entries with equal keys are ordered by the row they
+;  name, and a descent knows only the key. It would land in the first leaf
+;  whose largest key reaches the one wanted, which may be a leaf whose
+;  matching entries were all consumed already.
+;
+;  So the walk keeps the path it came down. Moving to the next leaf is walking
+;  up to the deepest node that still has a child to the right, and descending
+;  its leftmost edge - which is what a sibling pointer would have done, without
+;  a pointer that copy-on-write would have to maintain backwards. The path is
+;  at most four nodes for any table this format can hold.
+;
+;  The iterator is a value the caller owns, like every other cursor here.
+; -----------------------------------------------------------------------------
+
+; db_index_iter_open(ctx, root, key, iter) -> RAX: 1 when positioned, 0 when
+; the tree holds nothing at or after that key.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=node, [rbp-24]=key, [rbp-32]=iter,
+;               [rbp-40]=address
+db_index_iter_open:
+    FRAME_BEGIN 64, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov [rbp - 32], ARG4
+    mov r10, ARG4
+    mov [r10 + ITER_CTX], ARG1
+    mov qword [r10 + ITER_DEPTH], 0
+    cmp qword [rbp - 16], 0
+    je .empty
+
+.descend:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    call index_node_addr
+    mov [rbp - 40], rax
+    mov r10, [rbp - 32]
+    mov rcx, [r10 + ITER_DEPTH]
+    cmp rcx, IDX_ITER_MAX
+    jae .empty
+    mov rdx, [rbp - 16]
+    mov [r10 + ITER_NODE + rcx * 8], rdx
+    mov r8, [rbp - 40]
+    cmp dword [r8 + IDX_LEVEL], IDX_LEAF
+    je .leaf
+
+    ; The first child whose largest key reaches the one wanted, and the last
+    ; child when none does.
+    mov r9d, [r8 + IDX_COUNT]
+    xor ecx, ecx
+.child:
+    inc ecx
+    cmp ecx, r9d
+    jae .child_ready
+    mov rax, rcx
+    dec rax
+    IDX_SLOT rax
+    mov rdx, [r8 + IDX_ENTRIES + rax + IDX_KEY_END]
+    cmp rdx, [rbp - 24]
+    jl .child
+.child_ready:
+    dec ecx
+    mov r10, [rbp - 32]
+    mov rax, [r10 + ITER_DEPTH]
+    mov [r10 + ITER_SLOT + rax * 8], rcx
+    inc qword [r10 + ITER_DEPTH]
+    mov rax, rcx
+    IDX_SLOT rax
+    mov rax, [r8 + IDX_ENTRIES + rax + IDX_CHILD]
+    mov [rbp - 16], rax
+    jmp .descend
+
+.leaf:
+    mov r9d, [r8 + IDX_COUNT]
+    xor ecx, ecx
+.slot:
+    cmp ecx, r9d
+    jae .slot_ready
+    mov rax, rcx
+    IDX_SLOT rax
+    mov rdx, [r8 + IDX_ENTRIES + rax + IDX_KEY]
+    cmp rdx, [rbp - 24]
+    jge .slot_ready
+    inc ecx
+    jmp .slot
+.slot_ready:
+    mov r10, [rbp - 32]
+    mov rax, [r10 + ITER_DEPTH]
+    mov [r10 + ITER_SLOT + rax * 8], rcx
+    inc qword [r10 + ITER_DEPTH]
+    cmp ecx, r9d
+    jb .positioned
+    ; Everything in this leaf sorts below the key: the answer, if there is
+    ; one, is in the leaf after it.
+    mov ARG1, [rbp - 32]
+    call iter_next_leaf
+    test eax, eax
+    jz .empty
+.positioned:
+    mov eax, 1
+    FRAME_END
+    ret
+.empty:
+    mov r10, [rbp - 32]
+    mov qword [r10 + ITER_DEPTH], 0
+    xor eax, eax
+    FRAME_END
+    ret
+
+; iter_next_leaf(ARG1 = iter) -> RAX: 1 when a following leaf exists and the
+; iterator now stands at its first entry.
+;
+;  Local slots: [rbp-8]=iter, [rbp-16]=level, [rbp-24]=address
+iter_next_leaf:
+    FRAME_BEGIN 32, 0
+    mov [rbp - 8], ARG1
+    mov r10, ARG1
+    mov rax, [r10 + ITER_DEPTH]
+    test rax, rax
+    jz .none
+    dec rax                             ; the leaf's own level
+.up:
+    test rax, rax
+    jz .none                            ; the root has no sibling to the right
+    dec rax
+    mov [rbp - 16], rax
+    mov r10, [rbp - 8]
+    mov ARG1, [r10 + ITER_CTX]
+    mov ARG2, [r10 + ITER_NODE + rax * 8]
+    call index_node_addr
+    mov [rbp - 24], rax
+    mov r10, [rbp - 8]
+    mov rcx, [rbp - 16]
+    mov rdx, [r10 + ITER_SLOT + rcx * 8]
+    inc rdx
+    mov r8, [rbp - 24]
+    mov eax, [r8 + IDX_COUNT]
+    cmp rdx, rax
+    jae .up_again
+    mov [r10 + ITER_SLOT + rcx * 8], rdx
+    ; Down the left edge of everything under it.
+    mov rax, rdx
+    IDX_SLOT rax
+    mov rax, [r8 + IDX_ENTRIES + rax + IDX_CHILD]
+    mov rcx, [rbp - 16]
+    inc rcx
+    mov [r10 + ITER_DEPTH], rcx
+.down:
+    mov r10, [rbp - 8]
+    mov rcx, [r10 + ITER_DEPTH]
+    cmp rcx, IDX_ITER_MAX
+    jae .none
+    mov [r10 + ITER_NODE + rcx * 8], rax
+    mov qword [r10 + ITER_SLOT + rcx * 8], 0
+    inc qword [r10 + ITER_DEPTH]
+    mov ARG1, [r10 + ITER_CTX]
+    mov ARG2, rax
+    call index_node_addr
+    cmp dword [rax + IDX_LEVEL], IDX_LEAF
+    je .landed
+    mov rax, [rax + IDX_ENTRIES + IDX_CHILD]
+    jmp .down
+.landed:
+    mov eax, 1
+    FRAME_END
+    ret
+.up_again:
+    mov rax, [rbp - 16]
+    jmp .up
+.none:
+    mov r10, [rbp - 8]
+    mov qword [r10 + ITER_DEPTH], 0
+    xor eax, eax
+    FRAME_END
+    ret
+
+; db_index_iter_next(ctx, iter, out_key, out_row) -> RAX: 1 when an entry was
+; produced. The iterator then stands on the one after it.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=iter, [rbp-24]=out_key, [rbp-32]=out_row
+db_index_iter_next:
+    FRAME_BEGIN 48, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov [rbp - 32], ARG4
+    mov r10, ARG2
+    mov rax, [r10 + ITER_DEPTH]
+    test rax, rax
+    jz .done
+    dec rax
+    mov [rbp - 40], rax                 ; the leaf's level
+    mov ARG1, [rbp - 8]
+    mov ARG2, [r10 + ITER_NODE + rax * 8]
+    call index_node_addr
+    mov r10, [rbp - 16]
+    mov rcx, [rbp - 40]
+    mov rdx, [r10 + ITER_SLOT + rcx * 8]
+    mov ecx, [rax + IDX_COUNT]
+    cmp rdx, rcx
+    jb .take
+    ; This leaf is spent. The next one starts at its first entry.
+    mov ARG1, [rbp - 16]
+    call iter_next_leaf
+    test eax, eax
+    jz .done
+    mov r10, [rbp - 16]
+    mov rax, [r10 + ITER_DEPTH]
+    dec rax
+    mov [rbp - 40], rax
+    mov ARG1, [rbp - 8]
+    mov ARG2, [r10 + ITER_NODE + rax * 8]
+    call index_node_addr
+    mov r10, [rbp - 16]
+    mov rcx, [rbp - 40]
+    mov rdx, [r10 + ITER_SLOT + rcx * 8]
+.take:
+    mov r8, rdx
+    IDX_SLOT r8
+    mov r9, [rax + IDX_ENTRIES + r8 + IDX_KEY]
+    mov r11, [rax + IDX_ENTRIES + r8 + IDX_ROW]
+    mov rax, [rbp - 24]
+    mov [rax], r9
+    mov rax, [rbp - 32]
+    mov [rax], r11
+    inc rdx
+    mov r10, [rbp - 16]
+    mov rcx, [rbp - 40]
+    mov [r10 + ITER_SLOT + rcx * 8], rdx
+    mov eax, 1
+    FRAME_END
+    ret
+.done:
+    xor eax, eax
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
 ;  db_index_validate(ctx, candidate_sb, index page) -> RAX: 1 or 0
 ;
 ;  Walks every node of one index and proves the tree is the tree its index
@@ -1601,9 +1928,12 @@ db_index_validate:
 ;
 ;  Local slots: [rbp-8]=ctx, [rbp-16]=sb, [rbp-24]=index page, [rbp-32]=node id,
 ;               [rbp-40]=expected level, [rbp-48]=seen, [rbp-56]=address,
-;               [rbp-64]=count, [rbp-72]=index, [rbp-80]=previous key end
+;               [rbp-64]=count, [rbp-72]=index, [rbp-80]=previous key end,
+;               [rbp-88]=leaf entries here, [rbp-96]=count on the way in,
+;               [rbp-104]=previous row (or the child being entered),
+;               [rbp-112]=the row the previous child ends at
 index_node_validate:
-    FRAME_BEGIN 112, 2
+    FRAME_BEGIN 160, 2
     inc qword [rel index_nodes_walked]
     mov [rbp - 8], ARG1
     mov [rbp - 16], ARG2
@@ -1703,7 +2033,7 @@ index_node_validate:
     ; this format is.
     mov r8, [rbp - 56]
     mov rax, [rbp - 64]
-    shl rax, 4
+    IDX_SLOT rax
     lea r9, [r8 + IDX_ENTRIES + rax]
     lea r11, [r8 + IDX_CRC]
 .tail:
@@ -1718,6 +2048,8 @@ index_node_validate:
     mov qword [rbp - 72], 0
     mov rax, 0x8000000000000000
     mov [rbp - 80], rax             ; nothing can sort below this
+    mov qword [rbp - 104], 0        ; nor before the first row
+    mov qword [rbp - 112], 0        ; nor before the row a child ends at
     mov r8, [rbp - 56]
     cmp dword [r8 + IDX_LEVEL], IDX_LEAF
     je .leaf_entries
@@ -1726,15 +2058,23 @@ index_node_validate:
     mov rax, [rbp - 72]
     cmp rax, [rbp - 64]
     jae .entries_done
-    shl rax, 4
+    IDX_SLOT rax
     mov r8, [rbp - 56]
     mov rdx, [r8 + IDX_ENTRIES + rax + IDX_KEY_END]
     mov rcx, [rbp - 72]
     test rcx, rcx
     jz .child_end_ok
     cmp rdx, [rbp - 80]
-    jle .bad                        ; strictly increasing by the key it ends at
+    jl .bad                         ; never decreasing by the key it ends at
+    jg .child_end_ok
+    ; The same key can end two children, because a key may name more rows than
+    ; one leaf holds. What separates them is the row, and it has to rise.
+    mov rcx, [r8 + IDX_ENTRIES + rax + IDX_ROW_END]
+    cmp rcx, [rbp - 112]
+    jbe .bad
 .child_end_ok:
+    mov rcx, [r8 + IDX_ENTRIES + rax + IDX_ROW_END]
+    mov [rbp - 112], rcx
     mov [rbp - 80], rdx
     ; The child goes into a register no argument aliases: ARG1 is RCX on
     ; one of the two ABIs, and loading it would take the child with it.
@@ -1773,7 +2113,7 @@ index_node_validate:
     mov rax, [rbp - 72]
     cmp rax, [rbp - 64]
     jae .entries_done
-    shl rax, 4
+    IDX_SLOT rax
     mov r8, [rbp - 56]
     mov rdx, [r8 + IDX_ENTRIES + rax + IDX_KEY]
     mov rcx, [rbp - 72]
@@ -1781,7 +2121,15 @@ index_node_validate:
     jz .leaf_key_ok
     cmp rdx, [rbp - 80]
     jl .bad                         ; keys never go backwards inside a leaf
+    jg .leaf_key_ok
+    ; Equal keys are ordered by the row they name, which is what keeps every
+    ; entry distinct and the order total.
+    mov rcx, [r8 + IDX_ENTRIES + rax + IDX_ROW]
+    cmp rcx, [rbp - 104]
+    jbe .bad
 .leaf_key_ok:
+    mov rcx, [r8 + IDX_ENTRIES + rax + IDX_ROW]
+    mov [rbp - 104], rcx
     mov [rbp - 80], rdx
     inc qword [rbp - 72]
     inc qword [rbp - 88]
