@@ -20,6 +20,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 void *cyboudb_test_mem_alloc(size_t size) { return malloc(size); }
 void cyboudb_test_mem_free(void *ptr, size_t size) { (void)size; free(ptr); }
@@ -63,6 +66,27 @@ extern int db_queue_push(void *ctx, uint64_t id, const void *bytes,
                          uint64_t length);
 extern int db_queue_pop(void *ctx, uint64_t id, void *out, uint64_t *out_len,
                         uint64_t capacity);
+
+/* The integrity question, which is not the recovery question: `cyboudb check`
+ * opens with CybouDB_VERIFY_DEEP | CybouDB_VERIFY_INTEGRITY and reports a
+ * damaged newest generation instead of quietly using the one before it.
+ * docs/RECOVERY.md. */
+extern int db_open(const void *path, void *ctx, uint64_t writable,
+                   uint64_t verify);
+extern int db_close(void *ctx);
+
+static int integrity_check_refuses(const char *path) {
+    uint64_t vctx[64] = {0};          /* well past CybouDB_DB_SIZE on purpose */
+    const void *p = path;
+#ifdef _WIN32
+    static wchar_t wide[32768];
+    if (!MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, 32768)) return 0;
+    p = wide;
+#endif
+    if (db_open(p, vctx, 0, 3) != 0) return 1;
+    db_close(vctx);
+    return 0;
+}
 
 static int failures = 0;
 static int checks = 0;
@@ -184,25 +208,26 @@ int main(int argc, char **argv) {
         for (size_t i = 0; i < sizeof damage / sizeof damage[0]; i++) {
             unsigned char saved[8];
             char label[160];
-            int refused;
+            int reported;
             check("a queue to damage",
                   db_catalog_get(ctx, 700001, &page) == 0 && page != 0);
             mapped = db_queue_seg_addr(ctx, page);
             /* Written straight into the page the live generation owns, and
-               put back afterwards. A commit validates what the generation
-               reaches, so the damage has to stop the commit rather than be
-               written out - and repairing it is what lets the next case start
-               from a database that is still whole. */
+               put back afterwards. This is case C of section 7 in
+               docs/COMMIT_VALIDATION.md: the damaged object is one the
+               transaction does not touch, its directory entry still names the
+               page the published generation named, and the whole object is
+               therefore inherited. The integrity check is what answers for it
+               now; repairing the byte is what lets the next case start from a
+               database that is still whole. */
             memcpy(saved, mapped + damage[i].off, (size_t)damage[i].width);
             memcpy(mapped + damage[i].off, &damage[i].value,
                    (size_t)damage[i].width);
-            queue_image(image, "probe");
-            refused = db_catalog_put_queue(ctx, 700003, image) != 0 ||
-                      db_commit(ctx) != CybouDB_OK;
-            db_rollback(ctx);
+            reported = integrity_check_refuses(argv[1]);
             memcpy(mapped + damage[i].off, saved, (size_t)damage[i].width);
-            snprintf(label, sizeof label, "%s stops the commit", damage[i].what);
-            check(label, refused);
+            snprintf(label, sizeof label,
+                     "%s is reported by the integrity check", damage[i].what);
+            check(label, reported);
             check("and the queue is whole again",
                   db_catalog_get(ctx, 700001, &page) == 0 && page != 0);
         }
@@ -252,11 +277,23 @@ int main(int argc, char **argv) {
               { "a tail past what the segment holds", Q_TAIL_OFF,        8, 200, 0 },
               { "a segment count the positions deny", Q_SEGMENTS_OFF,    4, 2, 0 },
             };
+            /* Case C of docs/COMMIT_VALIDATION.md section 7: an object this
+             * transaction does not touch. Its directory entry names the same
+             * page the published generation named, so the whole object is
+             * inherited - copy-on-write says the engine cannot have rewritten
+             * it - and the commit does not read into it.
+             *
+             * So what is asserted is the integrity check, not the commit. A
+             * commit may accept this file; that is the narrowing, taken
+             * deliberately, and it is only honest because `check` reports the
+             * damage. Asserting what the commit does here would be asserting
+             * the absence of a guarantee, which is not a thing to hold code
+             * to. */
             for (size_t i = 0; i < sizeof damage / sizeof damage[0]; i++) {
                 unsigned char saved[8];
                 unsigned char *target;
                 char label[160];
-                int refused;
+                int reported;
                 check("a filled queue to damage",
                       db_catalog_get(ctx, 700010, &qpage) == 0 && qpage != 0);
                 mapped = db_queue_seg_addr(ctx, qpage);
@@ -266,22 +303,19 @@ int main(int argc, char **argv) {
                 memcpy(saved, target + damage[i].off, (size_t)damage[i].width);
                 memcpy(target + damage[i].off, &damage[i].value,
                        (size_t)damage[i].width);
-                /* A fresh id for every case. Sharing one made the suite
-                 * order-dependent in the worst way: the moment a case let a
-                 * commit through, the queue existed, and every case after it
-                 * was "refused" because the id was taken rather than because
-                 * the damage was seen - a pass that proves nothing, and one
-                 * that hides exactly the regression this suite is for. */
-                queue_image(image, "probe2");
-                refused = db_catalog_put_queue(ctx, 700011 + (uint64_t)i,
-                                               image) != 0 ||
-                          db_commit(ctx) != CybouDB_OK;
-                db_rollback(ctx);
+                reported = integrity_check_refuses(argv[1]);
                 memcpy(target + damage[i].off, saved, (size_t)damage[i].width);
-                snprintf(label, sizeof label, "%s stops the commit",
+                snprintf(label, sizeof label,
+                         "%s is reported by the integrity check",
                          damage[i].what);
-                check(label, refused);
+                check(label, reported);
             }
+
+            /* And the same damage, undone, must stop being reported - so the
+             * damage is what the check is answering rather than something
+             * else about this file. */
+            check("an undamaged file passes the same check",
+                  !integrity_check_refuses(argv[1]));
         }
 
         check("after all of which the messages are still there",
@@ -302,6 +336,87 @@ int main(int argc, char **argv) {
               u32(db_queue_seg_addr(ctx, qpage), Q_SEGMENTS_OFF) == 0);
         check("which commits", db_commit(ctx) == CybouDB_OK);
         check("tidy up", db_catalog_drop(ctx, 700010) == 0 &&
+              db_commit(ctx) == CybouDB_OK);
+    }
+
+
+    /* --- the same queue, a new segment and an old one -------------------- */
+    /* Cases A and B of docs/COMMIT_VALIDATION.md section 7, and the pair that
+     * says what proof inheritance actually costs. The seven cases above are
+     * about a queue the transaction does not touch; these are about the queue
+     * it does.
+     *
+     *   A. the segment this ENQUEUE writes is not inherited - it carries the
+     *      candidate generation - so damaging it must stop the commit. That
+     *      is the guarantee that remains, and it is the one that matters:
+     *      a transaction cannot publish a graph it has broken.
+     *
+     *   B. an older segment of that same queue is inherited even though the
+     *      queue is being written to, because the edge naming it did not
+     *      move. Damaging it does not stop the commit. This is the guarantee
+     *      that moved, and nothing before it tested this case: the seven
+     *      above all damage a queue nobody is touching.
+     */
+    {
+        uint64_t qpage = 0, old_seg = 0, new_seg = 0;
+        unsigned char *qp, *seg, saved[8];
+        int i, accepted, reported;
+        unsigned long long visited;
+
+        queue_image(image, "twoseg");
+        check("a queue that will outgrow one segment",
+              db_catalog_put_queue(ctx, 700100, image) == 0);
+        for (i = 0; i < 70; i++) {          /* 62 slots to a segment */
+            if (db_queue_push(ctx, 700100, "filler", 6) != 0) break;
+        }
+        check("filled past one segment's worth", i == 70);
+        check("which commits", db_commit(ctx) == CybouDB_OK);
+
+        check("and now holds two segments",
+              db_catalog_get(ctx, 700100, &qpage) == 0 && qpage != 0);
+        qp = db_queue_seg_addr(ctx, qpage);
+        check("two of them", u32(qp, Q_SEGMENTS_OFF) == 2);
+        old_seg = u64(qp, Q_ENTRIES_OFF);
+        check("the first of which is a page", old_seg != 0);
+
+        /* B: the old segment of the queue being written to. */
+        seg = db_queue_seg_addr(ctx, old_seg);
+        memcpy(saved, seg + QSEG_MAGIC_OFF, 4);
+        memset(seg + QSEG_MAGIC_OFF, 0x5a, 4);
+        accepted = db_queue_push(ctx, 700100, "after", 5) == 0 &&
+                   db_commit(ctx) == CybouDB_OK;
+        check("B: an ENQUEUE into a queue whose old segment is damaged "
+              "still commits", accepted);
+        if (!accepted) db_rollback(ctx);
+        reported = integrity_check_refuses(argv[1]);
+        check("B: and the integrity check reports that damage", reported);
+        check("B: the queue's first segment did not move",
+              db_catalog_get(ctx, 700100, &qpage) == 0 &&
+              u64(db_queue_seg_addr(ctx, qpage), Q_ENTRIES_OFF) == old_seg);
+        seg = db_queue_seg_addr(ctx, old_seg);
+        memcpy(seg + QSEG_MAGIC_OFF, saved, 4);
+        check("B: and once repaired it is not reported",
+              !integrity_check_refuses(argv[1]));
+
+        /* A: the segment this transaction writes into. */
+        check("a message that lands in the tail segment",
+              db_queue_push(ctx, 700100, "tail", 4) == 0);
+        check("the queue is still findable",
+              db_catalog_get(ctx, 700100, &qpage) == 0 && qpage != 0);
+        qp = db_queue_seg_addr(ctx, qpage);
+        new_seg = u64(qp, Q_ENTRIES_OFF + 8);
+        check("whose tail segment is a page", new_seg != 0);
+        seg = db_queue_seg_addr(ctx, new_seg);
+        memcpy(saved, seg + QSEG_MAGIC_OFF, 4);
+        memset(seg + QSEG_MAGIC_OFF, 0x5a, 4);
+        visited = queue_segments_walked;
+        check("A: damaging the segment this transaction wrote stops the commit",
+              db_commit(ctx) != CybouDB_OK);
+        check("A: and the commit did look at a segment to find it",
+              queue_segments_walked > visited);
+        db_rollback(ctx);
+
+        check("tidy up", db_catalog_drop(ctx, 700100) == 0 &&
               db_commit(ctx) == CybouDB_OK);
     }
 

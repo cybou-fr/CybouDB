@@ -339,6 +339,37 @@ not what `create` makes, and incremental validation is not planned for it.
 
 ---
 
+## 6b. Implemented: the inheritance (steps 5, 7-9)
+
+Two levels, and the first is what makes the second correct.
+
+**At the catalog.** `db_catalog_validate` asks, for each directory entry,
+whether the published directory named this same id at this same page. If it
+did, the whole object is inherited: not walked, not read into. The object's own
+page is still checked, which is one page and grows with nothing.
+
+**Inside an object the transaction did touch.** Its page has changed, so the
+published entries and the candidate entries are different memory, and they are
+compared entry by entry: an entry naming the same page at the same absolute
+position is inherited, one that moved or is new is validated. `QSV_BASE_ENTRIES`
+carries the published side; zero there means there is nothing to compare
+against and everything is validated.
+
+The order matters, and getting it wrong is instructive. The first attempt did
+only the second level. For an object the transaction had *not* touched, the
+published and candidate directory entries name the same page - so the
+comparison ran the array against itself, always found equality, and inherited
+everything including a forged entry. A proof that compares memory with itself
+is not a proof. The catalog level is what removes that case, by never entering
+the object at all.
+
+Both levels stand down entirely under `DB_VERIFY`, which is how
+`cyboudb check` stays exhaustive.
+
+Measured: [benchmarks/results/2026-09-14-commit-inheritance.md](../benchmarks/results/2026-09-14-commit-inheritance.md).
+
+---
+
 ## 7. What has to be attacked before this is believed
 
 Happy-path tests prove nothing here. The suite must try to make the validator

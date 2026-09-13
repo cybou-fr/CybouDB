@@ -238,6 +238,12 @@ opposite.
 5. **Incremental catalog and object walk.** Unchanged root or page id inherits;
    changed is walked into. Queue and stream compare old and new directories and
    visit only what moved.
+   *(done - 163.41 segment visits per commit at depth 10,000 became 1.00 at
+   every depth, and validation time 115.7 us became 32.4 us:
+   [benchmarks/results/2026-09-14-commit-inheritance.md](benchmarks/results/2026-09-14-commit-inheritance.md).
+   It landed only after `cyboudb check` was made to report damage instead of
+   recovering from it silently, because the narrowing had nowhere to move the
+   guarantee until then.)*
 6. **Incremental allocation-map proof.** Changed leaves and legal transitions —
    including the attempt to retire a page still reachable through an inherited
    subtree.

@@ -88,6 +88,14 @@
 %define QSV_LOW 56                       ; the first position held
 %define QSV_HIGH 64                      ; one past the last
 %define QSV_MAX_SEG 72
-%define QSV_SIZE 80
+; What the published generation held, so an entry that has not moved can be
+; inherited rather than re-proved. Zero in QSV_BASE_ENTRIES means there is no
+; published version of this object to compare against - it is new, or this is
+; an exhaustive walk - and every entry is validated. See
+; docs/COMMIT_VALIDATION.md.
+%define QSV_BASE_ENTRIES 80              ; entry zero of the published page, or 0
+%define QSV_BASE_SEGMENTS 88
+%define QSV_BASE_FIRST_SEG 96
+%define QSV_SIZE 104
 
 %endif

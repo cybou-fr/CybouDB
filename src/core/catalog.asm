@@ -25,6 +25,7 @@ section .data
 ; Catalog pages this process validated. A statement proportional to the
 ; table shows up here before it shows up in a stopwatch.
 global catalog_pages_validated
+global catalog_entry_in
 catalog_pages_validated: dq 0
 
 section .text
@@ -357,6 +358,38 @@ db_catalog_validate:
     mov r11, [rax + CAT_GENERATION]
     cmp r11, [r10 + CAT_GENERATION]
     ja .bad
+
+    ; Did the published directory name this same id at this same page? Then
+    ; the object under it is the object the commit that published it proved,
+    ; because copy-on-write forbids rewriting a page in place. The whole
+    ; subtree is inherited: not walked, not counted, not read.
+    ;
+    ; The object's own page is still checked just above - that is one page and
+    ; does not grow with anything. What is skipped is the walk beneath it,
+    ; which is where the cost proportional to retained data lives.
+    ;
+    ; docs/COMMIT_VALIDATION.md says what this narrows and why it is only
+    ; honest now that `cyboudb check` reports damage a commit no longer looks
+    ; for.
+    mov r10, [rbp - 56]
+    mov eax, [r10 + CAT_TYPE]
+    mov [rbp - 72], rax
+    mov r10, [rbp - 8]
+    cmp qword [r10 + DB_VERIFY], 0
+    jne .walk_object                ; `cyboudb check` inherits nothing
+    mov r11, [r10 + DB_SB_PTR]
+    test r11, r11
+    jz .walk_object                 ; nothing published yet to inherit from
+    mov ARG2, [r11 + SB_ROOT_PAGE]
+    mov ARG3, [rbp - 48]
+    mov ARG4, [rbp - 72]
+    mov ARG1, r10
+    call catalog_entry_in
+    test rax, rax
+    jz .walk_object                 ; new object, or one it did not hold
+    cmp rax, [rbp - 56]
+    je .named                       ; the same page: nothing to prove again
+.walk_object:
     mov r10, [rbp - 56]
     cmp dword [r10 + CAT_TYPE], CAT_INDEX
     je .index_entry
@@ -516,6 +549,75 @@ seal_page:
     call crc32c
     mov r10, [rbp - 8]
     mov [r10 + CAT_CRC], eax
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  catalog_entry_in(ARG1 = ctx, ARG2 = directory page, ARG3 = object id,
+;                   ARG4 = expected type) -> RAX: the object page's address,
+;                   or 0.
+;
+;  db_catalog_get answers from the live root. This answers from whichever
+;  directory it is handed, which is what lets a commit ask what the *published*
+;  generation held for an object while the staged one is being proved.
+;
+;  It returns 0 rather than refusing whenever anything is not as expected:
+;  every caller uses the answer only to decide whether a proof may be
+;  inherited, so "I do not know" has to mean "prove it the long way".
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=id, [rbp-24]=type
+; -----------------------------------------------------------------------------
+catalog_entry_in:
+    FRAME_BEGIN 32, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG3
+    mov [rbp - 24], ARG4
+    mov r10, ARG1
+    mov rax, ARG2
+    cmp rax, CybouDB_MIN_PAGES
+    jb .none                            ; 0, and the header, are not directories
+    cmp rax, [r10 + DB_PAGES]
+    jae .none                           ; past the end of the file
+    cmp qword [r10 + DB_BASE], 0
+    je .none
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
+    cmp dword [rax + CAT_TYPE], CAT_DIRECTORY
+    jne .none
+    mov ecx, [rax + CAT_COUNT]
+    test ecx, ecx
+    jz .none
+    cmp ecx, CAT_MAX_TABLES
+    ja .none
+    lea r10, [rax + CAT_DATA]
+    mov r11, [rbp - 16]
+.find:
+    cmp r11, [r10]
+    je .found
+    add r10, 16
+    dec ecx
+    jnz .find
+.none:
+    xor eax, eax
+    FRAME_END
+    ret
+.found:
+    mov rax, [r10 + 8]
+    mov r10, [rbp - 8]
+    cmp rax, CybouDB_MIN_PAGES
+    jb .none
+    cmp rax, [r10 + DB_PAGES]
+    jae .none
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
+    ; It has to be the object that was asked about, of the type that was
+    ; asked about, or the answer is not usable.
+    mov ecx, [rbp - 24]
+    cmp [rax + CAT_TYPE], ecx
+    jne .none
+    mov r11, [rbp - 16]
+    cmp [rax + CAT_OWNER], r11
+    jne .none
     FRAME_END
     ret
 

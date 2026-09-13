@@ -17,6 +17,7 @@ extern db_cow_alloc_page, db_cow_copy_page
 extern db_catalog_page, db_catalog_edit, db_catalog_seal
 extern db_var_validate_chain, db_var_write_chain, db_var_read_chain
 global queue_page_valid, db_queue_seg_addr, queue_seg_seal, db_queue_segments_valid
+extern catalog_entry_in
 global db_queue_push, db_queue_pop, db_queue_peek, db_queue_depth
 global db_queue_retire_all
 global db_stream_append
@@ -147,6 +148,28 @@ db_queue_segments_valid:
     mov rax, [rbp - 16]
     cmp rax, [r11 + QSV_SEGMENTS]
     jae .entries_done
+    ; An entry the published generation already named, at the same absolute
+    ; position and with the same page, is inherited: copy-on-write means the
+    ; engine cannot have rewritten that page since the commit that proved it.
+    ; Not visited, so not counted - queue_segments_walked measures the work
+    ; actually done, which is the whole point of the counter.
+    mov rcx, [r11 + QSV_BASE_ENTRIES]
+    test rcx, rcx
+    jz .visit
+    add rax, [r11 + QSV_FIRST_SEG]
+    sub rax, [r11 + QSV_BASE_FIRST_SEG]
+    jb .visit                       ; a position it did not hold yet
+    cmp rax, [r11 + QSV_BASE_SEGMENTS]
+    jae .visit                      ; a position past what it held
+    mov rdx, [rcx + rax * 8]        ; the page it named there
+    mov rcx, [r11 + QSV_ENTRIES]
+    mov rax, [rbp - 16]
+    cmp rdx, [rcx + rax * 8]
+    jne .visit
+    inc qword [rbp - 16]
+    jmp .entry
+.visit:
+    mov rax, [rbp - 16]
     inc qword [rel queue_segments_walked]
     ; The page goes in a register no argument aliases: ARG2 is RDX on one of
     ; the two ABIs, and loading the superblock would take the page with it.
@@ -322,7 +345,7 @@ db_queue_segments_valid:
 ;               [rbp-96]=the descriptor
 ; -----------------------------------------------------------------------------
 queue_page_valid:
-    FRAME_BEGIN 128, 0
+    FRAME_BEGIN 160, 0
     mov [rbp - 8], ARG1
     mov [rbp - 16], ARG2
     mov [rbp - 24], ARG3
@@ -345,26 +368,59 @@ queue_page_valid:
     cmp rax, [r11 + Q_CLAIM]
     jne .q_bad
 
-    mov [rbp - 96 + QSV_CTX], ARG1
+    mov [rbp - 160 + QSV_CTX], ARG1
     mov rax, [rbp - 16]
-    mov [rbp - 96 + QSV_SB], rax
+    mov [rbp - 160 + QSV_SB], rax
     mov r11, [rbp - 24]
     mov rax, [r11 + CAT_OWNER]
-    mov [rbp - 96 + QSV_OWNER], rax
+    mov [rbp - 160 + QSV_OWNER], rax
     lea rax, [r11 + Q_ENTRIES]
-    mov [rbp - 96 + QSV_ENTRIES], rax
+    mov [rbp - 160 + QSV_ENTRIES], rax
     lea rax, [r11 + Q_CRC]
-    mov [rbp - 96 + QSV_TAIL_END], rax
+    mov [rbp - 160 + QSV_TAIL_END], rax
     mov ecx, [r11 + Q_SEGMENTS]
-    mov [rbp - 96 + QSV_SEGMENTS], rcx
+    mov [rbp - 160 + QSV_SEGMENTS], rcx
     mov rax, [r11 + Q_FIRST_SEG]
-    mov [rbp - 96 + QSV_FIRST_SEG], rax
+    mov [rbp - 160 + QSV_FIRST_SEG], rax
     mov rax, [r11 + Q_HEAD]
-    mov [rbp - 96 + QSV_LOW], rax
+    mov [rbp - 160 + QSV_LOW], rax
     mov rax, [r11 + Q_TAIL]
-    mov [rbp - 96 + QSV_HIGH], rax
-    mov qword [rbp - 96 + QSV_MAX_SEG], Q_MAX_SEGMENTS
-    lea ARG1, [rbp - 96]
+    mov [rbp - 160 + QSV_HIGH], rax
+    mov qword [rbp - 160 + QSV_MAX_SEG], Q_MAX_SEGMENTS
+    ; What the published generation held for this object. An entry naming the
+    ; same page at the same position has not been rewritten - copy-on-write
+    ; forbids it - so the commit that published it proved it, and this one
+    ; inherits that instead of repeating it. docs/COMMIT_VALIDATION.md.
+    ;
+    ; The published page cannot have been reused underneath us: span_reuse only
+    ; takes a page that is RETIRED in the published map as well as the staged
+    ; one, and a page this transaction retired is still PAYLOAD in the
+    ; published map.
+    xor eax, eax
+    mov [rbp - 160 + QSV_BASE_ENTRIES], rax
+    mov [rbp - 160 + QSV_BASE_SEGMENTS], rax
+    mov [rbp - 160 + QSV_BASE_FIRST_SEG], rax
+    mov r10, [rbp - 8]
+    cmp qword [r10 + DB_VERIFY], 0
+    jne .no_base                    ; `cyboudb check` inherits nothing
+    mov r11, [r10 + DB_SB_PTR]
+    test r11, r11
+    jz .no_base                     ; nothing published yet to inherit from
+    mov ARG2, [r11 + SB_ROOT_PAGE]
+    mov ARG3, [rbp - 160 + QSV_OWNER]
+    mov ARG4, CAT_QUEUE
+    mov ARG1, r10
+    call catalog_entry_in
+    test rax, rax
+    jz .no_base
+    mov ecx, [rax + Q_SEGMENTS]
+    mov [rbp - 160 + QSV_BASE_SEGMENTS], rcx
+    mov r11, [rax + Q_FIRST_SEG]
+    mov [rbp - 160 + QSV_BASE_FIRST_SEG], r11
+    lea r11, [rax + Q_ENTRIES]
+    mov [rbp - 160 + QSV_BASE_ENTRIES], r11
+.no_base:
+    lea ARG1, [rbp - 160]
     call db_queue_segments_valid
     FRAME_END
     ret

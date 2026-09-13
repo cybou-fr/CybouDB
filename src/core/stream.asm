@@ -16,6 +16,7 @@ extern db_queue_segments_valid
 extern db_catalog_page, db_catalog_edit, db_catalog_seal
 extern queue_slot_at, queue_slot_copy, queue_retire_chain
 extern db_bitmap_retire
+extern catalog_entry_in
 global stream_page_valid
 global db_stream_cursor_add, db_stream_cursor_drop, db_stream_cursor_find
 global db_stream_peek, db_stream_read, db_stream_trim
@@ -135,26 +136,59 @@ stream_page_valid:
 
     ; The segments are the queue's, and so is the walk over them.
     mov rax, [rbp - 8]
-    mov [rbp - 160 + QSV_CTX], rax
+    mov [rbp - 192 + QSV_CTX], rax
     mov rax, [rbp - 16]
-    mov [rbp - 160 + QSV_SB], rax
+    mov [rbp - 192 + QSV_SB], rax
     mov r11, [rbp - 24]
     mov rax, [r11 + CAT_OWNER]
-    mov [rbp - 160 + QSV_OWNER], rax
+    mov [rbp - 192 + QSV_OWNER], rax
     lea rax, [r11 + S_ENTRIES]
-    mov [rbp - 160 + QSV_ENTRIES], rax
+    mov [rbp - 192 + QSV_ENTRIES], rax
     lea rax, [r11 + S_CRC]
-    mov [rbp - 160 + QSV_TAIL_END], rax
+    mov [rbp - 192 + QSV_TAIL_END], rax
     mov ecx, [r11 + S_SEGMENTS]
-    mov [rbp - 160 + QSV_SEGMENTS], rcx
+    mov [rbp - 192 + QSV_SEGMENTS], rcx
     mov rax, [r11 + S_FIRST_SEG]
-    mov [rbp - 160 + QSV_FIRST_SEG], rax
+    mov [rbp - 192 + QSV_FIRST_SEG], rax
     mov rax, [rbp - 32]
-    mov [rbp - 160 + QSV_LOW], rax
+    mov [rbp - 192 + QSV_LOW], rax
     mov rax, [rbp - 40]
-    mov [rbp - 160 + QSV_HIGH], rax
-    mov qword [rbp - 160 + QSV_MAX_SEG], S_MAX_SEGMENTS
-    lea ARG1, [rbp - 160]
+    mov [rbp - 192 + QSV_HIGH], rax
+    mov qword [rbp - 192 + QSV_MAX_SEG], S_MAX_SEGMENTS
+    ; What the published generation held for this object. An entry naming the
+    ; same page at the same position has not been rewritten - copy-on-write
+    ; forbids it - so the commit that published it proved it, and this one
+    ; inherits that instead of repeating it. docs/COMMIT_VALIDATION.md.
+    ;
+    ; The published page cannot have been reused underneath us: span_reuse only
+    ; takes a page that is RETIRED in the published map as well as the staged
+    ; one, and a page this transaction retired is still PAYLOAD in the
+    ; published map.
+    xor eax, eax
+    mov [rbp - 192 + QSV_BASE_ENTRIES], rax
+    mov [rbp - 192 + QSV_BASE_SEGMENTS], rax
+    mov [rbp - 192 + QSV_BASE_FIRST_SEG], rax
+    mov r10, [rbp - 8]
+    cmp qword [r10 + DB_VERIFY], 0
+    jne .no_base                    ; `cyboudb check` inherits nothing
+    mov r11, [r10 + DB_SB_PTR]
+    test r11, r11
+    jz .no_base                     ; nothing published yet to inherit from
+    mov ARG2, [r11 + SB_ROOT_PAGE]
+    mov ARG3, [rbp - 192 + QSV_OWNER]
+    mov ARG4, CAT_STREAM
+    mov ARG1, r10
+    call catalog_entry_in
+    test rax, rax
+    jz .no_base
+    mov ecx, [rax + S_SEGMENTS]
+    mov [rbp - 192 + QSV_BASE_SEGMENTS], rcx
+    mov r11, [rax + S_FIRST_SEG]
+    mov [rbp - 192 + QSV_BASE_FIRST_SEG], r11
+    lea r11, [rax + S_ENTRIES]
+    mov [rbp - 192 + QSV_BASE_ENTRIES], r11
+.no_base:
+    lea ARG1, [rbp - 192]
     call db_queue_segments_valid
     FRAME_END
     ret
