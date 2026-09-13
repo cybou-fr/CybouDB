@@ -32,10 +32,14 @@ What it must not do: deliver a message twice to a committed reader, lose one a
 commit accepted, or make the cost of either grow with how many messages the
 queue has ever carried.
 
-Out of scope, named rather than implied: more than one consumer, leases or
-visibility timeouts, priorities, delayed delivery, and any form of
-acknowledgement separate from the transaction. Those are all answers to
-"another process might be reading too", and this engine is single-writer.
+Out of scope for version 1, named rather than implied: leases and visibility
+timeouts, priorities, delayed delivery, and acknowledgement separate from the
+transaction that took the message.
+
+Leases are the one of those that version 1 is wrong to be without, and the
+format reserves what they need rather than pretending otherwise - see below.
+The rest have no reserved field, which is the document saying they would be a
+format change and not an addition.
 
 ## Why there is no linked list
 
@@ -102,12 +106,12 @@ then:
 | 24 | 8 | Owner: the queue's own id |
 | 32 | 4 | `CAT_TYPE` = 4 |
 | 36 | 4 | Segments the directory names, 0..495 |
-| 40 | 8 | `head`: the oldest position still held |
+| 40 | 8 | `head`: the oldest position not acknowledged |
 | 48 | 8 | `tail`: the position the next message takes |
-| 56 | 8 | Reserved, zero |
+| 56 | 8 | `claim`: the position the next claim would take. Reserved |
 | 64 | 32 | Name, NUL-padded, sharing the table namespace |
 | 96 | 8 | First segment index the directory names |
-| 104 | 16 | Reserved, zero |
+| 104 | 16 | Reserved, zero: room for a second level of directory |
 | 128 | 8 per entry | Segment page ids, in segment order |
 | 4092 | 4 | CRC-32C over bytes `[0, 4092)` |
 
@@ -144,10 +148,13 @@ A slot is 64 bytes:
 | ---: | ---: | --- |
 | 0 | 4 | Payload length in bytes |
 | 4 | 4 | Flags: bit 0 set when the payload is an extent |
-| 8 | 48 | The payload, or its extent head page id in the first 8 |
-| 56 | 8 | Reserved, zero |
+| 8 | 4 | State. Reserved, zero: the message is held |
+| 12 | 4 | Reserved, zero |
+| 16 | 8 | Lease deadline. Reserved, zero |
+| 24 | 8 | Lease token. Reserved, zero |
+| 32 | 32 | The payload, or its extent head page id in the first 8 |
 
-A payload of 48 bytes or fewer lives in the slot. A longer one is a varlen
+A payload of 32 bytes or fewer lives in the slot. A longer one is a varlen
 extent chain, owned by the queue id, exactly as a TEXT cell is owned by its
 table - see [VARLEN.md](VARLEN.md). The queue does not need a second way to
 store bytes and does not invent one.
@@ -191,27 +198,97 @@ commit costing the size of the database. So a field no validator looks at is a
 field nothing refuses, and a directory entry sitting past the count is exactly
 that until something asks.
 
-## Delivery
+## What DEQUEUE guarantees, and what it does not
 
-Within the database, a message is delivered exactly once: `DEQUEUE` advances
-`head` in the same transaction as whatever the reader does with the payload,
-so a rollback puts the message back and a commit takes it away for good.
+What the engine promises is exact: `DEQUEUE` removes the message in the
+transaction it is called in. A rollback puts it back, a commit takes it away,
+and no other reader can see it in between. Call that transactional removal,
+because that is all it is.
 
-Outside the database it is at-least-once, and saying otherwise would be
-claiming something the engine cannot do. A reader that commits and then fails
-while sending the message elsewhere has taken it from the queue and not
-delivered it. The fix for that is the reader's: write what it did into the
-same transaction, which is the thing a queue inside the database makes
-possible and a broker beside it does not.
+It is not a delivery guarantee, and an earlier draft of this document called
+it at-least-once, which was wrong. Where the message goes after it leaves the
+queue is outside the transaction, and which guarantee a caller gets is decided
+by where they put the commit:
 
-## What is deliberately absent
+    BEGIN                       BEGIN
+    DEQUEUE                     DEQUEUE
+    do the external work        COMMIT
+    COMMIT                      do the external work
 
-- **More than one consumer.** The engine is single-writer, so two consumers
-  would serialise anyway, and pretending otherwise would mean leases and
-  visibility windows that only make sense when they can overlap.
-- **Acknowledgement.** The transaction is the acknowledgement.
+The left order is at-least-once. A crash before the commit rolls the message
+back and the work happens again; the cost is that the transaction is open for
+as long as the work takes, and this engine has one writer, so that is the
+whole database held for the duration.
+
+The right order is at-most-once. A crash after the commit has taken the
+message and not done the work, and nothing will do it again.
+
+Neither is exactly-once, and nothing inside a single database can be: the
+external effect is not something a commit can include. What the engine can do
+is make the *record* of that effect part of the same transaction - write what
+was done into a table in the transaction that dequeues - so a reader can tell
+afterwards which messages were handled. That is the thing a queue inside the
+database offers and a broker beside it does not, and it is worth being precise
+about rather than shipping a slogan.
+
+### Why this is the argument for leases
+
+The two orders above are both bad for the same reason: the transaction is the
+only thing marking a message as being worked on, and a transaction cannot stay
+open while a worker runs. That is not an argument about concurrent *writers* -
+storage here is single-writer and will stay so. It is an argument about
+concurrent *work*: a broker can serialise every database mutation and still
+have three workers running at once.
+
+So the operation a work queue needs is not `DEQUEUE` but a claim with an
+expiry: take the message, mark it as being worked on until a deadline, commit
+that in a transaction that lasts microseconds, and let a separate short
+transaction acknowledge it or give it back. A worker that dies stops renewing,
+the deadline passes, and the message becomes claimable again - which is the
+only way a failure outside the database gets noticed inside it.
+
+### What is reserved for that, and why now
+
+Version 1 does not implement leases. It does reserve the bytes they need,
+because a queue is a format, and the moment a segment page is written the
+cheap time to decide this is over.
+
+Three things a lease needs that a plain FIFO does not:
+
+* **A claim cursor.** Acknowledgement can arrive out of order - message 5
+  finishing before message 3 - so the oldest unacknowledged position and the
+  next position to hand out stop being the same number. `head` is the first,
+  `claim` is the second. A version 1 `DEQUEUE` does both at once, so validation
+  requires `claim == head`, and a file where it has run ahead was written by
+  something this build does not understand.
+* **Per-message state, a deadline and a token.** Whether a message is held or
+  claimed, until when, and by which claim - a token is what lets a worker whose
+  lease expired be refused when it finally acknowledges. Sixteen bytes in the
+  slot, required to be zero.
+* **Room for a deeper directory.** 495 segments is 30690 undelivered messages,
+  which is a bound on the backlog rather than on the queue's life. When it
+  stops being enough the answer is the one PAX already took - a level above the
+  directory - and the queue page keeps sixteen bytes for what that would need.
+
+The cost of reserving them is sixteen bytes of inline payload: a message of 32
+bytes or fewer sits in its slot rather than 48. The cost of not reserving them
+would be the format.
+
+None of this is a promise that leases will look exactly like that. It is a
+promise that adding them will not move a byte that a released file already
+depends on, which is the only part that has to be decided before the first
+`ENQUEUE`.
+
+## What version 1 does not do
+
+- **Leases: `CLAIM`, `ACK`, `NACK`, `RENEW`.** Not absent on principle -
+  postponed, with the format kept ready for them. The earlier claim that they
+  "only make sense when consumers overlap" confused writers with workers and
+  was wrong: storage is single-writer, work is not.
 - **Priorities and delays.** Both mean the queue is not a FIFO, and a FIFO is
-  what this is. Either would want the ordering machinery an index already has.
-- **A dead-letter queue.** It is a second queue and a rule about when to move
-  a message into it. The rule is the caller's until there is a reason it is
-  not.
+  what this is. Either would want the ordering machinery an index already has,
+  and neither has a reserved field here.
+- **A dead-letter queue.** A second queue and a rule about when to move a
+  message into it. The rule is the caller's until there is a reason it is not -
+  and once leases exist, a failure count is the field that rule would want.
+- **More than 30690 undelivered messages.** See the reservation above.

@@ -785,6 +785,16 @@ says where each thing stands:
   worth fixing and is not a wrong answer. Separately, the ABI's pull cursor
   cannot ORDER BY at all, which is older than any of this.
 
+A prepared plan that chose an index outlives the index. The roadmap already
+said a statement bound before an index existed keeps scanning until it is
+prepared again, which is slow and not wrong. The other direction was wrong: a
+plan holding an index id for a tree that had since been dropped read no rows,
+because opening the cursor treated a missing index as an empty one. It now
+checks that the id still names this table's index over the column the
+predicate is about, and reads the table when it does not - an access path that
+has gone is not an empty one. `tests/index_plan_test.c` prepares, drops and
+steps the same statement again.
+
 `COUNT(*)` reads through an index too. It had been refused one along with
 LIMIT, ORDER BY and vector top-K - those are refused because the order a lookup
 returns rows in becomes a different answer there, and counting does not care
@@ -842,16 +852,30 @@ What is decided:
   it lives is arithmetic on that position - there is no pointer chain, for the
   reason a B+tree here has no sibling pointers and a PAX table has no leaf
   chain;
-* a payload of 48 bytes or fewer sits in its slot and a longer one is a varlen
+* a payload of 32 bytes or fewer sits in its slot and a longer one is a varlen
   extent owned by the queue id, which is the machinery TEXT already uses;
 * validation costs the segments a queue is holding, not the messages it has
   carried, so a drained queue validates in one page;
-* delivery is exactly-once inside the database and at-least-once outside it,
-  and the document says which rather than claiming the stronger one.
+* what `DEQUEUE` promises is transactional removal, and nothing about where the
+  message goes afterwards. Which guarantee a caller gets is decided by where
+  they put the commit - work then commit is at-least-once, commit then work is
+  at-most-once - and neither is exactly-once, because the external effect is
+  not something a commit can include. An earlier draft called it at-least-once
+  and was wrong;
+* version 1 has no leases, and that is the one absence it is wrong about. A
+  transaction cannot stay open while a worker runs, so a work queue needs a
+  claim with an expiry rather than a DEQUEUE. Storage being single-writer is
+  not an argument against that: a broker can serialise every mutation and still
+  have three workers running at once. The format reserves what leases need - a
+  claim cursor on the queue page, and per-message state, deadline and token in
+  the slot, at the cost of sixteen bytes of inline payload - so that adding
+  them later moves no byte a released file depends on. That is the whole reason
+  to decide it before the first ENQUEUE rather than after.
 
-What is deliberately absent, and why, is in the document: more than one
-consumer, leases, priorities, delays, and acknowledgement separate from the
-transaction.
+What version 1 does not do, and which of those are postponed rather than
+refused, is in the document. Priorities, delays and a dead-letter queue have no
+reserved field, which is the format saying they would be a change and not an
+addition.
 
 The order of work: the catalog page type and its validation first, because
 that is where the last subsystem's bugs hid; then CREATE QUEUE and DROP QUEUE;

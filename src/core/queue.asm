@@ -86,8 +86,6 @@ queue_page_valid:
     mov r11, ARG3
     cmp byte [r11 + Q_NAME], 0
     je .bad                         ; a queue nothing can name
-    cmp qword [r11 + Q_RESERVED], 0
-    jne .bad
     cmp qword [r11 + Q_RESERVED2], 0
     jne .bad
     cmp qword [r11 + Q_RESERVED2 + 8], 0
@@ -99,6 +97,13 @@ queue_page_valid:
     mov [rbp - 40], rdx
     cmp rax, rdx
     ja .bad                         ; the head cannot pass the tail
+    ; A version 1 DEQUEUE hands out and acknowledges in one step, so the claim
+    ; cursor is the head. The field is where a lease would keep it; until there
+    ; is a capability bit saying a build writes leases, a file whose claim has
+    ; run ahead was written by something this build does not understand.
+    mov rcx, [r11 + Q_CLAIM]
+    cmp rcx, rax
+    jne .bad
     mov ecx, [r11 + Q_SEGMENTS]
     mov [rbp - 48], rcx
     cmp rcx, Q_MAX_SEGMENTS
@@ -234,7 +239,15 @@ queue_page_valid:
     lea rax, [rax + QSEG_SLOTS + rdx]
     mov [rbp - 88], rax
     mov r10, rax
-    cmp qword [r10 + QMSG_RESERVED], 0
+    ; Nothing has a lease yet, and a message that claims one was not written by
+    ; this build.
+    cmp dword [r10 + QMSG_STATE], QMSG_STATE_HELD
+    jne .bad
+    cmp dword [r10 + QMSG_RESERVED32], 0
+    jne .bad
+    cmp qword [r10 + QMSG_LEASE_UNTIL], 0
+    jne .bad
+    cmp qword [r10 + QMSG_LEASE_TOKEN], 0
     jne .bad
     mov ecx, [r10 + QMSG_FLAGS]
     test ecx, ~QMSG_FLAG_EXTENT

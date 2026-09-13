@@ -31,7 +31,7 @@ void cyboudb_test_mem_free(void *ptr, size_t size) { (void)size; free(ptr); }
 #define Q_SEGMENTS_OFF  36
 #define Q_HEAD_OFF      40
 #define Q_TAIL_OFF      48
-#define Q_RESERVED_OFF  56
+#define Q_CLAIM_OFF     56
 #define Q_NAME_OFF      64
 #define Q_FIRST_SEG_OFF 96
 #define Q_RESERVED2_OFF 104
@@ -158,7 +158,7 @@ int main(int argc, char **argv) {
             { "a head that has passed its tail",   Q_HEAD_OFF,      8, 1 },
             { "a segment count with no segment",   Q_SEGMENTS_OFF,  4, 1 },
             { "a first segment the head is not in", Q_FIRST_SEG_OFF, 8, 1 },
-            { "a reserved field with something in it", Q_RESERVED_OFF, 8, 1 },
+            { "a claim cursor ahead of the head", Q_CLAIM_OFF,     8, 1 },
             { "a second reserved field",           Q_RESERVED2_OFF, 8, 1 },
             { "a page type nothing defines",       CAT_TYPE_OFF,    4, 9 },
         };

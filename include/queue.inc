@@ -15,12 +15,20 @@
 
 
 %define Q_SEGMENTS 36                    ; aliases CAT_COUNT: entries below
-%define Q_HEAD 40                        ; the oldest position still held
+%define Q_HEAD 40                        ; the oldest position not acknowledged
 %define Q_TAIL 48                        ; the position the next message takes
-%define Q_RESERVED 56                    ; 8 bytes, zero
+; The position the next claim would take. Reserved: a version 1 DEQUEUE hands
+; out and acknowledges a message in one step, so this always equals Q_HEAD and
+; validation says so. It exists because the operation a work queue needs is not
+; DEQUEUE but a claim with an expiry, and a claim cursor that can run ahead of
+; the oldest unacknowledged message is the one field that cannot be added
+; later without moving bytes. See docs/QUEUE.md.
+%define Q_CLAIM 56
 %define Q_NAME 64                        ; aliases CAT_TABLE_NAME: one namespace
 %define Q_FIRST_SEG 96                   ; the segment index entry zero names
-%define Q_RESERVED2 104                  ; 16 bytes, zero
+; 16 bytes, zero. Room for what a second level of segment directory would need
+; when 495 segments stops being enough, which is the road PAX already took.
+%define Q_RESERVED2 104
 %define Q_ENTRIES 128                    ; u64 segment page ids, in order
 %define Q_CRC 4092
 %define Q_MAX_SEGMENTS 495               ; (4092 - 128) / 8
@@ -50,10 +58,19 @@
 ; TEXT cell uses and the reason the queue does not invent a second one.
 %define QMSG_LENGTH 0                    ; u32 payload bytes
 %define QMSG_FLAGS 4                     ; u32
-%define QMSG_PAYLOAD 8                   ; QMSG_INLINE_MAX bytes
-%define QMSG_EXTENT 8                    ; or the chain's first page id
-%define QMSG_RESERVED 56                 ; 8 bytes, zero
-%define QMSG_INLINE_MAX 48
+; Reserved, and zero in version 1: what a message is doing, until when, and
+; under whose claim. A version 1 queue has no state between held and gone, so
+; these are the space a lease needs rather than a lease. Reserving them costs
+; sixteen bytes of inline payload and nothing else; adding them afterwards
+; would cost the format.
+%define QMSG_STATE 8                     ; u32
+%define QMSG_RESERVED32 12               ; u32, zero
+%define QMSG_LEASE_UNTIL 16              ; u64, zero
+%define QMSG_LEASE_TOKEN 24              ; u64, zero
+%define QMSG_PAYLOAD 32                  ; QMSG_INLINE_MAX bytes
+%define QMSG_EXTENT 32                   ; or the chain's first page id
+%define QMSG_INLINE_MAX 32
 %define QMSG_FLAG_EXTENT 1
+%define QMSG_STATE_HELD 0
 
 %endif
