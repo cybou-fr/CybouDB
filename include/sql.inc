@@ -148,6 +148,38 @@
 %define STMT_READ           21
 %define STMT_TRIM           22
 
+; =============================================================================
+;  A prepared plan is immutable across executions.
+; =============================================================================
+;  `cyboudb_reset` exists so a statement can be run again, and the public header
+;  says so. Everything a binder writes into a BOUND_PLAN is therefore input:
+;  execution may read it and may not change it. State that belongs to one
+;  execution - a materialised extent root, a row count, a resolved page address
+;  - lives in the executor's frame or its arena, never in the plan.
+;
+;  This was learned three times in one afternoon, and all three were the same
+;  mistake wearing different clothes:
+;
+;    * materialising a TEXT, BLOB or VECTOR cell wrote its extent root over the
+;      pointer to the literal's bytes, so the second execution read a page id
+;      as an address;
+;    * PLAN_SCHEMA_PAGE cached a page *address*, and copy-on-write moves that
+;      page on every commit, so a re-run UPDATE sized its scratch from the row
+;      count the table had at prepare time and silently changed 154 of the 205
+;      rows it matched - while reporting success;
+;    * an UPDATE left its row count in PLAN_DATA1, which is where a SELECT plan
+;      keeps its projection count, so the next execution followed PLAN_DATA2 as
+;      an array of projections that never existed.
+;
+;  A cached page address is the subtle one: it is not wrong when it is written,
+;  only later. Re-resolve through db_catalog_page, the way .exec_insert always
+;  has, or guard the cache against the generation the way sql_select_open does.
+;
+;  tests/prepared_rerun_test.c is the regression suite for this rule and is
+;  release-critical: it executes, resets and re-executes every mutating
+;  statement that can be prepared, and checks that the second run wrote what
+;  the first one wrote.
+
 ; --- AST Statement header and statement-specific payload --------------------
 %define AST_STMT_TYPE       0           ; qword: STMT_*
 %define AST_STMT_PAYLOAD    8           ; qword: CREATE/INSERT/SELECT payload

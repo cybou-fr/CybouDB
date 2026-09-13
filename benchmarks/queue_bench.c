@@ -27,7 +27,8 @@
  *
  *   Usage: queue_bench <engine> <workload> <messages> <payload> <db>
  *     engine    cyboudb | sqlite-delete-full | sqlite-wal-full | sqlite-wal-normal
- *     workload  enqueue | dequeue | worker | enqueue-batch
+ *     workload  enqueue | dequeue | worker
+ *     an optional sixth argument is messages per transaction, default 1
  *
  * Prints one line: RESULT <ops> <elapsed_ns>
  *
@@ -53,7 +54,10 @@
 void *cyboudb_test_mem_alloc(size_t size) { return malloc(size); }
 void cyboudb_test_mem_free(void *ptr, size_t size) { (void)size; free(ptr); }
 
-#define BATCH 100
+/* Messages per transaction. One is the latency case: every message is its
+   own durable commit. Larger values amortise that commit, which is the
+   axis that actually describes this engine. */
+static int batch = 1;
 
 /* --- SQLite, loaded the way benchmarks/sqlite_harness.c loads it ----------- */
 #define SQLITE_OK   0
@@ -161,40 +165,29 @@ static uint64_t run_cyboudb(const char *workload, int messages,
     }
 
     start = now_ns();
-    if (strcmp(workload, "enqueue") == 0) {
-        for (i = 0; i < messages; i++) {
+    for (i = 0; i < messages; i++) {
+        if (i % batch == 0 && cyboudb_exec(db, "BEGIN") != CybouDB_OK)
+            die("BEGIN");
+        if (strcmp(workload, "enqueue") == 0) {
             if (cyboudb_step(enq) != CybouDB_DONE) die("ENQUEUE");
             cyboudb_reset(enq);
-        }
-    } else if (strcmp(workload, "enqueue-batch") == 0) {
-        for (i = 0; i < messages; i++) {
-            if (i % BATCH == 0 && cyboudb_exec(db, "BEGIN") != CybouDB_OK)
-                die("BEGIN");
-            if (cyboudb_step(enq) != CybouDB_DONE) die("ENQUEUE");
-            cyboudb_reset(enq);
-            if (i % BATCH == BATCH - 1 && cyboudb_exec(db, "COMMIT") != CybouDB_OK)
-                die("COMMIT");
-        }
-        if (messages % BATCH) cyboudb_exec(db, "COMMIT");
-    } else if (strcmp(workload, "dequeue") == 0) {
-        for (i = 0; i < messages; i++) {
+        } else if (strcmp(workload, "dequeue") == 0) {
             rc = cyboudb_step(deq);
             if (rc != CybouDB_ROW) die("DEQUEUE");
             cyboudb_reset(deq);
-        }
-    } else if (strcmp(workload, "worker") == 0) {
-        for (i = 0; i < messages; i++) {
-            if (cyboudb_exec(db, "BEGIN") != CybouDB_OK) die("BEGIN");
+        } else if (strcmp(workload, "worker") == 0) {
             rc = cyboudb_step(deq);
             if (rc != CybouDB_ROW) die("worker DEQUEUE");
             cyboudb_reset(deq);
             if (cyboudb_step(ins) != CybouDB_DONE) die("worker INSERT");
             cyboudb_reset(ins);
-            if (cyboudb_exec(db, "COMMIT") != CybouDB_OK) die("COMMIT");
+        } else {
+            die("unknown workload");
         }
-    } else {
-        die("unknown workload");
+        if (i % batch == batch - 1 && cyboudb_exec(db, "COMMIT") != CybouDB_OK)
+            die("COMMIT");
     }
+    if (messages % batch) cyboudb_exec(db, "COMMIT");
     elapsed = now_ns() - start;
 
     cyboudb_finalize(enq);
@@ -261,39 +254,29 @@ static uint64_t run_sqlite(const char *engine, const char *workload,
     }
 
     start = now_ns();
-    if (strcmp(workload, "enqueue") == 0) {
-        for (i = 0; i < messages; i++) {
+    for (i = 0; i < messages; i++) {
+        if (i % batch == 0) p_exec(db, "BEGIN", NULL, NULL, NULL);
+        if (strcmp(workload, "enqueue") == 0) {
             if (p_step(enq) != SQLITE_DONE) die("sqlite INSERT");
             p_reset(enq);
-        }
-    } else if (strcmp(workload, "enqueue-batch") == 0) {
-        for (i = 0; i < messages; i++) {
-            if (i % BATCH == 0) p_exec(db, "BEGIN", NULL, NULL, NULL);
-            if (p_step(enq) != SQLITE_DONE) die("sqlite INSERT");
-            p_reset(enq);
-            if (i % BATCH == BATCH - 1) p_exec(db, "COMMIT", NULL, NULL, NULL);
-        }
-        if (messages % BATCH) p_exec(db, "COMMIT", NULL, NULL, NULL);
-    } else if (strcmp(workload, "dequeue") == 0) {
-        for (i = 0; i < messages; i++) {
+        } else if (strcmp(workload, "dequeue") == 0) {
             rc = p_step(deq);
             if (rc != SQLITE_ROW) die("sqlite take");
             p_reset(deq);
-        }
-    } else if (strcmp(workload, "worker") == 0) {
-        for (i = 0; i < messages; i++) {
-            p_exec(db, "BEGIN", NULL, NULL, NULL);
+        } else if (strcmp(workload, "worker") == 0) {
             rc = p_step(deq);
             if (rc != SQLITE_ROW) die("sqlite worker take");
             p_reset(deq);
             if (p_step(ins) != SQLITE_DONE) die("sqlite worker insert");
             p_reset(ins);
-            if (p_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK)
-                die("sqlite COMMIT");
+        } else {
+            die("unknown workload");
         }
-    } else {
-        die("unknown workload");
+        if (i % batch == batch - 1 &&
+            p_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK)
+            die("sqlite COMMIT");
     }
+    if (messages % batch) p_exec(db, "COMMIT", NULL, NULL, NULL);
     elapsed = now_ns() - start;
 
     p_finalize(enq); p_finalize(deq); p_finalize(ins);
@@ -309,9 +292,11 @@ int main(int argc, char **argv) {
 
     if (argc < 6) {
         fprintf(stderr, "usage: queue_bench <engine> <workload> <messages> "
-                        "<payload bytes> <db path>\n");
+                        "<payload bytes> <db path> [per txn]\n");
         return 2;
     }
+    if (argc > 6) batch = atoi(argv[6]);
+    if (batch < 1) batch = 1;
     engine = argv[1];
     workload = argv[2];
     messages = atoi(argv[3]);

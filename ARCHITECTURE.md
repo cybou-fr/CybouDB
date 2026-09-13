@@ -164,6 +164,42 @@ a caller-specific shortcut looks smallest. Queues and streams land through
 
 ---
 
+## A prepared plan is immutable across executions
+
+`cyboudb_reset` exists so a statement can be run again, and the public header
+promises it. So everything a binder writes into a bound plan is **input**:
+execution may read it and may not change it. State belonging to one execution -
+a materialised extent root, a row count, a resolved page address - lives in the
+executor's frame or its arena, never in the plan.
+
+This was learned three times in one afternoon, and all three were the same
+mistake in different clothes:
+
+- materialising a `TEXT`, `BLOB` or `VECTOR` cell wrote its extent root over the
+  pointer to the literal's bytes, so the second execution read a page id as an
+  address and the process died;
+- `PLAN_SCHEMA_PAGE` cached a page *address*, and copy-on-write moves that page
+  on every commit, so a re-run `UPDATE` sized its scratch from the row count the
+  table had at prepare time and **silently changed 154 of the 205 rows it
+  matched, while reporting success**;
+- an `UPDATE` left its row count in `PLAN_DATA1`, which is where a `SELECT` plan
+  keeps its projection count, so the next execution followed `PLAN_DATA2` as an
+  array of projections that never existed.
+
+The cached address is the subtle one, because it is not wrong when it is
+written - only later. Two shapes are correct: re-resolve through
+`db_catalog_page`, the way `.exec_insert` always has, or guard the cache against
+the generation, the way `sql_select_open` does before taking its fast path.
+
+`tests/prepared_rerun_test.c` is the regression suite for this rule and is
+release-critical. It executes, resets and re-executes every mutating statement
+that can be prepared - `INT`, `TEXT`, `BLOB`, `VECTOR`, `NULL`, empty,
+multi-row, inside a transaction, after a rollback, plus `ENQUEUE`, `APPEND`,
+`READ`, `DEQUEUE`, `UPDATE` and `DELETE` - and checks that the second run wrote
+what the first one wrote, which is the half a crash-only test would miss.
+
+---
+
 ## Storage
 
 ### Memory-mapped, without an application page buffer

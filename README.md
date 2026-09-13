@@ -1,13 +1,14 @@
 # CybouDB
 
-**CybouDB** is an embedded database engine written in assembly, with a portable
-on-disk format, copy-on-write transactions, columnar execution, secondary
-indexes, native vectors, durable queues and append-only streams. It has no
-libc, no CRT and no third-party dependency: on Linux it talks to the kernel
-directly, and on Windows it uses kernel32 and nothing else.
+### Tables. Vectors. Queues. Streams. One transaction.
 
-Rows, indexes, embeddings, queued work and an event log live in one file under
-one transaction model:
+**CybouDB** is an embedded database engine written in x86-64 assembly, with a
+portable on-disk format, copy-on-write transactions and columnar execution. It
+has no libc, no CRT and no third-party dependency: on Linux it talks to the
+kernel directly, and on Windows it uses kernel32 and nothing else.
+
+Rows, secondary indexes, embeddings, queued work and an event log live in one
+file under one transaction model:
 
 ```sql
 BEGIN;
@@ -23,6 +24,35 @@ beside a vector store beside a broker, which is why the outbox pattern is not
 needed here: it exists to paper over having two commits, and this has one. See
 [docs/TRANSACTIONS.md](docs/TRANSACTIONS.md) for what that covers, and what it
 does not.
+
+## What it is fast at, and what it is not
+
+CybouDB is not built to win every isolated primitive benchmark, and it does not.
+Its advantage is transactional composition; the performance profile that comes
+with that is uneven, and both halves are measured and published.
+
+| | against | |
+| :--- | :--- | ---: |
+| Columnar scan and filter | SQLite | **34.6x faster** |
+| Reading projected columns | DuckDB, 1 thread | **4.5x faster** |
+| Reading projected columns | DuckDB, 8 threads | **4.3x faster** |
+| Filtering | DuckDB, 8 threads | 0.55x - DuckDB ahead |
+| One durable message, one commit | SQLite WAL | 0.27x - SQLite ahead |
+| 100 messages per transaction | SQLite WAL | 0.18x - SQLite ahead |
+| File size on compressible data | DuckDB | 8.3x larger |
+
+Read that as a shape rather than a scoreboard. Analytical scans over columnar
+storage are where hand-written AVX2 kernels earn their keep. A single durable
+queue commit is where CybouDB is slowest, because it flushes twice - the data
+pages, then the publication - where SQLite's WAL appends and flushes once, and
+because it has no WAL at all. **Batching changes that cost profile completely:
+one message per transaction is 1,120 us, a hundred per transaction is 20.75 us
+each.** There is also a known scaling limitation: commit validation currently
+grows with the number of retained queue and stream segments.
+
+Full numbers, method and the failed experiments:
+[engines](benchmarks/results/2026-09-13-engines-10m.md) and
+[queue](benchmarks/results/2026-09-13-queue.md).
 
 The project also explores how far a compact engine can be pushed when its
 storage layout and execution model are designed directly around modern CPU and
@@ -43,8 +73,18 @@ dependencies.
 > second writer, no encryption, no ANN index, no lease semantics on the queue,
 > and no daemon - CybouDB is a library and a command line, not a server. A plan
 > uses an index for an equality or a range over an indexed column and for
-> nothing else. **CybouDB is not production-ready**, and a preview is a thing to
-> read and try rather than a thing to run a business on.
+> nothing else.
+>
+> **Known performance limitation:** commit validation currently scales with the
+> number of retained queue and stream segments, so a deep queue makes each
+> commit more expensive - 812 us a message at depth 500 against 1,193 us at
+> depth 2,000. Correctness, crash safety and corruption detection are
+> unaffected; the workarounds are batching and keeping retained depth bounded
+> with `DEQUEUE` or `TRIM`. It is measured, the cause is located, and fixing it
+> properly is the first engine work after this preview.
+>
+> **CybouDB is not production-ready**, and a preview is a thing to read and try
+> rather than a thing to run a business on.
 
 ---
 

@@ -1,0 +1,60 @@
+============================================================================================
+Durable work queue - 2,000 messages, 32-byte payload, median of 3 runs
+  microseconds per message, lower is better
+============================================================================================
+
+ENQUEUE - one message in
+Engine                       1 per txn    10 per txn   100 per txn
+------------------------------------------------------------------
+CybouDB                       1119.69u       113.99u        20.75u
+SQLite rollback+FULL          2133.28u       185.09u        19.32u
+SQLite WAL+FULL                304.52u        33.54u         3.82u
+SQLite WAL+NORMAL               14.31u         1.48u         0.50u
+------------------------------------------------------------------
+  vs SQLite rollback+FULL          1.91x         1.62x         0.93x
+  vs SQLite WAL+FULL               0.27x         0.29x         0.18x
+  vs SQLite WAL+NORMAL             0.01x         0.01x         0.02x
+                          (above 1.00 means CybouDB is faster)
+
+DEQUEUE - one message out
+Engine                       1 per txn    10 per txn   100 per txn
+------------------------------------------------------------------
+CybouDB                       1940.33u       193.89u        29.00u
+SQLite rollback+FULL          2090.13u       205.48u        35.98u
+SQLite WAL+FULL                332.95u        54.00u        20.37u
+SQLite WAL+NORMAL               32.04u        15.26u        14.08u
+------------------------------------------------------------------
+  vs SQLite rollback+FULL          1.08x         1.06x         1.24x
+  vs SQLite WAL+FULL               0.17x         0.28x         0.70x
+  vs SQLite WAL+NORMAL             0.02x         0.08x         0.49x
+                          (above 1.00 means CybouDB is faster)
+
+WORKER - take a job and write its result, one transaction
+Engine                       1 per txn    10 per txn   100 per txn
+------------------------------------------------------------------
+CybouDB                       2777.08u       334.41u        67.31u
+SQLite rollback+FULL          1968.29u       222.91u        38.13u
+SQLite WAL+FULL                351.58u        51.62u        19.48u
+SQLite WAL+NORMAL               41.20u        17.09u        14.37u
+------------------------------------------------------------------
+  vs SQLite rollback+FULL          0.71x         0.67x         0.57x
+  vs SQLite WAL+FULL               0.13x         0.15x         0.29x
+  vs SQLite WAL+NORMAL             0.01x         0.05x         0.21x
+                          (above 1.00 means CybouDB is faster)
+
+SCALING - enqueue at one message per transaction, by queue depth
+Engine                       depth 500    depth 1000    depth 2000
+------------------------------------------------------------------
+CybouDB                        811.73u       991.38u      1193.29u
+SQLite rollback+FULL          2163.71u      2164.00u      2215.16u
+SQLite WAL+FULL                339.39u       324.25u       329.79u
+SQLite WAL+NORMAL               15.40u        17.33u        16.62u
+------------------------------------------------------------------
+  A flat row is a commit whose cost does not depend on what the
+  queue is already holding. CybouDB's is not flat; see
+  benchmarks/results/2026-09-13-queue.md for why.
+
+  CybouDB                  two flushes per commit, no knob
+  SQLite rollback+FULL     SQLite default durability
+  SQLite WAL+FULL          WAL, every commit fsynced
+  SQLite WAL+NORMAL        WEAKER: may lose recent commits

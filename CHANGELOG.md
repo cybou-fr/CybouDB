@@ -82,6 +82,21 @@ writer, no encryption, no ANN index, no queue leases, and no daemon - CybouDB is
 a library and a command line, not a server. `TEXT` columns cannot be indexed and
 an index covers one column.
 
+### Known performance limitation
+
+Commit validation scales with the number of retained queue and stream segments.
+Enqueueing one message per transaction costs 812 us at a queue depth of 500 and
+1,193 us at 2,000, where every SQLite configuration measured stays flat.
+Correctness, crash safety and corruption detection are unaffected - the commit
+still proves the whole staged graph, which is exactly why it costs what it does.
+
+Two workarounds, both effective: batch, which takes a message from 1,120 us to
+20.75 us at a hundred per transaction; and keep retained depth bounded with
+`DEQUEUE` or `TRIM`. Measured in
+[benchmarks/results/2026-09-13-queue.md](benchmarks/results/2026-09-13-queue.md),
+cause located, and the proper fix - incremental validation - is the first engine
+work after this preview.
+
 ### Testing
 
 Over 18,000 automated checks, every one run by CI on Linux and Windows on every
