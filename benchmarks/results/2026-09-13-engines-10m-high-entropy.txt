@@ -1,0 +1,81 @@
+[fixture] cache invalidated or missing for events_high_entropy_10000000.cdb, reseeding...
+[CybouDB]   seeding events_high_entropy_10000000.cdb with 10,000,000 high_entropy rows
+[CybouDB]   10,000,000 rows in 9.2s (1,087,417 rows/s)
+[SQLite] seeding events_high_entropy_10000000.sqlite with 10,000,000 high_entropy rows
+[SQLite] 10,000,000 rows in 41.9s (238,729 rows/s)
+[DuckDB] seeding events_high_entropy_10000000.duckdb with 10,000,000 high_entropy rows
+[DuckDB] 10,000,000 rows in 51.3s (194,901 rows/s)
+==================================================================================================================================
+Cross-engine benchmark - events table, 7 columns, 10,000,000 rows
+  dataset: high_entropy (generator v1, sha256 5d184d4984eb3947 over the first 100,000 rows)
+  CybouDB   file:    422.6 MB  events_high_entropy_10000000.cdb
+  SQLite file:    383.8 MB  events_high_entropy_10000000.sqlite
+  DuckDB file:    360.5 MB  events_high_entropy_10000000.duckdb
+  DuckDB C API: C:/Users/cybou/Documents/CybouDB/build/benchdeps/_duckdb.cp314-win_amd64.pyd
+  5 timed iterations, 1 warmup, 5 process repeats, figures are ns/logical-row (median of process runs)
+==================================================================================================================================
+
+FILTER - identical aggregate on every engine: SELECT count(*) FROM events WHERE ...
+Scan, predicate evaluation and aggregation. No result delivery.
+----------------------------------------------------------------------------------------------------------------------------------
+Scenario                   Selected |     SQLite  DuckDB 1T  DuckDB 8T CybouDB-off CybouDB-on | zON/SQLt zON/Dk1T zON/zOFF   Parity
+----------------------------------------------------------------------------------------------------------------------------------
+zone: all NONE            4,999,223 |     40.60n      1.47n      0.33n      1.13n      1.15n |    35.4x    1.29x    0.98x    MATCH
+zone: half NONE/ALL       5,000,777 |     36.51n      1.33n      0.32n      1.09n      1.08n |    33.8x    1.23x    1.01x    MATCH
+zone: all UNKNOWN           899,644 |     28.00n      1.33n      0.26n      0.73n      0.73n |    38.5x    1.83x    1.00x    MATCH
+int32 equality            1,250,119 |     34.26n      1.32n      0.28n      0.76n      0.80n |    42.6x    1.64x    0.95x    MATCH
+int64 range               5,000,777 |     36.70n      1.35n      0.30n      1.03n      1.06n |    34.6x    1.27x    0.97x    MATCH
+float32 range             4,997,838 |     46.94n      4.29n      1.02n      0.96n      1.01n |    46.3x    4.23x    0.95x    MATCH
+bool equality             5,000,183 |     35.16n      1.61n      0.34n      0.63n      0.65n |    53.7x    2.46x    0.96x    MATCH
+two predicates, AND         112,668 |     28.63n      2.10n      0.47n      1.28n      1.33n |    21.5x    1.58x    0.96x    MATCH
+two predicates, OR        2,037,095 |     43.88n      8.51n      1.97n      1.15n      1.25n |    35.2x    6.84x    0.93x    MATCH
+nullable predicate        3,429,658 |     38.75n      7.22n      1.57n      0.93n      0.97n |    40.0x    7.45x    0.96x    MATCH
+nullable IS NOT NULL      8,000,900 |     35.74n      4.87n      1.02n      0.54n      0.57n |    63.1x    8.60x    0.95x    MATCH
+no predicate (full)      10,000,000 |      0.31n      0.00n      0.01n      0.26n      0.03n |     9.2x    0.06x    7.92x    MATCH
+----------------------------------------------------------------------------------------------------------------------------------
+CybouDB zone-ON vs SQLite:     34.64x geomean (12 scenarios)
+CybouDB zone-ON vs DuckDB-1T:   1.94x geomean (above 1.00 means CybouDB is faster)
+CybouDB zone-ON vs zone-OFF:    1.15x geomean (above 1.00 means zone maps sped up the query)
+Selected-row parity:       ALL MATCH
+
+ZONE MAP FILTER DIAGNOSTICS (single diagnostic run with trace ON):
+Scenario                   Leaves     NONE      ALL  UNKNOWN   NONE %    ALL %  Batches  ColMask
+----------------------------------------------------------------------------------------------------------
+zone: all NONE              22322        0        0    22322     0.0%     0.0%   156250        8
+zone: half NONE/ALL         22322        0        0    22322     0.0%     0.0%   156250        8
+zone: all UNKNOWN           22322        0        0    22322     0.0%     0.0%   156250        4
+int32 equality              22322        0        0    22322     0.0%     0.0%   156250        2
+int64 range                 22322        0        0    22322     0.0%     0.0%   156250        8
+float32 range               22322        0        0    22322     0.0%     0.0%   156250       20
+bool equality               22322        0        0    22322     0.0%     0.0%   156250       10
+two predicates, AND         22322        0        0    22322     0.0%     0.0%   156250        6
+two predicates, OR          22322        0        0    22322     0.0%     0.0%   156250        6
+nullable predicate          22322        0        0    22322     0.0%     0.0%   156250       40
+nullable IS NOT NULL        22322        0        0    22322     0.0%     0.0%   156250       40
+no predicate (full)         22322        0    22322        0     0.0%   100.0%        0        0
+----------------------------------------------------------------------------------------------------------
+
+MATERIALIZE - every engine reads the same projected values: SELECT <cols> FROM events WHERE ...
+Scan, predicate evaluation, cell reads and a tagged FNV-1a checksum over every delivered value.
+----------------------------------------------------------------------------------------------------------------------------------
+Scenario                   Selected |     SQLite  DuckDB 1T  DuckDB 8T CybouDB-off CybouDB-on | zON/SQLt zON/Dk1T zON/zOFF Checksum
+----------------------------------------------------------------------------------------------------------------------------------
+proj 1 of 7 (score>50)    4,901,392 |     58.18n      8.18n      7.95n      2.02n      2.08n |    28.0x    3.93x    0.97x    MATCH
+proj 3 of 7 (score>50)    4,901,392 |    103.47n     21.32n     21.35n      4.64n      4.67n |    22.2x    4.57x    0.99x    MATCH
+proj 7 of 7 (score>50)    4,901,392 |    186.82n     52.60n     49.55n     10.08n     10.02n |    18.6x    5.25x    1.01x    MATCH
+zone mat: 3 of 7 (half)   5,000,777 |    107.74n     22.44n     21.91n      5.31n      5.34n |    20.2x    4.20x    0.99x    MATCH
+----------------------------------------------------------------------------------------------------------------------------------
+CybouDB zone-ON vs SQLite:     21.97x geomean
+CybouDB zone-ON vs DuckDB-1T:   4.46x geomean
+CybouDB zone-ON vs zone-OFF:    0.99x geomean
+Checksum parity:           ALL MATCH
+
+ZONE MAP MATERIALIZE DIAGNOSTICS (single diagnostic run with trace ON):
+Scenario                   Leaves     NONE      ALL  UNKNOWN   NONE %    ALL %  Batches  ColMask
+----------------------------------------------------------------------------------------------------------
+proj 1 of 7 (score>50)      22322        0        0    22322     0.0%     0.0%   156250        5
+proj 3 of 7 (score>50)      22322        0        0    22322     0.0%     0.0%   156250       25
+proj 7 of 7 (score>50)      22322        0        0    22322     0.0%     0.0%   156250       7f
+zone mat: 3 of 7 (half)     22322        0        0    22322     0.0%     0.0%   156250       2d
+----------------------------------------------------------------------------------------------------------
+

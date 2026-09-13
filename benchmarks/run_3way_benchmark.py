@@ -403,7 +403,7 @@ def main():
         duckdb_seeded = paths["duckdb"].exists()
     else:
         paths, duckdb_seeded = datasets.ensure(
-            args.db_dir, args.dataset, args.rows, args.cdb, CybouDB_HARNESS)
+            args.db_dir, args.dataset, args.rows, args.cyboudb, CybouDB_HARNESS)
 
     engines = Engines(args, paths, duckdb_seeded)
 
@@ -431,7 +431,7 @@ def main():
           f"figures are ns/logical-row (median of process runs)")
     print("=" * 130)
 
-    filter_ok = run_filter(engines, args.cdb, order, args.repeats)
+    filter_ok = run_filter(engines, args.cyboudb, order, args.repeats)
     materialize_ok = run_materialize(engines, order, args.repeats)
     print()
     return 0 if (filter_ok and materialize_ok) else 1

@@ -225,30 +225,40 @@ returns, MATERIALIZE compares tagged FNV-1a checksums bit for bit across CybouDB
 AVX2, CybouDB scalar, SQLite and DuckDB-1T. DuckDB-8T is left out of the checksum
 comparison only because a multi-threaded result need not arrive in table order.
 
-Full tables: [results/2026-09-09-4way-10m.md](results/2026-09-09-4way-10m.md).
-Summary, CybouDB AVX2 against each engine, geometric mean:
+Full tables: [results/2026-09-13-engines-10m.md](results/2026-09-13-engines-10m.md)
+(the 2026-09-09 run is kept for history and is superseded).
+
+Summary on **high-entropy** data, CybouDB against each engine, geometric mean.
+High entropy is the number to quote: the `structured` dataset is regular enough
+that zone maps skip most of the file, which inflates every ratio and says more
+about the data than the engine.
 
 | | vs SQLite | vs DuckDB-1T | vs DuckDB-8T |
 | :--- | ---: | ---: | ---: |
-| FILTER (10 scenarios) | **23.4x faster** | **1.43x faster** | 0.41x (DuckDB faster) |
-| MATERIALIZE (3 scenarios) | **21.7x faster** | **4.02x faster** | 3.96x faster |
+| FILTER (12 scenarios) | **34.6x faster** | **1.94x faster** | 0.55x (DuckDB faster) |
+| MATERIALIZE (4 scenarios) | **22.0x faster** | **4.46x faster** | **4.34x faster** |
 
 Where each engine wins:
 
-- **CybouDB** leads single-threaded filters on 8 of 10 scenarios and every
-  materialization scenario, by about 4x at all three projection widths.
-- **DuckDB** wins wide range predicates and unpredicated scans, where its
-  per-block min/max zone maps decide whole 122 880-row blocks without
-  evaluating a predicate per row (`int64 range`: 0.37 against 0.79 ns/row).
-  Zone maps are the missing feature this measurement identifies.
-- **8 threads** buy DuckDB 3-6x on filters and nothing at all on
-  materialization (31.77 against 31.27 ns/row), where delivery rather than
-  scanning is the limit. CybouDB is single-threaded throughout.
+- **CybouDB** leads every single-threaded comparison, and every materialization
+  scenario against any thread count, by about 4-5x at all projection widths.
+- **DuckDB with 8 threads beats CybouDB on filtering**, by roughly 3x on the
+  simple integer predicates. CybouDB is single-threaded and has no parallel
+  execution at all, so this is what seven more cores buy. Stating it the other
+  way - CybouDB wins per core - is true but is not what a user with eight cores
+  experiences.
+- **Threads buy DuckDB nothing on materialization**: its 8-thread column is
+  within 2% of its 1-thread column, because delivery rather than scanning is the
+  limit there.
+- CybouDB still wins three filter scenarios against 8 threads - `OR`, nullable
+  predicates and `IS NOT NULL` - which are the cases where DuckDB's own
+  per-thread cost is highest.
 
-Storage sizes for the same data: DuckDB 44.3 MB (compressed), SQLite 322.8 MB,
-CybouDB 422.6 MB (uncompressed). DuckDB moves roughly a tenth of the bytes and
-still loses most of the single-threaded comparison, which puts a narrower value
-on compression here than a size table alone suggests.
+Storage sizes: on compressible data DuckDB is **8.3x smaller** (51.1 MB against
+422.6 MB); on incompressible data the three are within 17% (360.5, 383.8, 422.6
+MB). CybouDB writes uncompressed PAX and its file is the same size either way.
+This is the clearest thing DuckDB does better, and on a laptop-sized dataset it
+can matter more than a 2x scan difference.
 
 Binary footprint, for context: `cyboudb.exe` is ~100 KB with no dependencies
 against ~37 MB for the DuckDB library.
