@@ -20,12 +20,62 @@ See docs/QUEUE.md.
 """
 
 import os
+import struct
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 FEATURE_QUEUE = 16384
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from corrupt import crc32c
+
+
+def queue_pages(path, name):
+    """The queue page and its first segment, found the way the engine finds
+    them: newest superblock, catalog directory, the entry whose page says it
+    is a queue of that name."""
+    blob = open(path, 'rb').read()
+    page = 4096
+
+    def u32(off):
+        return struct.unpack_from('<I', blob, off)[0]
+
+    def u64(off):
+        return struct.unpack_from('<Q', blob, off)[0]
+
+    best, root = -1, 0
+    for sb in (1, 2):
+        gen = u64(sb * page + 8)
+        if gen > best:
+            best, root = gen, u64(sb * page + 40)
+    if not root:
+        return None, None
+    for i in range(u32(root * page + 36)):
+        entry = root * page + 64 + i * 16
+        qp = u64(entry + 8) * page
+        if u32(qp + 32) != 4:                       # CAT_QUEUE
+            continue
+        label = blob[qp + 64:qp + 96].split(bytes(1))[0].decode()
+        if label != name:
+            continue
+        segs = u32(qp + 36)
+        seg = u64(qp + 128) * page if segs else 0
+        return qp, seg
+    return None, None
+
+
+def damage_segment(path, seg_off, off, value, width=8):
+    """Write into a slot and put the page's checksum back, so that what
+    refuses the file is the check being tested and not the CRC."""
+    buf = bytearray(open(path, 'rb').read())
+    struct.pack_into('<I' if width == 4 else '<Q', buf, seg_off + off, value)
+    struct.pack_into('<I', buf, seg_off + 4092,
+                     crc32c(bytes(buf[seg_off:seg_off + 4092])))
+    open(path, 'wb').write(bytes(buf))
+
+
 
 
 def main():
@@ -229,6 +279,87 @@ def main():
         r = run("check", tight)
         check("leaving a file that checks out", r.returncode == 0 and
               "Status:          OK" in r.stdout, r.stdout)
+
+        # --- which check lives where -----------------------------------------
+        # Damage does not make a file fail to open. It makes the generation
+        # holding it stop being selectable, and the one before it is what opens
+        # - that is recovery working rather than an error path. So the thing to
+        # measure is which generation the engine picks.
+        #
+        # And picking differs by how hard you look. A commit and an ordinary
+        # open run the shallow walk: the segment headers and their checksums.
+        # `cyboudb check` sets DB_VERIFY and also walks every message held -
+        # the shape of its slot and the extent chain a long payload names.
+        # Those cost per message and do not belong on the commit path, so a
+        # file damaged only there opens and only `check` says no.
+        deep = str(Path(tmp) / "deep.cdb")
+
+        def generation(cmd, path=deep):
+            out = run(cmd, path).stdout
+            for line in out.splitlines():
+                if "Generation:" in line:
+                    return int(line.split(":")[1].strip())
+            return -1
+
+        def prepared():
+            run("create-large", deep, "600", "--force")
+            query("CREATE QUEUE d;", deep)
+            query("ENQUEUE INTO d VALUES ('payload');", deep)
+            return queue_pages(deep, "d")
+
+        # Seen by every reader, because a checksum covers the whole page.
+        shallow = [
+            ("a segment with the wrong magic", 0, 1, 4),
+            ("a segment owned by another queue", 24, 5, 8),
+            ("a segment starting elsewhere", 32, 62, 8),
+            ("a byte of a slot", 72, 9, 4),
+        ]
+        for what, off, value, width in shallow:
+            qp, seg = prepared()
+            if not seg:
+                check(f"{what}: a segment to damage", False, "not found")
+                continue
+            was = generation("info")
+            buf = bytearray(open(deep, "rb").read())
+            struct.pack_into("<I" if width == 4 else "<Q", buf, seg + off, value)
+            open(deep, "wb").write(bytes(buf))
+            check(f"{what} stops that generation being selectable",
+                  generation("info") < was,
+                  "the generation still opens")
+
+        # Seen only by the deep pass, which is the point: a checksum cannot say
+        # whether a field means anything, only that nobody changed it.
+        only_deep = [
+            ("a message claiming a lease", 8, 1, 4),
+            ("a lease deadline on a held message", 16, 1, 8),
+            ("a lease token on one", 24, 7, 8),
+            ("an extent flag on a message that fits a slot", 4, 1, 4),
+        ]
+        for what, off, value, width in only_deep:
+            qp, seg = prepared()
+            if not seg:
+                check(f"{what}: a segment to damage", False, "not found")
+                continue
+            was = generation("info")
+            damage_segment(deep, seg, 64 + off, value, width)
+            check(f"{what} is invisible to an ordinary open",
+                  generation("info") == was, "the shallow walk refused it")
+            check(f"{what} is refused by the deep check",
+                  generation("check") < was,
+                  "check still picked it")
+
+        # An extent id that leads nowhere is the one a checksum can least say
+        # anything about: the bytes of the slot are exactly as they were left.
+        qp, seg = prepared()
+        if seg:
+            was = generation("info")
+            damage_segment(deep, seg, 64 + 0, 4000, 4)
+            damage_segment(deep, seg, 64 + 4, 1, 4)
+            damage_segment(deep, seg, 64 + 32, 0, 8)
+            check("an extent that leads nowhere opens",
+                  generation("info") == was, "the shallow walk refused it")
+            check("and is refused by the deep check",
+                  generation("check") < was, "check accepted it")
 
         # --- a file created without the feature ------------------------------
         plain = str(Path(tmp) / "plain.cdb")

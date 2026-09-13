@@ -233,11 +233,12 @@ queue_page_valid:
     xor edx, edx
     mov rcx, QUEUE_SEG_SLOTS
     div rcx                         ; rax = segment, rdx = slot
+    mov [rbp - 88], rdx             ; before an argument register takes it
     sub rax, [rbp - 56]
     mov r11, [rbp - 24]
-    mov ARG2, [r11 + Q_ENTRIES + rax * 8]
-    mov [rbp - 88], rdx
+    mov r9, [r11 + Q_ENTRIES + rax * 8]
     mov ARG1, [rbp - 8]
+    mov ARG2, r9
     call db_queue_seg_addr
     mov rdx, [rbp - 88]
     shl rdx, 6                      ; QUEUE_SLOT_SIZE

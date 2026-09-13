@@ -887,6 +887,23 @@ What limits a message now is the front end, not the queue: the command line
 refuses a statement past its own length, and the console past its line. Both
 are older than queues.
 
+The refusals are tested at both depths, and the difference between them is the
+assertion. A damaged file does not fail to open: the generation holding the
+damage stops being selectable and the one before it opens, which is recovery
+working. So what the suite measures is which generation the engine picks. A
+segment's magic, its owner, the position it starts at and any byte of a slot
+are seen by every reader, because a checksum covers the page. A lease on a
+message that cannot have one, and an extent id that leads nowhere, are seen
+only by `cyboudb check` - and that is visible from outside: `info` still picks
+the damaged generation and `check` picks the one before it.
+
+Writing those found a second register clobber in the same function, and it had
+been silent: the deep pass computed a slot address from a value an argument
+register had already overwritten, so it had been walking somewhere else
+entirely and finding nothing wrong. Only damage that the deep pass was
+supposed to catch could reveal it, which is the argument for writing the
+refusals rather than assuming them. Seven now.
+
 Not done: `DEQUEUE` through the C ABI, which is
 refused rather than run: it answers with the message, and that ABI has no way
 to hand back a value that did not come out of a batch view, so running it would
