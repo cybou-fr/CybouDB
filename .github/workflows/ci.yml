@@ -238,10 +238,18 @@ jobs:
         run: python tests/repl_tests.py ./cyboudb.exe
 
   ascii:
-    name: Sources are ASCII
+    name: Source hygiene
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # ARG1..ARG6 are macros over two calling conventions that disagree
+      # about which machine register each one is, so writing one argument
+      # can destroy another that has not been read yet. It reads correctly
+      # on one platform and passes the wrong value on the other, which is
+      # why a machine reads it rather than a person. See the lint itself.
+      - name: No argument register is read after another argument took it
+        run: python3 tests/abi_arg_lint.py
 
       # Comments, strings and scripts are English ASCII by convention. A .bat
       # file is the practical reason: cmd.exe reads it in the console code

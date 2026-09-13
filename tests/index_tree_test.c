@@ -774,6 +774,36 @@ static void catalog_suite(void *ctx, const char *path) {
         db_rollback(ctx);
     }
 
+    /* A bulk build where one key spans many children, published rather than
+       only walked. An internal entry carries the (key, row) pair its child
+       ends at, and a build that handed the key on where the row belongs would
+       give two children a pair that does not rise - which reads correctly,
+       walks correctly, and is refused the moment a commit asks whether the
+       order is total.
+       The runs are long enough that the last two leaves end at the same key,
+       because that is the only arrangement where the row is what separates
+       them. With a hundred rows a key they end at different keys and the
+       wrong row is invisible - which is how this nearly became a test that
+       passed either way. */
+    {
+        uint64_t many = 20000, dup_root = 0;
+        entry_t *dup = malloc(sizeof(entry_t) * (size_t)many);
+        for (uint64_t i = 0; i < many; i++) {
+            dup[i].key = (int64_t)(i / 5000);     /* four keys, five thousand rows each */
+            dup[i].row = i;
+        }
+        check("a bulk build where one key spans children",
+              db_index_build(ctx, 900001, dup, many, &dup_root) == 0 &&
+              dup_root != 0);
+        check("which holds together", tree_ok(ctx, dup_root, many));
+        check("published as the index root",
+              db_catalog_set_index_root(ctx, 900001, dup_root, many) == 0);
+        check("and committed, which is what asks for a total order",
+              db_commit(ctx) == CybouDB_OK);
+        free(dup);
+    }
+
+
     /* The ABI runs statements through its own dispatch, and a second copy of
        what a statement does is a second place to forget part of it. This one
        had forgotten the indexes: rows went into the table and none of them

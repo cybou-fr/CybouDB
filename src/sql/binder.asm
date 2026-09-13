@@ -438,12 +438,15 @@ validate_expr_namespace:
     ret
 .validate_column:
     mov     r10, [rbp - 8]
-    mov     rdx, [r10 + EXPR_QUAL_LEN]
-    test    rdx, rdx
+    ; The length goes in a register no argument aliases: ARG2 is RDX on one of
+    ; the two conventions, and loading the pointer would take the length with
+    ; it - so Windows passed the pointer where the length belonged.
+    mov     r11, [r10 + EXPR_QUAL_LEN]
+    test    r11, r11
     jz      .valid
     mov     ARG1, [rbp - 16]
     mov     ARG2, [r10 + EXPR_QUAL_PTR]
-    mov     ARG3, rdx
+    mov     ARG3, r11
     call    qualifier_matches
     FRAME_END
     ret

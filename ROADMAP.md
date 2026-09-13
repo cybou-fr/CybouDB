@@ -902,7 +902,31 @@ been silent: the deep pass computed a slot address from a value an argument
 register had already overwritten, so it had been walking somewhere else
 entirely and finding nothing wrong. Only damage that the deep pass was
 supposed to catch could reveal it, which is the argument for writing the
-refusals rather than assuming them. Seven now.
+refusals rather than assuming them.
+
+That was the seventh, and seven of the same mistake is an argument for a
+machine. `tests/abi_arg_lint.py` reads every `.asm` file and reports a value
+taken out of a register that an earlier argument write in the same run has
+already overwritten under one of the two conventions. It is deliberately
+narrow - nothing about registers clobbered across calls, nothing about
+ordinary scratch use - because a rule that can be kept is worth more than a
+warning nobody can silence.
+
+On its first run over the whole codebase it reported two places, both live
+bugs and both Windows-only:
+
+* the index bulk builder handed a level's key on where its row belonged, so a
+  tree built in bulk over a key spanning several children recorded separators
+  that did not rise;
+* a qualified column reference passed the pointer where the length belonged.
+
+Neither had a test, and neither could have: the Linux CI is green on both.
+`tests/index_tree_test.c` now has the case for the first - a bulk build whose
+last two leaves end at the same key, which is the only arrangement where the
+row is what separates them, and with a hundred rows a key it passes either way.
+That nearly became a test that proved nothing.
+
+CI runs the lint.
 
 Not done: `DEQUEUE` through the C ABI, which is
 refused rather than run: it answers with the message, and that ABI has no way

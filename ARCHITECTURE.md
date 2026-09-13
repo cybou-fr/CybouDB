@@ -101,7 +101,31 @@ that x86-64 actually has:
 from `rbp`, an outgoing argument area addressed by `STKARG(n)`, shadow space
 reserved automatically, and RSP kept 16-byte aligned at every call. Callee-
 saved registers go into local slots rather than onto the stack with PUSH,
-which would break that alignment.
+which would break that alignment.
+
+What the macros cannot hide is that the two conventions disagree about which
+machine register each argument is:
+
+```text
+            ARG1   ARG2   ARG3   ARG4   ARG5   ARG6
+Win64        rcx    rdx     r8     r9   stack  stack
+System V     rdi    rsi    rdx    rcx     r8     r9
+```
+
+So a value in RDX is an argument on both, in different positions, and writing
+one argument can destroy another that has not been read yet:
+
+```asm
+    mov ARG2, [rbp - 16]        ; RDX on Win64
+    mov ARG3, rdx               ; ...which is what this now passes
+```
+
+That reads correctly on Linux and passes the wrong value on Windows, and the
+engine keeps working - differently. It has cost this project seven bugs, every
+one found by a test rather than by reading the code, so `tests/abi_arg_lint.py`
+reads the code instead and CI runs it. The rule it enforces: **put the value in
+a register no argument aliases - R10 or R11 - before touching the argument
+registers.**
 
 ---
 

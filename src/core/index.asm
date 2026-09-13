@@ -358,12 +358,18 @@ db_index_build:
     lea r10, [rbp - 64 - BS_SIZE]
     mov rax, [rbp - 40]
     mov rcx, [r10 + BS_OPEN + rax * 8]
-    mov rdx, [r10 + BS_LAST + rax * 8]
-    mov r8, [r10 + BS_LAST_ROW + rax * 8]
+    mov [rbp - 48], rcx
+    mov rcx, [r10 + BS_LAST + rax * 8]
+    mov [rbp - 56], rcx
+    mov rcx, [r10 + BS_LAST_ROW + rax * 8]
     mov qword [r10 + BS_OPEN + rax * 8], 0
-    PASS_ARG5 rcx
-    mov ARG3, rdx
-    mov ARG4, r8
+    ; The row goes into its argument before the key can take R8, which is what
+    ; ARG3 is on one of the two conventions. Handing the key on as the row cost
+    ; nothing on Linux and everything on Windows.
+    mov rax, [rbp - 48]
+    PASS_ARG5 rax
+    mov ARG4, rcx
+    mov ARG3, [rbp - 56]
     lea ARG1, [rbp - 64 - BS_SIZE]
     mov ARG2, [rbp - 40]
     inc ARG2
