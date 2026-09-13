@@ -916,7 +916,7 @@ db_queue_pop:
     jmp .o_retire
 .o_retired:
     cmp qword [rbp - 112], 0
-    je .o_publish                   ; nothing moved, so nothing to shift
+    je .o_chain                     ; nothing moved, so nothing to shift
 
     ; What is left moves down to entry zero.
     mov r11, [rbp - 72]
@@ -936,15 +936,21 @@ db_queue_pop:
     mov rax, [rbp - 120]
 .o_clear:
     cmp rax, [rbp - 56]
-    jae .o_publish
+    jae .o_chain
     mov qword [r11 + Q_ENTRIES + rax * 8], 0
     inc rax
     jmp .o_clear
 
+.o_chain:
     ; The chain the message named is nobody's now. Retiring it here rather
     ; than leaving it to the segment's retirement is the difference between a
     ; queue that reclaims what it read and one that grows forever: a segment
     ; is retired once, and it carried sixty-two messages.
+    ;
+    ; This block had no label and sat after a loop that could only leave by
+    ; jumping past it, so for as long as it has existed it has never run. A
+    ; hundred round trips through a three-hundred-page file did not notice;
+    ; four hundred do.
     mov r8, [rbp - 136]
     mov ecx, [r8 + QMSG_FLAGS]
     test ecx, QMSG_FLAG_EXTENT

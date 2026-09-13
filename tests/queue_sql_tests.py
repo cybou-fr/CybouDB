@@ -259,23 +259,28 @@ def main():
         # A take retires the chain the message named. Without that a queue that
         # is filled and drained forever would spend two pages a message and
         # never give one back, so the assertion is a file too small to survive
-        # that: a hundred round trips of a two-page message through three
-        # hundred pages only works if they are reclaimed.
+        # that.
+        #
+        # It has to be enough round trips to run the file out. A hundred was
+        # not: the retire had been unreachable code since it was written, and a
+        # hundred round trips of a two-page message through three hundred pages
+        # passed anyway. Four hundred is past what the file can hold without
+        # reclaiming, and fails within thirty of the leak returning.
         tight = os.path.abspath(str(Path(tmp) / "tight.cdb"))
         run("create-large", tight, "300", "--force")
         subprocess.run([os.path.abspath(str(cyboudb)), "query", tight,
                         "CREATE QUEUE q;"], capture_output=True, text=True)
         body = "d" * 4000
         script = (f"ENQUEUE INTO q VALUES ('{body}');" + chr(10) +
-                  "DEQUEUE FROM q;" + chr(10)) * 100 + ".quit" + chr(10)
+                  "DEQUEUE FROM q;" + chr(10)) * 400 + ".quit" + chr(10)
         r = subprocess.run([os.path.abspath(str(cyboudb)), "console", tight],
                            input=script, capture_output=True, text=True,
                            encoding="utf-8", errors="replace")
         back = [l for l in r.stdout.splitlines() if l.startswith("d")]
-        check("a hundred round trips through a file too small to leak",
-              r.stdout.count("ENQUEUE 1") == 100 and len(back) == 100 and
+        check("four hundred round trips through a file too small to leak",
+              r.stdout.count("ENQUEUE 1") == 400 and len(back) == 400 and
               all(len(l) == 4000 for l in back),
-              f"{r.stdout.count(chr(10).join([]))}{len(back)} back")
+              f"{r.stdout.count('ENQUEUE 1')} in, {len(back)} back")
         r = run("check", tight)
         check("leaving a file that checks out", r.returncode == 0 and
               "Status:          OK" in r.stdout, r.stdout)
