@@ -396,6 +396,9 @@ All test suites run in CI on both Linux and Windows.
   line, the console and the C ABI, with a longer payload carried by the same
   extent chain a TEXT cell uses. Leases are not implemented; the format
   reserves what they need.
+* **[docs/STREAM.md](docs/STREAM.md)** - append-only streams: why a stream is
+  not a queue with extra readers, why it is nonetheless stored in a queue's
+  segments, and what a trim may not pass. Decided, not yet implemented.
 
 ---
 

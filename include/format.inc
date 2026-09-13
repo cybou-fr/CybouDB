@@ -145,6 +145,14 @@
 ; fourth type. See docs/QUEUE.md.
 %define CybouDB_FEATURE_QUEUE 16384
 
+; Append-only streams - requires COW, the catalog and QUEUE. A stream keeps its
+; records in segment pages of the queue's format, so the bit means nothing
+; without the bit that defines them; what it adds is a fifth directory page
+; type, carrying cursors and the positions they have read to.
+;
+; One storage shape, two objects, one validator. See docs/STREAM.md.
+%define CybouDB_FEATURE_STREAM 32768
+
 ; Column compression codecs (stored in bits 8..15 of leaf column flags):
 %define PAX_CODEC_RAW       0
 %define PAX_CODEC_CONST     1

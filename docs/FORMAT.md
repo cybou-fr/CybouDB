@@ -163,8 +163,15 @@ rather than opened in a half-understood state.
 | 4096 | `TOMBSTONES` | `PAX` |
 | 8192 | `INDEX` | `PAX` |
 | 16384 | `QUEUE` | `CATALOG` |
+| 32768 | `STREAM` | `QUEUE` |
 
 Bit 1 is unassigned and unsupported.
+
+`STREAM` depends on `QUEUE` and not on `CATALOG` alone, because a stream keeps
+its records in segment pages of the queue's format. The dependency is a
+statement about storage rather than about features: one page shape, two
+objects, one validator, and a build that cannot read a segment cannot read
+either of them.
 
 `QUEUE` requires only `CATALOG`, and that is a decision rather than an
 oversight: a queue stores no rows, so it needs no PAX table, no leaf and no
@@ -195,6 +202,10 @@ page and of the tree is in [INDEX.md](INDEX.md).
 the same consequence: a segment page is an ordinary payload page, and what
 the bit changes is that a directory entry may name a page of a fourth type.
 The layout of the queue page and of a segment is in [QUEUE.md](QUEUE.md).
+
+`STREAM` adds a fifth type to the directory and nothing else. Its records are
+in segments the queue bit already defined, so the only new page is the one
+that names them and the cursors reading them - see [STREAM.md](STREAM.md).
 
 ## What version 1 fixes
 

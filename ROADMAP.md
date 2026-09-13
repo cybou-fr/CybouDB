@@ -988,6 +988,47 @@ then ENQUEUE and DEQUEUE; then the C ABI, with the statements reaching the
 engine through sql_execute_batch so there is one implementation rather than
 one per caller.
 
+## Phase 12 - Streams
+
+The decisions are fixed in [docs/STREAM.md](docs/STREAM.md). Nothing
+implements them yet, and `CybouDB_FEATURE_STREAM` is reserved rather than
+accepted: until this build can read a stream page, a file carrying the bit is
+refused at open as a file whose features are unknown, which is the clean
+refusal the bit exists for.
+
+What is decided:
+
+* a stream is not a queue with extra readers, and collapsing them would make
+  the queue's promise accidental. `DEQUEUE` removes the message in the
+  transaction that takes it - that is a guarantee, and it is the reason a
+  queue inside a database is worth having. `READ` says only that this cursor
+  has seen up to here. Two promises, two operations;
+* they share the storage, which is where duplication would actually cost. A
+  stream's records live in segment pages of the queue's format, validated by
+  the same walk, with a long payload in the same varlen chain. One storage
+  shape, two objects, one validator - which is why the feature bit depends on
+  `QUEUE` rather than on `CATALOG`;
+* a cursor is a durable, named reader and there are at most eight of them. A
+  process that wants to read without leaving anything behind reads by position
+  and keeps its own place. The ceiling is stated rather than discovered;
+* a trim may not pass the slowest cursor. Skipping silently loses data a
+  reader was promised and failing leaves it stuck, so refusing is the only
+  answer that keeps both promises - and the cost, that one abandoned cursor
+  stops retention, has an explicit escape hatch in `DROP CURSOR` rather than a
+  timeout the engine would have to invent.
+
+Retention by age or by size is absent, and deliberately: age needs a clock the
+engine does not have, size needs a policy, and both are `TRIM` with something
+above the engine deciding the argument. Sixteen bytes are reserved for what a
+policy would need when there is one to defend.
+
+The order of work is the one queues took, because it paid: the catalog page
+and its validation first, then `CREATE STREAM` and `DROP STREAM`, then
+`APPEND` and cursors, then `READ`, then `TRIM`, then the C ABI - every
+statement through `sql_execute_batch`.
+
+---
+
 ---
 
 ## Known gaps outside the phases
