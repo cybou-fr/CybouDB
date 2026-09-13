@@ -21,7 +21,9 @@ directory = pathlib.Path("build/testrun")
 directory.mkdir(parents=True, exist_ok=True)
 path = directory / "root.cdb"
 path.unlink(missing_ok=True)
-run("create", path, 16)
+# The legacy creator on purpose: this checks the pre-COW allocator, and
+# `create` now makes the canonical profile, where `free` is refused.
+run("create-legacy", path, 16)
 run("alloc", path, 2)
 data = bytearray(path.read_bytes())
 for page in (1, 2):

@@ -57,10 +57,11 @@ there is nothing before it to have changed from.
   which refuses to pass the slowest reader. See [docs/STREAM.md](docs/STREAM.md).
 - **One transaction over all of them.** A table, its index, a queue and a stream
   share a file, an allocation map and a commit, so taking a message, writing the
-  row it was for and appending an audit record are atomic together. This is why
-  the outbox pattern is not needed here. It holds across a crash as well as a
-  rollback: after power loss a reader finds the whole old state or the whole new
-  one, never a message taken with no row to show for it.
+  row it was for and appending an audit record are atomic together, so no outbox
+  is needed between primitives inside the same `.cdb`. An external system is
+  separate again. It holds across a crash as well as a rollback: after power
+  loss a reader finds the whole old state or the whole new one, never a message
+  taken with no row to show for it.
 
 ### Interfaces
 
@@ -70,8 +71,11 @@ there is nothing before it to have changed from.
   `cyboudb_create` makes the canonical profile - everything `create-large` has
   plus the per-row tombstone reservation, which can only be made when the file
   is created and is what lets `DELETE` mark rows instead of rewriting the table.
-- **Command line**: `create-*`, `query`, `info`, `check`, `alloc`, `free`,
-  `version`.
+- **Command line**: `create`, `query`, `info`, `check`, `alloc`, `free`,
+  `version`. `cyboudb create` and `cyboudb_create` make the same canonical
+  profile. The creators for each stage the format grew through still exist for
+  the test suites - `create-legacy` and the rest - and are not in `--help`,
+  because choosing among them is choosing which features to do without.
 - **Interactive console** with `.schema`, `.tables`, `.indexes`, `.queues`,
   `.streams` and piped-script support.
 
@@ -101,6 +105,14 @@ work after this preview.
 
 Over 18,000 automated checks, every one run by CI on Linux and Windows on every
 push. The suites are listed under **Test** in [README.md](README.md).
+
+Two of them exist for the promises this file makes. `tests/compat_tests.py`
+opens databases frozen by each released build - under `tests/compat/` - runs
+`cyboudb check` over them, reads back the rows, the TEXT, BLOB and VECTOR
+cells, the message still waiting on a queue and the record a stream cursor has
+not reached, and then writes to a copy. `tests/package_consumer.c` is compiled
+in a directory holding only what a release ships, so that "the library links"
+is tested rather than assumed.
 
 ---
 

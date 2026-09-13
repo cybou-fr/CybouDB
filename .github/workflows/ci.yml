@@ -32,6 +32,7 @@ jobs:
         run: |
           sh build.sh --core-tests
           python3 tests/version_tests.py ./cyboudb
+          python3 tests/compat_tests.py ./cyboudb
           python3 tests/root_roundtrip.py ./cyboudb
           python3 tests/cow_tests.py ./cyboudb ./build/cow_harness
           python3 tests/bitmap_tests.py ./cyboudb ./build/cow_harness
@@ -77,7 +78,23 @@ jobs:
           sh build.sh --bench
           sh build.sh --c-api-bench
           sh build.sh --vector-bench
+          sh build.sh --queue-bench
           python3 tests/public_select_tests.py ./cyboudb ./build/bench_harness ./build/c_api_harness
+
+      # Built the way a release is built - `--lib`, no allocation injection -
+      # and compiled in a directory holding only what a release ships. This is
+      # the check that the published package links for somebody who has only
+      # the package.
+      - name: An application with only the published package
+        run: |
+          sh build.sh --lib
+          rm -rf build/pkgtest && mkdir -p build/pkgtest/include
+          cp include/cyboudb.h build/pkgtest/include/
+          cp build/libcyboudb.a build/pkgtest/
+          cp tests/package_consumer.c build/pkgtest/
+          cd build/pkgtest
+          cc -O2 -no-pie -Wall -Iinclude package_consumer.c libcyboudb.a -o consumer
+          ./consumer
 
       - name: Build static library and run C API tests
         run: |
@@ -159,6 +176,7 @@ jobs:
         shell: bash
         run: |
           python tests/version_tests.py ./cyboudb.exe
+          python tests/compat_tests.py ./cyboudb.exe
           python tests/root_roundtrip.py ./cyboudb.exe
           python tests/cow_tests.py ./cyboudb.exe ./build/cow_harness.exe
           python tests/bitmap_tests.py ./cyboudb.exe ./build/cow_harness.exe
@@ -202,7 +220,25 @@ jobs:
           if errorlevel 1 exit /b 1
           call build.bat --vector-bench
           if errorlevel 1 exit /b 1
+          call build.bat --queue-bench
+          if errorlevel 1 exit /b 1
           python tests/public_select_tests.py ./cyboudb.exe ./build/bench_harness.exe ./build/c_api_harness.exe
+
+      - name: An application with only the published package
+        shell: cmd
+        run: |
+          call build.bat --lib
+          if errorlevel 1 exit /b 1
+          if exist build\pkgtest rmdir /s /q build\pkgtest
+          mkdir build\pkgtest\include
+          copy include\cyboudb.h build\pkgtest\include\ >nul
+          copy build\cyboudb.lib build\pkgtest\ >nul
+          copy tests\package_consumer.c build\pkgtest\ >nul
+          cd build\pkgtest
+          cl.exe /O2 /W3 /nologo /Iinclude package_consumer.c /Fe:consumer.exe /Fo:consumer.obj /link cyboudb.lib kernel32.lib
+          if errorlevel 1 exit /b 1
+          consumer.exe
+          if errorlevel 1 exit /b 1
 
       - name: Build static library and run C API tests
         shell: cmd

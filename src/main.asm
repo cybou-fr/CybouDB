@@ -50,6 +50,7 @@ section .data
 str_cmd_console: db "console", 0
 str_cmd_repl:    db "repl", 0
 str_cmd_create:  db "create", 0
+str_cmd_create_legacy: db "create-legacy", 0
 str_cmd_create_cow: db "create-cow", 0
 str_cmd_create_catalog: db "create-catalog", 0
 str_cmd_create_pax_multi: db "create-pax-multi", 0
@@ -69,9 +70,11 @@ str_opt_help:    db "--help", 0
 str_opt_h:       db "-h", 0
 str_cmd_version: db "version", 0
 str_opt_version: db "--version", 0
-; The product version, which the on-disk format version is not: a file
-; written by any build of version 1 of the format is readable by any other,
-; and this says which build is asking.
+; The product version, which the on-disk format version is not.
+; Compatibility runs one way: a newer release reads a file an earlier
+; format-v1 build wrote, and an older binary is not guaranteed to open a file
+; that uses feature bits it does not know - refusing it is the format working.
+; This line says which build is asking.
 msg_product:     db "CybouDB 0.5.0-preview.1", 10
                  db "  on-disk format: version 1", 10
                  db "  https://github.com/cybou-fr/CybouDB", 10, 0
@@ -81,25 +84,12 @@ msg_usage:
     db "Usage:", 10
     db "  cyboudb <path>                  open an interactive console", 10
     db "  cyboudb console <path>          the same", 10
-    db "  cyboudb create <path> <pages> [--force] [--pax]", 10
-    db "                               create a new database file;", 10
+    db "  cyboudb create <path> <pages> [--force]", 10
+    db "                               create a database: tables, indexes,", 10
+    db "                               TEXT/BLOB, vectors, queues, streams;", 10
     db "                               --force replaces an existing one", 10
     db "  cyboudb query  <path> <statement>", 10
     db "                               execute a SQL statement", 10
-    db "  cyboudb create-cow <path> <pages> [--force]", 10
-    db "                               COW storage, 4..16112 pages", 10
-    db "  cyboudb create-catalog <path> <pages> [--force]", 10
-    db "                               COW storage with a typed catalog", 10
-    db "  cyboudb create-pax <path> <pages> [--force]", 10
-    db "                               typed catalog with PAX row storage", 10
-    db "  cyboudb create-pax-multi <path> <pages> [--force]", 10
-    db "                               multiple PAX pages per table", 10
-    db "  cyboudb create-large <path> <pages> [--force]", 10
-    db "  cyboudb create-tombstones <path> <pages> [--force]", 10
-    db "                               the same, with per-row tombstones", 10
-    db "  cyboudb create-compressed <path> <pages> [--force]", 10
-    db "                               the same, with a paired multi-page", 10
-    db "                               allocation map instead of one page", 10
     db "  cyboudb info   <path>           show database metadata", 10
     db "  cyboudb check  <path>           verify every page, not just the", 10
     db "                               newest generation's", 10
@@ -310,6 +300,12 @@ cyboudb_main:
     jnz     .cmd_create
 
     mov     ARG1, [rbp - 16]
+    lea     ARG2, [str_cmd_create_legacy]
+    call    os_str_eq_ascii
+    test    rax, rax
+    jnz     .cmd_create_legacy
+
+    mov     ARG1, [rbp - 16]
     lea     ARG2, [str_cmd_create_cow]
     call    os_str_eq_ascii
     test    rax, rax
@@ -433,6 +429,12 @@ cyboudb_main:
     jnz     .usage
 
     mov     ARG1, [rbp - 16]
+    lea     ARG2, [str_cmd_create_legacy]
+    call    os_str_eq_ascii
+    test    rax, rax
+    jnz     .usage
+
+    mov     ARG1, [rbp - 16]
     lea     ARG2, [str_cmd_create_cow]
     call    os_str_eq_ascii
     test    rax, rax
@@ -519,7 +521,14 @@ cyboudb_main:
     ret
 
 ; ---------------------------------------------------------------- create -----
+; `create` makes the database a user should want: everything, including the
+; per-row tombstone reservation, which can only be made when the file is made.
+; The creators below it exist to test the format at the stages it grew through
+; and are not in --help; a user should not have to pick one.
 .cmd_create:
+    mov     qword [rbp - 56], 7
+    jmp     .create_args
+.cmd_create_legacy:
     mov     qword [rbp - 56], 0
     jmp     .create_args
 .cmd_create_cow:
@@ -579,24 +588,10 @@ cyboudb_main:
     jmp     .flag_loop
 
 .check_flag_pax:
-    mov     ARG1, r13
-    lea     ARG2, [str_opt_pax]
-    call    os_str_eq_ascii
-    test    rax, rax
-    jz      .check_flag_compress
-    mov     qword [rbp - 56], 4         ; create_pax_multi
-    inc     r12
-    jmp     .flag_loop
-
-.check_flag_compress:
-    mov     ARG1, r13
-    lea     ARG2, [str_opt_compress]
-    call    os_str_eq_ascii
-    test    rax, rax
-    jz      .usage
-    mov     qword [rbp - 56], 6         ; create_compressed
-    inc     r12
-    jmp     .flag_loop
+    ; --pax and --compress used to pick a historical format profile. `create`
+    ; now makes one profile and there is nothing to choose, so they are gone
+    ; rather than silently ignored.
+    jmp     .usage
 .have_flags:
 
     mov     ARG1, [rbp - 24]

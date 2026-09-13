@@ -142,7 +142,7 @@ with tempfile.TemporaryDirectory() as directory:
 
     # An unflagged legacy file is never silently converted to COW.
     path = directory / "legacy.cdb"
-    run(binary, "create", path, 16)
+    run(binary, "create-legacy", path, 16)
     run(binary, "alloc", path, 1)
     run(binary, "free", path, 3)
     before = path.read_bytes()

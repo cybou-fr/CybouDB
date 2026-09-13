@@ -19,11 +19,15 @@ COMMIT;
 ```
 
 Either all of that happened or none of it did - including the index entry the
-row required. There is one storage engine underneath rather than a database
-beside a vector store beside a broker, which is why the outbox pattern is not
-needed here: it exists to paper over having two commits, and this has one. See
-[docs/TRANSACTIONS.md](docs/TRANSACTIONS.md) for what that covers, and what it
-does not.
+row required, and across a crash as well as a rollback. There is one storage
+engine underneath rather than a database beside a vector store beside a broker.
+
+So **no outbox is needed between primitives that live inside the same `.cdb`
+transaction**. An external system is separate again, and nothing here changes
+that: a transaction that takes a message and then calls another service is two
+systems, and [docs/QUEUE.md](docs/QUEUE.md) says which order buys which
+guarantee. See [docs/TRANSACTIONS.md](docs/TRANSACTIONS.md) for the whole of
+what a commit covers.
 
 ## What it is fast at, and what it is not
 
@@ -96,18 +100,18 @@ dependencies.
 | Memory-mapped storage, 4 KiB logical pages | working |
 | Page allocator with a free list | working |
 | Two-superblock metadata publication | working; a commit is one checksummed publication and the highest valid generation wins. The exception is a **legacy** file made by plain `create`, which has no COW bit: its page mutations happen in place and are not crash-safe. Every other creator, and everything the library makes, stages and publishes |
-| Persisted COW mode and allocation map | working; `create-cow`, then `alloc` / `info` |
-| Typed catalog and COW root-path updates | working; up to 251 tables, 64 columns per table |
+| Persisted COW mode and allocation map | working; every database `create` makes |
+| Typed catalog and COW root-path updates | working; up to 251 objects in one namespace - tables, indexes, queues and streams share it - and 64 columns per table |
 | PAX columnar table storage | working; whole 64-row groups, typed columns, NULL masks |
 | Multi-page PAX tables | working; two-level directory tree (up to 28M rows per table), cross-page batches |
-| Paired multi-page allocation map | working; `create-large`, 63 GiB ceiling, page reclamation |
+| Paired multi-page allocation map | working; 63 GiB ceiling, page reclamation |
 | SQL engine: parser, binder, executor | working; pure x86-64 scalar and batch execution |
 | SQL statements | working; `CREATE TABLE`, `DROP TABLE`, `INSERT INTO` (multi-row), fixed-width flat-PAX `UPDATE ... SET literal WHERE`, `DELETE FROM ... [WHERE]`, `SELECT ... WHERE`, stable single-key `ORDER BY`, `LIMIT [OFFSET]`, correctness-first `INNER JOIN`/`LEFT JOIN` on qualified INT32/INT64 equi-keys, `BEGIN`/`COMMIT`/`ROLLBACK`, `CREATE [UNIQUE] INDEX` / `DROP INDEX`, `CREATE QUEUE` / `DROP QUEUE` / `ENQUEUE` / `DEQUEUE`, `CREATE STREAM` / `DROP STREAM` / `APPEND` / `READ` / `TRIM`, `CREATE CURSOR` / `DROP CURSOR` |
 | Secondary indexes | working; copy-on-write B+tree on INT32/INT64 columns, unique or not, maintained by every statement that changes a table. A plan uses one for any single comparison against an indexed column, and an UPDATE or a marking DELETE patches the entries of the rows it touched rather than rebuilding the tree: see [docs/INDEX.md](docs/INDEX.md) |
 | DELETE strategy | working; truncation, per-row tombstones, or a compacting rewrite, chosen per statement from what the table already holds. No explicit `VACUUM` |
-| SQL types and semantics | fixed-width storage working for `INT32`, `INT64`, `FLOAT32`, `BOOL`; persistent `TEXT`/`BLOB` storage working for `create-large` databases |
+| SQL types and semantics | working for `INT32`, `INT64`, `FLOAT32`, `BOOL`, and persistent `TEXT`/`BLOB` |
 | CLI: `query` | working; executes statements, autocommits mutations, tabular output |
-| CLI: `create`, `info`, `check`, `alloc`, `free`, `version` | working. `create` makes a legacy non-COW file and exists for format tests; `create-large` is the one to use, and `cyboudb_create` in the library adds per-row tombstones on top of it |
+| CLI: `create`, `query`, `info`, `check`, `alloc`, `free`, `version` | working; `create` and `cyboudb_create` make the same canonical profile |
 | Open proportional to the change, not the file | working; `cyboudb check` still reads everything |
 | Linux x86-64, raw syscalls, no libc | working |
 | Windows x64, kernel32 only | working |
@@ -169,25 +173,23 @@ use temporary decoded batches. [Compression V1](docs/COMPRESSION.md) supports
 CONST/FOR inside fixed-size slots; it does not reduce the logical file size.
 
 ```sh
-# Create a PAX database file (256 pages = 1 MiB)
-cyboudb create-pax demo.cdb 256
+# Create a database (4000 pages = 16 MiB). One profile: tables, secondary
+# indexes, TEXT/BLOB, vectors, per-row tombstones, queues and streams.
+cyboudb create demo.cdb 4000
 
-# Define a table (supports INT32, INT64, FLOAT32, BOOL, NULL / NOT NULL)
+# Define a table
 cyboudb query demo.cdb "CREATE TABLE users (id INT32 NOT NULL, score FLOAT32, active BOOL)"
 
-# Insert rows (supports multi-row batches up to 256 rows)
+# Insert rows (multi-row batches up to 256 rows)
 cyboudb query demo.cdb "INSERT INTO users VALUES (1, 98.5, true), (2, null, false), (3, -12.25, true)"
 
-# Query data with projection and filtering (3VL logic, comparison operators, IS NULL)
+# Query with projection and filtering (3VL logic, comparison operators, IS NULL)
 cyboudb query demo.cdb "SELECT id, score FROM users WHERE active = true AND score > 0.0"
 ```
 
-`TEXT` and `BLOB` are persistently supported for databases created with
-`create-large`, which enables the incompatible variable-width extent
-capability. Fixed-width creators continue to reject them rather than publish
-an unsupported schema. Fixed-width scans can expose borrowed/zero-copy views;
-variable-width values are validated and copied into caller-owned buffers. The
-versioned on-disk contract is documented in [docs/VARLEN.md](docs/VARLEN.md).
+Fixed-width scans can expose borrowed zero-copy views; variable-width values are
+validated and copied into caller-owned buffers. The versioned on-disk contract
+is in [docs/VARLEN.md](docs/VARLEN.md).
 
 Output:
 
@@ -226,12 +228,16 @@ Within the console, queries can span multiple lines until terminated with a semi
 
 ```text
 cyboudb> .help
-Available commands:
-  .tables              List tables in the database
-  .schema [TABLE]      Show CREATE TABLE statement(s)
-  .info                Display database metadata and status
-  .help                Show this help message
-  .quit / .exit        Exit the console
+Available meta-commands:
+  .help           Show this help message
+  .info           Show database metadata
+  .schema [TABLE] Show CREATE TABLE statement(s)
+  .tables         List all tables
+  .indexes [TABLE] List indexes, or one table's
+  .queues         List queues and what they hold
+  .streams        List streams and their readers
+  .quit           Exit the console
+  .exit           Exit the console
 
 cyboudb> .tables
 users
@@ -278,8 +284,10 @@ public declarations are in [include/cyboudb.h](include/cyboudb.h).
 
 `cyboudb_create(path, pages, &db)` makes a database file and opens it
 read-write, so a program that links the library does not need the command line
-to get one. It makes the kind `create-large` makes - every feature enabled -
-and refuses to replace a file that is already there.
+to get one. It makes the same profile `cyboudb create` does - tables, indexes,
+TEXT/BLOB, vectors, per-row tombstones, queues and streams; compression is the
+one capability left out, because it does not yet make a file smaller on disk -
+and it refuses to replace a file that is already there.
 
 Two examples, both built and run by CI:
 
@@ -345,30 +353,16 @@ CybouDB Database Info
   Status:          OK
 ```
 
-Use `cyboudb create-cow demo.cdb 256` for the experimental COW mode. Its
-allocation map protects committed pages and persists the storage mode, so
-`alloc` automatically follows the COW path after reopen. `free` is not supported
-in this mode. The current single-map limit is 4..16112 total pages; see
-[the format and limits](docs/COW.md).
+### The other creators
 
-`cyboudb create-catalog demo.cdb 256` enables the typed catalog as well. Its
-internal API stores table names and column declarations with COW schema/root
-updates. See [the catalog contract](docs/CATALOG.md).
-
-`cyboudb create-pax demo.cdb 256` additionally enables fixed-width row batches,
-per-column NULL masks and scalar reads. The first stage holds one PAX page per
-table. A page stores as many whole 64-row groups as its schema allows - 3520
-rows for a single BOOL column - so the 64-row group stays the unit a NULL mask
-and future vector kernels work on without capping what a page may hold.
-
-`cyboudb create-pax-multi demo.cdb 512` enables a directory of PAX pages per
-table, scaling through a two-level directory tree up to 63,001 leaf runs
-(up to 28 million rows) with cross-page batch insertion.
-
-`cyboudb create-large demo.cdb 40000` adds the paired multi-page allocation map,
-which takes the map out of the allocator and raises the file limit from 63 MiB
-to 63 GiB. It is also the only format that reclaims pages: once the file is
-full it recycles what previous generations retired instead of refusing.
+`cyboudb create` makes one profile, and it is the one to use. The engine also
+carries a creator for each stage the format grew through - `create-legacy`,
+`create-cow`, `create-catalog`, `create-pax`, `create-pax-multi`, `create-large`,
+`create-tombstones`, `create-compressed`. They exist so the test suites can
+build a file at each capability level and prove that a reader refuses what it
+does not understand. They are not in `--help`, they are not a menu, and a user
+choosing among them is choosing which features to do without. What each one
+enables is in [docs/FORMAT.md](docs/FORMAT.md).
 
 Creating a database never overwrites an existing file; `--force` is required
 for that.
@@ -466,6 +460,21 @@ Built with `--c-tests`:
   transaction has to survive. The invariant is that every outcome is wholly
   old or wholly new: never a message taken with no row to show for it.
 
+### Compatibility and packaging
+
+* `tests/compat_tests.py` (29): databases frozen by each released build, under
+  `tests/compat/<version>/`, gzipped and base64-encoded because the repository
+  holds text. Each is checked with `cyboudb check`, read back cell by cell -
+  rows that survived a `DELETE`, a TEXT value, a vector still searchable, the
+  message still waiting on a queue, the record a stream cursor has not reached
+  - and then written to on a copy, because a database you can only read is not
+  compatible in any useful sense. The fixtures are never regenerated: rebuilt
+  with the current engine they would only prove it can read itself.
+* `tests/package_consumer.c`: an application compiled in a directory holding
+  only what a release ships - `cyboudb.h` and the static library - so that a
+  public header including a private one, or a missing exported symbol, fails in
+  CI rather than for the first person who downloads the package.
+
 ### Argument register lint
 
 * `tests/abi_arg_lint.py`: reads every `.asm` file for the one mistake this
@@ -512,7 +521,9 @@ All test suites run in CI on both Linux and Windows.
   reserves what they need.
 * **[docs/STREAM.md](docs/STREAM.md)** - append-only streams: why a stream is
   not a queue with extra readers, why it is nonetheless stored in a queue's
-  segments, and what a trim may not pass. Decided, not yet implemented.
+  segments, and what a trim may not pass. `CREATE STREAM`, `APPEND`,
+  `CREATE CURSOR`, `READ` and `TRIM` work from the command line, the console
+  and the C ABI.
 
 ---
 

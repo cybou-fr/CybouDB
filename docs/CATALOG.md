@@ -1,11 +1,22 @@
 # Typed COW catalog
 
-Status: a fixed-height catalog is implemented. It stores table definitions and
-fixed-width column declarations. The separate [PAX capability](PAX.md) adds
-row storage and schema data roots. There is no SQL, table deletion,
-directory splitting or reclamation yet.
+Status: implemented, and this page describes the layer rather than the product.
+The directory is fixed-height and holds up to 251 objects of five kinds in one
+id space and one namespace - tables (`CAT_SCHEMA`), indexes (`CAT_INDEX`),
+queues (`CAT_QUEUE`) and streams (`CAT_STREAM`), reached through a directory
+page (`CAT_DIRECTORY`). A name belongs to one object of any kind.
+
+SQL, `DROP`, page reclamation and deletion all exist now and go through this
+layer; the sentences below about "a future API" are about the internal C
+entry points this document covers, not about what the engine can do. Splitting
+the directory beyond one page is still future work, and 251 objects is the
+ceiling until then.
 
 ## Creation and compatibility
+
+`create-catalog` builds a file at exactly this capability level, which is what
+the tests for this layer need. A user wants `cyboudb create`, which enables it
+along with everything above it.
 
 ```sh
 cyboudb create-catalog demo.cdb 256
@@ -120,7 +131,7 @@ and checks whole-page CRCs. These are process/fault tests, not a simulation of
 every physical power-loss behavior.
 
 The PAX capabilities implement single-page roots and bounded
-[multi-page table directories](PAX_MULTI.md). Next work: scalar scans, larger
-catalog trees, deletion and reclamation, then binding
-names through the SQL front end. Future reserved-field semantics still require
-a persisted format extension.
+[multi-page table directories](PAX_MULTI.md). Scans, deletion, reclamation and
+name binding through the SQL front end are all implemented; what remains here
+is a directory larger than one page, and reserved-field semantics that would
+need a persisted format extension.
