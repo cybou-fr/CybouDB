@@ -47,16 +47,26 @@ SQL transactions are implemented via Phase 2 COW staging (`BEGIN`,
 `COMMIT`, `ROLLBACK`). `DELETE FROM table` removes every row of one table by
 publishing a schema page whose data root, statistics root and row count are
 back where `CREATE TABLE` left them. `DELETE ... WHERE` counts the matching
-rows first, then rewrites the ones that survive into a fresh graph through
-the ordinary append path, truncation and rewrite staged as one COW
-transaction. A surviving TEXT, BLOB or VECTOR cell keeps the extent chain it
-already points at rather than having its payload copied out and back, the
-same way an UPDATE carries an untouched cell through the leaf it rewrites.
-It is correctness-first rather than incremental. An ARM64 backend remains
-unimplemented. `UPDATE` supports single-column assignments with a mandatory
-predicate across flat and tree-directory PAX tables, including fixed-width and
-persisted variable-width TEXT/BLOB columns. `DROP TABLE` drops tables and
-stages new catalog roots atomically across both CLI and REPL.
+rows first and then picks between marking them dead in place and rewriting the
+survivors into a fresh graph, which is the difference between a statement that
+costs the rows it removes and one that costs the table; a file created without
+the `TOMBSTONES` bit always rewrites. A surviving TEXT, BLOB or VECTOR cell
+keeps the extent chain it already points at rather than having its payload
+copied out and back, the same way an UPDATE carries an untouched cell through
+the leaf it rewrites. `UPDATE` supports single-column assignments with a
+mandatory predicate across flat and tree-directory PAX tables, including
+fixed-width and persisted variable-width TEXT/BLOB columns. `DROP TABLE` drops
+tables and stages new catalog roots atomically across both CLI and REPL. An
+ARM64 backend remains unimplemented.
+
+Secondary indexes are copy-on-write B+trees over `INT32` and `INT64` columns,
+unique or not, kept current by every statement that changes a table and
+validated as part of the same commit. A plan reads through one for any single
+comparison against an indexed column - `=`, `<`, `<=`, `>`, `>=` - and leaves
+a range too wide to be worth the walk to the scan. An `UPDATE` or a marking
+`DELETE` patches the entries of the rows it touched instead of rebuilding the
+tree, so both cost the rows they change rather than the size of the table.
+See [docs/INDEX.md](docs/INDEX.md).
 
 ---
 
@@ -604,8 +614,16 @@ and no encryption claim should be made without external review.
 
 ## Secondary indexes
 
-Partly implemented, and the part that is missing is named below rather than
-implied. The format decisions are in [docs/INDEX.md](docs/INDEX.md).
+Implemented, and what is missing is named below rather than implied. The format
+decisions are in [docs/INDEX.md](docs/INDEX.md).
+
+The index page layout changed after it was first written - an entry went from
+16 bytes to 24 so that it could carry the `(key, row)` pair the order is on -
+and that is a change the compatibility promise would not have allowed against a
+released series. It is allowed here because there is no release: GitHub
+Releases is empty, no file carrying the `INDEX` bit exists outside this
+repository, and the bit is what a build that cannot read one refuses on. After
+a release the same change would need a new feature bit.
 
 Done: the B+tree - bulk build, descent, one-row insert with splits, one-entry
 delete, all under copy-on-write; the index as a third page type in the catalog
@@ -615,13 +633,17 @@ ON table (column)` and `DROP INDEX name` over INT32 and INT64 columns, with
 uniqueness enforced while the tree is built.
 
 Maintenance is done too: an INSERT reaches every index of the table, a unique
-index refuses a row that would break it, a marking DELETE leaves the entries
-where they are because the rows did not move, a compacting DELETE rebuilds
-every index because they did, an UPDATE rebuilds the indexes over the column it
-wrote, and DROP TABLE takes its indexes with it.
+index refuses a row that would break it, a marking DELETE takes the entries of
+the rows it marks out of every index, an UPDATE takes the entries of the rows
+it writes out and puts them back under the new key, a compacting DELETE
+rebuilds every index because every surviving row moved, and DROP TABLE takes
+its indexes with it. Every one of those reaches the trees through
+`sql_execute_batch`, so the CLI, the REPL and the C ABI get the same behaviour
+rather than three copies of it.
 
-Not done, and measured rather than guessed at - `benchmarks/index_bench.py`
-has the numbers:
+What the rest of this section records is measured rather than guessed at -
+`benchmarks/index_bench.py` and `tests/index_probe.c` have the numbers - and
+says where each thing stands:
 
 * **A commit stops at the generation boundary.** Every node records how many
   entries live at or below it, so validation takes a subtree's size rather than
@@ -763,7 +785,25 @@ has the numbers:
   worth fixing and is not a wrong answer. Separately, the ABI's pull cursor
   cannot ORDER BY at all, which is older than any of this.
 
-Also open: TEXT keys and multi-column keys.
+Also open: TEXT keys, multi-column keys, and `COUNT(*)` - the planner refuses
+an index for it along with LIMIT, ORDER BY and vector top-K, because those are
+the shapes where the order a lookup returns rows in becomes a different answer.
+`COUNT(*)` is not one of them and is refused only because it shares the test.
+
+---
+
+## The foundation
+
+Storage, transactions, recovery, the SQL front end, the columnar executor,
+vectors, tombstoned DELETE and secondary indexes are implemented, documented
+and green on Linux and Windows. Both platform jobs run the same suites, bar
+one that tests Windows command-line parsing and has nothing to test elsewhere.
+Nothing below this line depends on any of it changing shape.
+
+That is what a new subsystem was waiting for. The order from here is queues,
+then streams, then transactions that span more than one primitive, then the
+daemon, then the examples, then release hardening - each one finished and
+green before the next begins, for the same reason the phases above were.
 
 ---
 
