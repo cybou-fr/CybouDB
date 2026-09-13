@@ -21,6 +21,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 void *cyboudb_test_mem_alloc(size_t size) { return malloc(size); }
 void cyboudb_test_mem_free(void *ptr, size_t size) { (void)size; free(ptr); }
@@ -86,6 +89,34 @@ static void stream_image(unsigned char *image, const char *name) {
 /* Publishing a probe and trying to commit is how a damaged page is asked
    about: the commit validates everything the live generation reaches, so
    damage anywhere in it has to stop the commit. */
+/* The integrity question, which is not the recovery question: `cyboudb check`
+ * opens with CybouDB_VERIFY_DEEP | CybouDB_VERIFY_INTEGRITY and reports a
+ * damaged newest generation rather than quietly using the one before it.
+ * docs/RECOVERY.md. */
+extern void db_catalog_seal(void *page);
+
+/* Damage written straight into a live page leaves its checksum stale, and a
+ * deep check refuses a stale checksum without ever reaching the rule the case
+ * is about. Resealing is what makes these cases prove what their names say:
+ * the page checksums correctly and is refused anyway, for what it says rather
+ * than for being torn. */
+extern int db_open(const void *path, void *ctx, uint64_t writable,
+                   uint64_t verify);
+extern int db_close(void *ctx);
+
+static int integrity_check_refuses(const char *path) {
+    uint64_t vctx[64] = {0};          /* well past CybouDB_DB_SIZE on purpose */
+    const void *p = path;
+#ifdef _WIN32
+    static wchar_t wide[32768];
+    if (!MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, 32768)) return 0;
+    p = wide;
+#endif
+    if (db_open(p, vctx, 0, 3) != 0) return 1;
+    db_close(vctx);
+    return 0;
+}
+
 static int refused_with(void *ctx, unsigned char *image, uint64_t probe_id) {
     int refused;
     stream_image(image, "probe");
@@ -194,20 +225,30 @@ int main(int argc, char **argv) {
         for (size_t i = 0; i < sizeof damage / sizeof damage[0]; i++) {
             unsigned char saved[8];
             char label[160];
-            int refused;
+            int reported;
             check("a stream to damage",
                   db_catalog_get(ctx, 800001, &page) == 0 && page != 0);
             mapped = db_queue_seg_addr(ctx, page);
             /* Written straight into the page the live generation owns, and
                put back afterwards, so the next case starts from a database
-               that is still whole. */
+               that is still whole.
+
+               Case C of docs/COMMIT_VALIDATION.md section 7: this stream is
+               not what the transaction touches, its directory entry still
+               names the page the published generation named, and the whole
+               object is therefore inherited. The integrity check is what
+               answers for it now - the same move the queue suite made, for
+               the same reason. */
             memcpy(saved, mapped + damage[i].off, (size_t)damage[i].width);
             memcpy(mapped + damage[i].off, &damage[i].value,
                    (size_t)damage[i].width);
-            refused = refused_with(ctx, image, 800005);
+            db_catalog_seal(mapped);
+            reported = integrity_check_refuses(argv[1]);
             memcpy(mapped + damage[i].off, saved, (size_t)damage[i].width);
-            snprintf(label, sizeof label, "%s stops the commit", damage[i].what);
-            check(label, refused);
+            db_catalog_seal(mapped);
+            snprintf(label, sizeof label,
+                     "%s is reported by the integrity check", damage[i].what);
+            check(label, reported);
             check("and the stream is whole again",
                   db_catalog_get(ctx, 800001, &page) == 0 && page != 0);
         }
@@ -217,7 +258,7 @@ int main(int argc, char **argv) {
     {
         static unsigned char saved[S_ENTRIES_OFF - S_CURSOR_TABLE];
         uint64_t one = 1, two = 2, zero = 0;
-        int refused;
+        int reported;
 
         check("a stream to give readers",
               db_catalog_get(ctx, 800001, &page) == 0 && page != 0);
@@ -229,8 +270,9 @@ int main(int argc, char **argv) {
         memcpy(mapped + S_CURSORS_OFF, &one, 8);
         strcpy((char *)mapped + S_CURSOR_TABLE + SCUR_NAME_OFF, "reader");
         memcpy(mapped + S_CURSOR_TABLE + SCUR_POSITION_OFF, &one, 8);
-        refused = refused_with(ctx, image, 800006);
-        check("a cursor standing outside the stream stops the commit", refused);
+        db_catalog_seal(mapped);
+        reported = integrity_check_refuses(argv[1]);
+        check("a cursor standing outside the stream is reported", reported);
 
         /* Two readers, one name. Both are inside the stream and both are
            named; what is wrong is only that they are the same reader. */
@@ -240,13 +282,17 @@ int main(int argc, char **argv) {
                "reader");
         memcpy(mapped + S_CURSOR_TABLE + SCUR_SIZE + SCUR_POSITION_OFF,
                &zero, 8);
-        refused = refused_with(ctx, image, 800007);
-        check("two cursors with one name stop the commit", refused);
+        db_catalog_seal(mapped);
+        reported = integrity_check_refuses(argv[1]);
+        check("two cursors with one name are reported", reported);
 
         /* The same two, told apart. Nothing is wrong with this one, which is
            what says the two cases above failed for the reason claimed. */
         strcpy((char *)mapped + S_CURSOR_TABLE + SCUR_SIZE + SCUR_NAME_OFF,
                "other");
+        db_catalog_seal(mapped);
+        check("two readers that are two readers are not reported",
+              !integrity_check_refuses(argv[1]));
         stream_image(image, "alongside");
         check("two readers that are two readers commit",
               db_catalog_put_stream(ctx, 800008, image) == 0 &&

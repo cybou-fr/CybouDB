@@ -71,6 +71,13 @@ extern int db_queue_pop(void *ctx, uint64_t id, void *out, uint64_t *out_len,
  * opens with CybouDB_VERIFY_DEEP | CybouDB_VERIFY_INTEGRITY and reports a
  * damaged newest generation instead of quietly using the one before it.
  * docs/RECOVERY.md. */
+extern void db_catalog_seal(void *page);
+
+/* Damage written straight into a live page leaves its checksum stale, and a
+ * deep check refuses a stale checksum without ever reaching the rule the case
+ * is about. Resealing is what makes these cases prove what their names say:
+ * the page checksums correctly and is refused anyway, for what it says rather
+ * than for being torn. */
 extern int db_open(const void *path, void *ctx, uint64_t writable,
                    uint64_t verify);
 extern int db_close(void *ctx);
@@ -223,8 +230,10 @@ int main(int argc, char **argv) {
             memcpy(saved, mapped + damage[i].off, (size_t)damage[i].width);
             memcpy(mapped + damage[i].off, &damage[i].value,
                    (size_t)damage[i].width);
+            db_catalog_seal(mapped);
             reported = integrity_check_refuses(argv[1]);
             memcpy(mapped + damage[i].off, saved, (size_t)damage[i].width);
+            db_catalog_seal(mapped);
             snprintf(label, sizeof label,
                      "%s is reported by the integrity check", damage[i].what);
             check(label, reported);
@@ -303,8 +312,10 @@ int main(int argc, char **argv) {
                 memcpy(saved, target + damage[i].off, (size_t)damage[i].width);
                 memcpy(target + damage[i].off, &damage[i].value,
                        (size_t)damage[i].width);
+                if (!damage[i].on_segment) db_catalog_seal(target);
                 reported = integrity_check_refuses(argv[1]);
                 memcpy(target + damage[i].off, saved, (size_t)damage[i].width);
+                if (!damage[i].on_segment) db_catalog_seal(target);
                 snprintf(label, sizeof label,
                          "%s is reported by the integrity check",
                          damage[i].what);
