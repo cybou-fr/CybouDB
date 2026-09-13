@@ -196,6 +196,11 @@ msg_sql_queue_dropped: db "Queue dropped.", 10, 0
 msg_sql_stream_created: db "Stream created.", 10, 0
 msg_sql_stream_dropped: db "Stream dropped.", 10, 0
 msg_sql_appended:       db "Record appended.", 10, 0
+msg_sql_cursor_created: db "Cursor created.", 10, 0
+msg_sql_cursor_dropped: db "Cursor dropped.", 10, 0
+e_cursor_exists: db "error: the stream already has a reader of that name", 10, 0
+e_cursor_missing: db "error: the stream has no reader of that name", 10, 0
+e_cursor_full:   db "error: a stream holds at most eight readers", 10, 0
 msg_sql_enqueued:      db "ENQUEUE 1", 10, 0
 msg_sql_queue_empty:   db "(empty)", 10, 0
 msg_sql_done:          db "OK.", 10, 0
@@ -1152,6 +1157,10 @@ cyboudb_exec_query:
     je      .stream_dropped
     cmp     qword [r10 + PLAN_TYPE], STMT_APPEND
     je      .appended
+    cmp     qword [r10 + PLAN_TYPE], STMT_CREATE_CURSOR
+    je      .cursor_created
+    cmp     qword [r10 + PLAN_TYPE], STMT_DROP_CURSOR
+    je      .cursor_dropped
     cmp     qword [r10 + PLAN_TYPE], STMT_ENQUEUE
     je      .enqueued
     cmp     qword [r10 + PLAN_TYPE], STMT_DEQUEUE
@@ -1246,6 +1255,14 @@ cyboudb_exec_query:
 
 .appended:
     PUTS    msg_sql_appended
+    jmp     .exec_success
+
+.cursor_created:
+    PUTS    msg_sql_cursor_created
+    jmp     .exec_success
+
+.cursor_dropped:
+    PUTS    msg_sql_cursor_dropped
     jmp     .exec_success
 
 .mutation_unnamed:
@@ -1387,6 +1404,41 @@ cyboudb_exec_query:
     ret
 
 .storage_fail:
+    ; A cursor statement's failures are about a reader, and the codes the core
+    ; returns are the storage engine's. Which reader is meant is presentation,
+    ; so it is answered here rather than by a second set of rules there.
+    mov     r10, [rbp - 40]
+    test    r10, r10
+    jz      .storage_fail_code
+    mov     rdx, [r10 + PLAN_TYPE]
+    cmp     rdx, STMT_CREATE_CURSOR
+    je      .cursor_fail
+    cmp     rdx, STMT_DROP_CURSOR
+    jne     .storage_fail_code
+.cursor_fail:
+    cmp     rax, CybouDB_E_SCHEMA
+    je      .cursor_fail_exists
+    cmp     rax, CybouDB_E_NOTFOUND
+    je      .cursor_fail_missing
+    cmp     rax, CybouDB_E_FULL
+    jne     .storage_fail_code
+    lea     ARG1, [e_cursor_full]
+    jmp     .cursor_fail_say
+.cursor_fail_exists:
+    lea     ARG1, [e_cursor_exists]
+    jmp     .cursor_fail_say
+.cursor_fail_missing:
+    lea     ARG1, [e_cursor_missing]
+.cursor_fail_say:
+    call    puts_asciiz
+    mov     rbx, [rbp - 56]
+    mov     r12, [rbp - 64]
+    mov     r13, [rbp - 72]
+    mov     r14, [rbp - 80]
+    mov     eax, 1
+    FRAME_END
+    ret
+.storage_fail_code:
     cmp     rax, CybouDB_E_COUNT
     jb      .storage_fail_known
     xor     eax, eax

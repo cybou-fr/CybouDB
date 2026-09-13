@@ -277,6 +277,101 @@ def main():
         check("and its chain checks out", r.returncode == 0 and
               "Status:          OK" in r.stdout, r.stdout)
 
+        # --- cursors ---------------------------------------------------------
+        def readers(name):
+            """The cursor table as it is on disk: the names in slot order,
+            then whether every slot past the count is zero."""
+            page = stream_page(db, name)
+            blob = open(db, "rb").read()
+            count = struct.unpack_from("<Q", blob, page + S_CURSORS)[0]
+            names, positions = [], []
+            for i in range(count):
+                slot = page + 128 + i * 32
+                names.append(blob[slot:slot + 24].split(bytes(1))[0].decode())
+                positions.append(struct.unpack_from("<Q", blob, slot + 24)[0])
+            tail = all(blob[page + 128 + i * 32:page + 128 + i * 32 + 32]
+                       == bytes(32) for i in range(count, 8))
+            return names, positions, tail
+
+        query("CREATE STREAM sub;")
+        query("APPEND TO sub VALUES ('one');")
+        query("APPEND TO sub VALUES ('two');")
+        r = query("CREATE CURSOR reader ON sub;")
+        check("a cursor is created", r.returncode == 0 and
+              "Cursor created" in r.stdout, r.stdout)
+        names, positions, tail = readers("sub")
+        check("standing where the stream begins, which is every record it has",
+              names == ["reader"] and positions == [0], f"{names} {positions}")
+        check("and the slots past it hold nothing", tail)
+
+        r = query("CREATE CURSOR reader ON sub;")
+        check("one reader, one name", r.returncode != 0 and
+              "already has a reader" in r.stdout, r.stdout)
+        r = query("CREATE CURSOR  ON sub;")
+        check("a reader nothing can name is refused", r.returncode != 0,
+              r.stdout)
+        r = query("CREATE CURSOR " + "n" * 24 + " ON sub;")
+        check("and a name wider than the slot", r.returncode != 0 and
+              "1 to 23" in r.stdout, r.stdout)
+        r = query("CREATE CURSOR ok_at_23_" + "n" * 14 + " ON sub;")
+        check("while one exactly as wide as the slot is taken",
+              r.returncode == 0, r.stdout)
+        query("DROP CURSOR ok_at_23_" + "n" * 14 + " ON sub;")
+
+        r = query("CREATE CURSOR reader ON log;")
+        check("the same name on another stream is another reader",
+              r.returncode == 0, r.stdout)
+        r = query("CREATE CURSOR c ON q;")
+        check("but a queue has no readers to create", r.returncode != 0,
+              r.stdout)
+
+        # Eight is the ceiling, and it is stated rather than discovered.
+        for i in range(7):
+            query(f"CREATE CURSOR r{i} ON sub;")
+        names, _, _ = readers("sub")
+        check("eight readers fit", len(names) == 8, names)
+        r = query("CREATE CURSOR r8 ON sub;")
+        check("and a ninth is refused", r.returncode != 0 and
+              "at most eight" in r.stdout, r.stdout)
+        r = query("CREATE CURSOR reader ON sub;")
+        check("while a name already there says so even when it is also full",
+              r.returncode != 0 and "already has a reader" in r.stdout,
+              r.stdout)
+
+        # Dropping keeps the table dense, because the validator requires the
+        # slots past the count to be zero. Which slot a reader sits in means
+        # nothing to anyone; its name is what is looked up.
+        before, _, _ = readers("sub")
+        r = query("DROP CURSOR r2 ON sub;")
+        check("a cursor is dropped", r.returncode == 0 and
+              "Cursor dropped" in r.stdout, r.stdout)
+        after, _, tail = readers("sub")
+        check("leaving the other seven", len(after) == 7 and
+              "r2" not in after and set(after) == set(before) - {"r2"},
+              f"{before} -> {after}")
+        check("in a table with nothing past the count", tail)
+        r = query("DROP CURSOR r2 ON sub;")
+        check("and dropping it again says there is no such reader",
+              r.returncode != 0 and "no reader of that name" in r.stdout,
+              r.stdout)
+
+        r = query("DROP CURSOR reader ON sub;")
+        check("the first reader goes too", r.returncode == 0, r.stdout)
+        after, _, tail = readers("sub")
+        check("and the one that took its slot is still findable",
+              len(after) == 6 and "reader" not in after, after)
+        check("with the tail still zero", tail)
+        r = run("check", db)
+        check("after all of which the file checks out", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
+
+        # A prefix is not the name. "read" must not find "reader".
+        query("CREATE CURSOR reader ON sub;")
+        r = query("DROP CURSOR read ON sub;")
+        check("a prefix of a reader's name is not that reader",
+              r.returncode != 0 and "no reader of that name" in r.stdout,
+              r.stdout)
+
         # --- and dropping one gives the pages back ---------------------------
         # Without the retire, a stream that is made and dropped forever would
         # spend segments and never give one back. The assertion is a file too

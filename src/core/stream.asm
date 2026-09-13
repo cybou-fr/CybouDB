@@ -13,7 +13,9 @@
 BITS 64
 default rel
 extern db_queue_segments_valid
+extern db_catalog_page, db_catalog_edit, db_catalog_seal
 global stream_page_valid
+global db_stream_cursor_add, db_stream_cursor_drop, db_stream_cursor_find
 
 section .text
 
@@ -155,5 +157,282 @@ stream_page_valid:
     ret
 .bad:
     xor eax, eax
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  stream_cursor_slot(ARG1 = stream page, ARG2 = index) -> RAX: the cursor
+; -----------------------------------------------------------------------------
+stream_cursor_slot:
+    mov rax, ARG2
+    shl rax, 5                      ; SCUR_SIZE
+    add rax, ARG1
+    add rax, S_CURSOR_TABLE
+    ret
+
+; -----------------------------------------------------------------------------
+;  db_stream_cursor_find(ARG1 = stream page, ARG2 = name, ARG3 = length)
+;      -> RAX: the cursor's index, or -1
+;
+;  A name matches when its bytes match and the stored name ends there: the
+;  table holds NUL-padded names, so "read" must not find "reader".
+; -----------------------------------------------------------------------------
+db_stream_cursor_find:
+    FRAME_BEGIN 64, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov qword [rbp - 32], 0
+.each:
+    mov r10, [rbp - 8]
+    mov rax, [rbp - 32]
+    cmp rax, [r10 + S_CURSORS]
+    jae .missing
+    shl rax, 5
+    lea r11, [r10 + S_CURSOR_TABLE + rax]   ; the cursor
+    mov r10, [rbp - 16]                     ; the name looked for
+    mov rcx, [rbp - 24]
+    xor edx, edx
+.byte:
+    cmp rdx, rcx
+    jae .ended
+    mov al, [r10 + rdx]
+    cmp al, [r11 + SCUR_NAME + rdx]
+    jne .next
+    inc rdx
+    jmp .byte
+.ended:
+    ; Every byte matched; it is the same name only if the stored one stops.
+    cmp rdx, SCUR_NAME_MAX
+    jae .found                      ; the full width, so nothing follows
+    cmp byte [r11 + SCUR_NAME + rdx], 0
+    jne .next
+.found:
+    mov rax, [rbp - 32]
+    FRAME_END
+    ret
+.next:
+    inc qword [rbp - 32]
+    jmp .each
+.missing:
+    mov rax, -1
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  db_stream_cursor_add(ctx, stream id, name, length) -> RAX: result code
+;
+;  A new reader, standing where the stream begins: the oldest record still
+;  kept is the first one it has not seen, which is the only starting point
+;  that promises it every record the stream still has.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=id, [rbp-24]=name, [rbp-32]=length,
+;               [rbp-40]=page, [rbp-48]=first, [rbp-56]=end, [rbp-64]=cursor
+; -----------------------------------------------------------------------------
+db_stream_cursor_add:
+    FRAME_BEGIN 96, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov [rbp - 32], ARG4
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_STREAM
+    jz .a_state
+    mov rax, [rbp - 32]
+    test rax, rax
+    jz .a_value                     ; a reader nothing can name
+    cmp rax, SCUR_NAME_MAX
+    ja .a_value
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    call db_catalog_page
+    test rax, rax
+    jz .a_state
+    cmp dword [rax + CAT_TYPE], CAT_STREAM
+    jne .a_state
+    mov rdx, [rax + S_FIRST]
+    mov [rbp - 48], rdx
+    mov rdx, [rax + S_END]
+    mov [rbp - 56], rdx
+    mov [rbp - 72], rax
+
+    ; One reader, one name - asked before the ceiling, because a name that is
+    ; already there is the truer answer when both are true, and before
+    ; anything is copied, so a refusal costs no page.
+    mov ARG1, rax
+    mov ARG2, [rbp - 24]
+    mov ARG3, [rbp - 32]
+    call db_stream_cursor_find
+    cmp rax, -1
+    jne .a_exists
+    mov r10, [rbp - 72]
+    cmp qword [r10 + S_CURSORS], S_MAX_CURSORS
+    jae .a_full
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    lea ARG3, [rbp - 40]
+    call db_catalog_edit
+    test eax, eax
+    jnz .a_done
+
+    ; stamp cleared the span the positions live in, so they go back first.
+    mov r10, [rbp - 40]
+    mov rax, [rbp - 48]
+    mov [r10 + S_FIRST], rax
+    mov rax, [rbp - 56]
+    mov [r10 + S_END], rax
+
+    mov ARG1, r10
+    mov ARG2, [r10 + S_CURSORS]
+    call stream_cursor_slot
+    mov [rbp - 64], rax
+
+    ; The name, into a slot that is zero the whole way: the validator requires
+    ; the padding, and a slot freed by a drop was zeroed then.
+    mov r8, [rbp - 64]
+    mov r9, [rbp - 24]
+    mov rcx, [rbp - 32]
+    xor edx, edx
+.a_byte:
+    cmp rdx, rcx
+    jae .a_padded
+    mov al, [r9 + rdx]
+    mov [r8 + SCUR_NAME + rdx], al
+    inc rdx
+    jmp .a_byte
+.a_padded:
+    cmp rdx, SCUR_NAME_MAX
+    jae .a_named
+    mov byte [r8 + SCUR_NAME + rdx], 0
+    inc rdx
+    jmp .a_padded
+.a_named:
+    mov byte [r8 + SCUR_NAME + SCUR_NAME_MAX], 0
+    mov rax, [rbp - 48]
+    mov [r8 + SCUR_POSITION], rax
+    mov r10, [rbp - 40]
+    inc qword [r10 + S_CURSORS]
+    mov ARG1, r10
+    call db_catalog_seal
+    xor eax, eax
+    jmp .a_done
+.a_state:
+    mov eax, CybouDB_E_STATE
+    jmp .a_done
+.a_value:
+    mov eax, CybouDB_E_VALUE
+    jmp .a_done
+.a_full:
+    mov eax, CybouDB_E_FULL
+    jmp .a_done
+.a_exists:
+    mov eax, CybouDB_E_SCHEMA
+.a_done:
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  db_stream_cursor_drop(ctx, stream id, name, length) -> RAX: result code
+;
+;  The reader goes, and with it whatever retention it was holding up: this is
+;  the escape hatch a trim refused by an abandoned cursor has.
+;
+;  The table is kept dense, because the validator requires the slots past the
+;  count to be zero and a reader is found by walking the first N. So the last
+;  cursor moves into the hole and the slot it left is zeroed - a cursor's
+;  index means nothing to anyone, only its name does.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=id, [rbp-24]=name, [rbp-32]=length,
+;               [rbp-40]=page, [rbp-48]=first, [rbp-56]=end, [rbp-64]=index
+; -----------------------------------------------------------------------------
+db_stream_cursor_drop:
+    FRAME_BEGIN 96, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov [rbp - 32], ARG4
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_STREAM
+    jz .d_state
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    call db_catalog_page
+    test rax, rax
+    jz .d_state
+    cmp dword [rax + CAT_TYPE], CAT_STREAM
+    jne .d_state
+    mov rdx, [rax + S_FIRST]
+    mov [rbp - 48], rdx
+    mov rdx, [rax + S_END]
+    mov [rbp - 56], rdx
+    mov ARG1, rax
+    mov ARG2, [rbp - 24]
+    mov ARG3, [rbp - 32]
+    call db_stream_cursor_find
+    cmp rax, -1
+    je .d_missing
+    mov [rbp - 64], rax
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    lea ARG3, [rbp - 40]
+    call db_catalog_edit
+    test eax, eax
+    jnz .d_done
+    mov r10, [rbp - 40]
+    mov rax, [rbp - 48]
+    mov [r10 + S_FIRST], rax
+    mov rax, [rbp - 56]
+    mov [r10 + S_END], rax
+
+    ; The last one into the hole, unless it is the hole.
+    mov r10, [rbp - 40]
+    mov rax, [r10 + S_CURSORS]
+    dec rax
+    mov [r10 + S_CURSORS], rax
+    cmp rax, [rbp - 64]
+    je .d_zero
+    mov ARG1, r10
+    mov ARG2, rax
+    call stream_cursor_slot
+    mov r11, rax                    ; the last cursor
+    mov ARG1, [rbp - 40]
+    mov ARG2, [rbp - 64]
+    call stream_cursor_slot
+    xor edx, edx
+.d_move:
+    mov cl, [r11 + rdx]
+    mov [rax + rdx], cl
+    inc rdx
+    cmp rdx, SCUR_SIZE
+    jb .d_move
+
+.d_zero:
+    ; And the slot past the count holds nothing, which the validator requires
+    ; and a later add relies on for its padding.
+    mov ARG1, [rbp - 40]
+    mov r10, [rbp - 40]
+    mov ARG2, [r10 + S_CURSORS]
+    call stream_cursor_slot
+    xor edx, edx
+.d_zero_byte:
+    mov byte [rax + rdx], 0
+    inc rdx
+    cmp rdx, SCUR_SIZE
+    jb .d_zero_byte
+
+    mov ARG1, [rbp - 40]
+    call db_catalog_seal
+    xor eax, eax
+    jmp .d_done
+.d_state:
+    mov eax, CybouDB_E_STATE
+    jmp .d_done
+.d_missing:
+    mov eax, CybouDB_E_NOTFOUND
+.d_done:
     FRAME_END
     ret

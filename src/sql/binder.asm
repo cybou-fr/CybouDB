@@ -37,6 +37,7 @@ err_no_queue:        db "database was not created with queue support", 0
 err_queue_missing:   db "queue not found in catalog", 0
 err_no_stream:       db "database was not created with stream support", 0
 err_stream_missing:  db "stream not found in catalog", 0
+err_cursor_name:     db "a cursor name is 1 to 23 characters", 0
 
 err_queue_payload:   db "a queue message is TEXT or BLOB", 0
 err_queue_long:      db "message longer than four gigabytes", 0
@@ -998,6 +999,10 @@ sql_bind:
     je      .bind_drop_stream
     cmp     rax, STMT_APPEND
     je      .bind_append
+    cmp     rax, STMT_CREATE_CURSOR
+    je      .bind_create_cursor
+    cmp     rax, STMT_DROP_CURSOR
+    je      .bind_drop_cursor
 
     mov     eax, SQL_ERR_SYNTAX
     jmp     .binder_exit
@@ -1903,6 +1908,52 @@ sql_bind:
     mov     [r10 + PLAN_TABLE_ID], rax
     mov     rax, [rbp - 80]
     mov     [r10 + PLAN_DATA1], rax
+    mov     r11, [rbp - 8]
+    mov     [r10 + PLAN_CTX], r11
+    xor     eax, eax
+    jmp     .binder_exit
+
+; --- BIND CREATE CURSOR / DROP CURSOR ----------------------------------------
+; The stream is resolved here, because that is a name in the catalog. The
+; reader is not: whether a stream already has a reader of that name, and
+; whether it has room for another, are facts about the page, and the page is
+; the core's to read. The binder carries the name; db_stream_cursor_add and
+; db_stream_cursor_drop own the rules.
+.bind_create_cursor:
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + PLAN_TYPE], STMT_CREATE_CURSOR
+    jmp     .bind_cursor_common
+.bind_drop_cursor:
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + PLAN_TYPE], STMT_DROP_CURSOR
+.bind_cursor_common:
+    mov     r11, [rbp - 8]
+    test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_STREAM
+    jz      .stream_unsupported
+    mov     r10, [rbp - 16]
+    mov     rcx, [r10 + QUEUE_NAME_LEN]
+    cmp     rcx, 31
+    ja      .bad_tbl_len
+    mov     rcx, [r10 + CURSOR_NAME_LEN]
+    cmp     rcx, 23                     ; SCUR_NAME_MAX
+    ja      .cursor_name_len
+    test    rcx, rcx
+    jz      .cursor_name_len
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + QUEUE_NAME_PTR]
+    mov     ARG3, [r10 + QUEUE_NAME_LEN]
+    lea     ARG4, [rbp - 56]
+    call    catalog_find_stream
+    test    rax, rax
+    jz      .stream_not_found
+    mov     r10, [rbp - 48]
+    mov     rdx, [rbp - 56]
+    mov     [r10 + PLAN_TABLE_ID], rdx
+    mov     r11, [rbp - 16]
+    mov     rax, [r11 + CURSOR_NAME_PTR]
+    mov     [r10 + PLAN_DATA1], rax
+    mov     rax, [r11 + CURSOR_NAME_LEN]
+    mov     [r10 + PLAN_DATA2], rax
     mov     r11, [rbp - 8]
     mov     [r10 + PLAN_CTX], r11
     xor     eax, eax
@@ -2917,6 +2968,14 @@ sql_bind:
     lea     ARG4, [err_stream_missing]
     call    set_binder_error
     mov     eax, SQL_ERR_TABLE_NOT_FOUND
+    jmp     .binder_exit
+.cursor_name_len:
+    mov     ARG1, [rbp - 40]
+    mov     ARG2, SQL_ERR_SYNTAX
+    xor     ARG3, ARG3
+    lea     ARG4, [err_cursor_name]
+    call    set_binder_error
+    mov     eax, SQL_ERR_SYNTAX
     jmp     .binder_exit
 
 .queue_bad_payload:

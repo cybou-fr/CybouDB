@@ -1065,7 +1065,36 @@ explain why the code below is careful.
 extent path, fifty make-and-drop rounds run through a 300-page file that could
 not survive a leak, and a rolled back `APPEND` leaves the stream where it was.
 
-Still to come: cursors, `READ`, `TRIM`, the C ABI.
+**Done: cursors.** `CREATE CURSOR reader ON stream` and `DROP CURSOR reader
+ON stream`. A cursor is not a catalog object - it is a field of the stream
+that owns it - so it is named relative to one, and the same name on two
+streams is two readers.
+
+A new reader stands at `first`, the oldest record still kept, because that is
+the only starting point that promises it every record the stream still has.
+
+The binder resolves the stream, because that is a name in the catalog, and
+carries the reader's name no further than that: whether a stream already has a
+reader of that name and whether it has room for another are facts about the
+page, and the page is the core's. `db_stream_cursor_add` asks about the name
+before the ceiling, so that a name already there is what a caller is told when
+both are true, and asks both before anything is copied, so a refusal costs no
+page. The CLI turns the storage codes into sentences about readers; that is
+presentation, and it is the only thing about cursors that lives in two places.
+
+`DROP CURSOR` keeps the table dense - the last reader moves into the hole and
+the slot it leaves is zeroed - because the validator requires the slots past
+the count to hold nothing, and because which slot a reader sits in means
+nothing to anyone while its name means everything.
+
+`tests/stream_sql_tests.py` is 74 checks. The cursor ones read the table off
+the disk rather than trusting the listing: the names in slot order, the
+positions, and that everything past the count is zero. The one worth naming is
+that a prefix of a reader's name is not that reader - proved by removing the
+check that the stored name stops where the given one does, which fails that
+test and only that one.
+
+Still to come: `READ`, `TRIM`, the C ABI.
 
 What is decided:
 

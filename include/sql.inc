@@ -69,6 +69,7 @@
 %define TOK_STREAM          91
 %define TOK_APPEND          92
 %define TOK_TO              93
+%define TOK_CURSOR          94
 
 ; Types
 %define TOK_TYPE_INT32      30
@@ -139,6 +140,8 @@
 %define STMT_CREATE_STREAM  16
 %define STMT_DROP_STREAM    17
 %define STMT_APPEND         18
+%define STMT_CREATE_CURSOR  19
+%define STMT_DROP_CURSOR    20
 
 ; --- AST Statement header and statement-specific payload --------------------
 %define AST_STMT_TYPE       0           ; qword: STMT_*
@@ -202,7 +205,12 @@
 %define QUEUE_NAME_PTR         0
 %define QUEUE_NAME_LEN         8
 %define QUEUE_VALUE_EXPR      16       ; AST_EXPR*; parser requires a literal
-%define QUEUE_PAYLOAD_SIZE    24
+; A cursor statement names two things: the reader, and the stream it reads.
+; The stream goes where every other statement over one object puts a name,
+; so what is added is the reader.
+%define CURSOR_NAME_PTR       32
+%define CURSOR_NAME_LEN       40
+%define QUEUE_PAYLOAD_SIZE    48
 
 %define SELECT_TABLE_NAME_PTR   0
 %define SELECT_TABLE_NAME_LEN   8

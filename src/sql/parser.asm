@@ -1729,6 +1729,8 @@ sql_parse:
     je      .parse_create_queue
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_STREAM
     je      .parse_create_stream
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_CURSOR
+    je      .parse_create_cursor
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_TABLE
     jne     .bad_syntax
 
@@ -2184,6 +2186,8 @@ sql_parse:
     je      .parse_drop_queue
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_STREAM
     je      .parse_drop_stream
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_CURSOR
+    je      .parse_drop_cursor
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_TABLE
     jne     .bad_syntax
 
@@ -2408,6 +2412,52 @@ sql_parse:
     mov     [r10 + DROP_TABLE_NAME_PTR], rax
     mov     rax, [rbp - 192 + TOK_LEN]
     mov     [r10 + DROP_TABLE_NAME_LEN], rax
+    jmp     .check_eof
+
+; --- CREATE CURSOR reader ON stream ------------------------------------------
+; --- DROP CURSOR reader ON stream --------------------------------------------
+; Two names: the reader, and the stream it reads. A cursor is not in the
+; catalog namespace - it is a field of the stream that owns it - which is why
+; it is named relative to one rather than on its own.
+.parse_create_cursor:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_CREATE_CURSOR
+    jmp     .parse_cursor_names
+.parse_drop_cursor:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_DROP_CURSOR
+.parse_cursor_names:
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_table_name
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + CURSOR_NAME_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + CURSOR_NAME_LEN], rax
+
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_ON
+    jne     .bad_syntax
+
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_table_name
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + QUEUE_NAME_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + QUEUE_NAME_LEN], rax
     jmp     .check_eof
 
 ; --- CREATE STREAM name ------------------------------------------------------
