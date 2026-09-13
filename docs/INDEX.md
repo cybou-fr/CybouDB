@@ -225,6 +225,12 @@ exactly as long as the table's rows do not move, and
 [docs/TOMBSTONES.md](TOMBSTONES.md) is what decides when they do:
 
 * **Appends** never move anything, so an insert adds one entry.
+* **Writing a column** does not move anything either. An UPDATE takes the
+  entries of the rows it touched out of every index over that column before
+  it writes - the old key is only in the table until then - and puts them
+  back afterwards under the one key those rows now carry. Removing and
+  inserting are separate passes: a unique index doing both a row at a time
+  would refuse the first row to take a key a later row is about to give up.
 * **Marking a row dead** does not move anything, but the row stops existing
   as far as anything above the storage layer is concerned, and the index has
   to agree. An entry that outlived its row would have a unique index refusing

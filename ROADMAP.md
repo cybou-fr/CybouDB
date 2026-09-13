@@ -655,9 +655,39 @@ has the numbers:
   database in a file three times larger flushes in the same time. So the lever
   is the next entry, which is what put 570 MB through the allocator in the
   first place, and not anything on the insert path.
-* **UPDATE and DELETE rebuild** where they could patch, which makes both linear
-  in the table. The statement has the rows that matched but not the keys they
-  carried, and that is what would have to change.
+* **An UPDATE patches the indexes it changes; a DELETE still rebuilds them.**
+  The rows do not move, so their entries stay right except for the one column
+  the statement writes. The entries of the rows it touched come out before the
+  write - while the table can still say what keys they carried - and go back
+  after it under the one key every touched row now has. A span is a 64-row
+  group and a mask of lanes, which is the shape the predicate already
+  produced, so the cost is the groups those rows sit in rather than the table.
+  An UPDATE of one row of fifty thousand went from 93.7 ms to 1.45 ms, against
+  1.30 ms for the same statement on the same table without an index.
+
+  Removing and inserting are separate passes because they sit on either side
+  of the write, and because a unique index doing both a row at a time would
+  refuse the first row to take a key that a later row is about to give up.
+
+  A marking DELETE could be patched the same way and is not yet: it removes
+  entries rather than moving them, so it needs the first pass and not the
+  second. A compacting DELETE has to rebuild - every surviving row moved, and
+  an entry names a row by position.
+
+  Doing this put the first caller on `db_index_delete` outside its own test,
+  and found two defects that had nothing to do with the index: a splitting
+  internal node counting a whole child as one row, and a retire that goes
+  first in a transaction stamping the allocation map a published generation
+  is still reading. Both are fixed, and both are now covered by cases that
+  ask for what a statement asks for rather than what a unit test found
+  convenient - three levels grown by insertion, and a delete with a commit
+  after it.
+
+* **UPDATE through the C ABI did not exist.** `STMT_UPDATE` was missing from
+  the step dispatch, so `cyboudb_exec("UPDATE ...")` returned an error with
+  no message while the CLI ran the same statement. That is the third time in
+  this work that a statement behaved differently depending on which caller
+  reached it.
 * **CREATE INDEX no longer stages a page a row.** It builds by inserting one
   row at a time, which walks the path from the root once a row - and every
   node on that path used to be copied again, because copy-on-write was asked
