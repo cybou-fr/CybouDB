@@ -2,14 +2,27 @@
 
 **CybouDB** is an embedded database engine written in assembly, with a portable
 on-disk format, copy-on-write transactions, columnar execution, secondary
-indexes and native vectors. It has no libc, no CRT and no third-party
-dependency: on Linux it talks to the kernel directly, and on Windows it uses
-kernel32 and nothing else.
+indexes, native vectors, durable queues and append-only streams. It has no
+libc, no CRT and no third-party dependency: on Linux it talks to the kernel
+directly, and on Windows it uses kernel32 and nothing else.
 
-Relational data and vectors live in one file under one transaction model. A
-statement that writes rows, updates an index and stores an embedding either
-commits as a whole or leaves nothing behind, because there is one storage
-engine underneath rather than a database beside a vector store.
+Rows, indexes, embeddings, queued work and an event log live in one file under
+one transaction model:
+
+```sql
+BEGIN;
+DEQUEUE FROM inbox;                     -- take the work
+INSERT INTO jobs VALUES (1, 'done');    -- record the result
+APPEND TO audit VALUES ('job 1 done');  -- and say so
+COMMIT;
+```
+
+Either all of that happened or none of it did - including the index entry the
+row required. There is one storage engine underneath rather than a database
+beside a vector store beside a broker, which is why the outbox pattern is not
+needed here: it exists to paper over having two commits, and this has one. See
+[docs/TRANSACTIONS.md](docs/TRANSACTIONS.md) for what that covers, and what it
+does not.
 
 The project also explores how far a compact engine can be pushed when its
 storage layout and execution model are designed directly around modern CPU and
@@ -42,7 +55,7 @@ dependencies.
 | Multi-page PAX tables | working; two-level directory tree (up to 28M rows per table), cross-page batches |
 | Paired multi-page allocation map | working; `create-large`, 63 GiB ceiling, page reclamation |
 | SQL engine: parser, binder, executor | working; pure x86-64 scalar and batch execution |
-| SQL statements | working; `CREATE TABLE`, `DROP TABLE`, `INSERT INTO` (multi-row), fixed-width flat-PAX `UPDATE ... SET literal WHERE`, `DELETE FROM ... [WHERE]`, `SELECT ... WHERE`, stable single-key `ORDER BY`, `LIMIT [OFFSET]`, correctness-first `INNER JOIN`/`LEFT JOIN` on qualified INT32/INT64 equi-keys, `BEGIN`/`COMMIT`/`ROLLBACK`, `CREATE [UNIQUE] INDEX` / `DROP INDEX` |
+| SQL statements | working; `CREATE TABLE`, `DROP TABLE`, `INSERT INTO` (multi-row), fixed-width flat-PAX `UPDATE ... SET literal WHERE`, `DELETE FROM ... [WHERE]`, `SELECT ... WHERE`, stable single-key `ORDER BY`, `LIMIT [OFFSET]`, correctness-first `INNER JOIN`/`LEFT JOIN` on qualified INT32/INT64 equi-keys, `BEGIN`/`COMMIT`/`ROLLBACK`, `CREATE [UNIQUE] INDEX` / `DROP INDEX`, `CREATE QUEUE` / `DROP QUEUE` / `ENQUEUE` / `DEQUEUE`, `CREATE STREAM` / `DROP STREAM` / `APPEND` / `READ` / `TRIM`, `CREATE CURSOR` / `DROP CURSOR` |
 | Secondary indexes | working; copy-on-write B+tree on INT32/INT64 columns, unique or not, maintained by every statement that changes a table. A plan uses one for any single comparison against an indexed column, and an UPDATE or a marking DELETE patches the entries of the rows it touched rather than rebuilding the tree: see [docs/INDEX.md](docs/INDEX.md) |
 | DELETE strategy | working; truncation, per-row tombstones, or a compacting rewrite, chosen per statement from what the table already holds. No explicit `VACUUM` |
 | SQL types and semantics | fixed-width storage working for `INT32`, `INT64`, `FLOAT32`, `BOOL`; persistent `TEXT`/`BLOB` storage working for `create-large` databases |
@@ -59,6 +72,9 @@ dependencies.
 | ARM64 execution backend | not started (Phase 7) |
 | Vector engine | working; `VECTOR(FLOAT32, n)` columns, persistent extents, exact top-K through `ORDER BY <distance> LIMIT k` in both directions, scalar and AVX2. No ANN index |
 | Multi-statement transactions | working; `BEGIN`/`COMMIT`/`ROLLBACK` over COW staging, one writer, readers pinned against reclamation |
+| Durable queues | working; `CREATE QUEUE` / `DROP QUEUE`, `ENQUEUE`, `DEQUEUE`. A transactional FIFO in the same file, payloads of any length through the varlen chain, pages reclaimed as messages are taken. Lease semantics (`CLAIM`/`ACK`) are reserved in the format, not implemented: see [docs/QUEUE.md](docs/QUEUE.md) |
+| Append-only streams | working; `CREATE STREAM` / `DROP STREAM`, `APPEND`, up to eight named durable cursors per stream (`CREATE CURSOR` / `DROP CURSOR`), `READ FROM s AS reader`, and `TRIM STREAM s BEFORE p`, which refuses to pass the slowest reader: see [docs/STREAM.md](docs/STREAM.md) |
+| One transaction over all of them | working; a table, its index, a queue and a stream share a file, an allocation map and a commit, so a take, a row and an append are atomic together. `tests/cross_primitive_test.c` |
 | WAL, multi-writer concurrency | not started; the format defends against neither, and an advisory lock prevents the second writer |
 | Encryption | not started (Phase 10) |
 
@@ -213,10 +229,22 @@ console also rejects incomplete `ReadConsoleW` chunks (its input buffer holds
 Build the static library with `sh build.sh --lib` or `build.bat --lib`; the
 public declarations are in [include/cyboudb.h](include/cyboudb.h).
 
-The standalone vector runtime needs no open database handle. Build and run its
-filtered exact-search example with `sh build.sh --vector-example &&
-./build/vector_search_example` (Windows: `build.bat --vector-example` followed
-by `build\vector_search_example.exe`).
+`cyboudb_create(path, pages, &db)` makes a database file and opens it
+read-write, so a program that links the library does not need the command line
+to get one. It makes the kind `create-large` makes - every feature enabled -
+and refuses to replace a file that is already there.
+
+Two examples, both built and run by CI:
+
+* `examples/worker.c` - a worker loop with no broker under it: a job is taken
+  off a queue, its result written to a table and a line appended to an audit
+  stream, all in one transaction. `sh build.sh --worker-example &&
+  ./build/worker_example` (Windows: `build.bat --worker-example` then
+  `build\worker_example.exe`).
+* `examples/vector_search.c` - filtered exact search through the standalone
+  vector runtime, which needs no open database handle at all. `sh build.sh
+  --vector-example && ./build/vector_search_example` (Windows: `build.bat
+  --vector-example` then `build\vector_search_example.exe`).
 Use `cyboudb_prepare` and `cyboudb_step` for row access, or `cyboudb_step_batch` followed
 by `cyboudb_batch_column(stmt, batch, result_col)` for borrowed typed access in SELECT
 order. The accessor preserves reordered and duplicate projections; direct

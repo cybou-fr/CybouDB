@@ -234,6 +234,22 @@ int cyboudb_vector_topk_l2sq_f32(cyboudb_vector_topk *search);
 int cyboudb_open(const char *path, uint32_t flags, cyboudb_db **out_db);
 
 /**
+ * Create a database file and open it read-write.
+ *
+ * One kind of database is made: the one with every feature enabled, which is
+ * what the command line calls `create-large`. Tables, secondary indexes,
+ * TEXT/BLOB storage, vectors, tombstones, queues and streams are all
+ * available in it.
+ *
+ * @param path     UTF-8 path. An existing file is not replaced.
+ * @param pages    Size of the file in 4 KiB pages.
+ * @param out_db   Receives the handle on success, NULL otherwise.
+ * @return CybouDB_OK, or CybouDB_ERROR if the file could not be created
+ *         (including because something is already at that path).
+ */
+int cyboudb_create(const char *path, uint64_t pages, cyboudb_db **out_db);
+
+/**
  * Close an open CybouDB database connection and release mapped resources.
  * Returns CybouDB_BUSY while any prepared statements remain alive, including
  * exhausted or reset statements. A busy connection stays open and usable.

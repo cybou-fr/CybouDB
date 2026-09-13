@@ -17,6 +17,7 @@ default rel
 
 ; --- External engine functions -----------------------------------------------
 extern db_open, db_close, db_commit, db_rollback
+extern db_create_large
 extern db_catalog_put, db_catalog_drop, db_catalog_truncate_data, db_pax_insert
 extern db_var_read_chain
 extern sql_select_open, sql_select_next
@@ -50,6 +51,7 @@ global cyboudb_column_int32
 global cyboudb_column_float
 global cyboudb_column_bool
 global cyboudb_column_bytes, cyboudb_message
+global cyboudb_create
 global cyboudb_column_vector_dimensions
 global cyboudb_column_vector_f32
 global cyboudb_exec
@@ -176,6 +178,74 @@ cyboudb_open:
     ret
 
 .open_misuse:
+    mov     eax, CybouDB_C_MISUSE
+    FRAME_END
+    ret
+
+
+; =============================================================================
+;  cyboudb_create(const char *path, uint64_t pages, cyboudb_db **out_db) -> int
+; =============================================================================
+;  Make a database file and open it read-write. Until this existed a caller of
+;  the library had to run the command line to get a file to open, which is a
+;  strange thing to ask of an embedded engine.
+;
+;  One kind of database: the one with every feature turned on, which is what
+;  `create-large` makes. The other creators exist to test the format at each
+;  stage it grew through, and a library caller has no reason to choose among
+;  them - a file without queues is not a smaller file, only a poorer one.
+;
+;  It refuses to replace a file that is already there. Overwriting a database
+;  because a path was wrong is not a thing a library should do quietly.
+;
+;  Local slots: [rbp-8]=path, [rbp-16]=pages, [rbp-24]=out_db
+; =============================================================================
+cyboudb_create:
+%ifdef CybouDB_WINDOWS
+    FRAME_BEGIN 2128, 0                 ; [rbp - 2048]: wide path buffer
+%else
+    FRAME_BEGIN 48, 0
+%endif
+    mov     [rbp - 8], ARG1
+    mov     [rbp - 16], ARG2
+    mov     [rbp - 24], ARG3
+    test    ARG1, ARG1
+    jz      .create_misuse
+    test    ARG3, ARG3
+    jz      .create_misuse
+    mov     qword [ARG3], 0
+
+%ifdef CybouDB_WINDOWS
+    mov     ARG1, [rbp - 8]
+    lea     ARG2, [rbp - 2048]
+    mov     ARG3d, 1024
+    call    os_utf8_to_wide
+    test    eax, eax
+    jz      .create_error
+    lea     ARG1, [rbp - 2048]
+%else
+    mov     ARG1, [rbp - 8]
+%endif
+    mov     ARG2, [rbp - 16]
+    xor     ARG3, ARG3                  ; do not replace what is already there
+    call    db_create_large
+    test    eax, eax
+    jnz     .create_error
+
+    ; And then opened the way any other file is, so there is one path into a
+    ; handle rather than two.
+    mov     ARG1, [rbp - 8]
+    mov     ARG2d, CybouDB_C_OPEN_READWRITE
+    mov     ARG3, [rbp - 24]
+    call    cyboudb_open
+    FRAME_END
+    ret
+
+.create_error:
+    mov     eax, CybouDB_C_ERROR
+    FRAME_END
+    ret
+.create_misuse:
     mov     eax, CybouDB_C_MISUSE
     FRAME_END
     ret

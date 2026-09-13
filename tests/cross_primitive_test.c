@@ -202,6 +202,44 @@ int main(int argc, char **argv) {
 
     check("close again", cyboudb_close(db) == CybouDB_OK);
 
+    /* --- and the library can make a database of its own ------------------- */
+    /* Until cyboudb_create existed, a caller of the library had to run the
+       command line first to get a file to open, which is a strange thing to
+       ask of an embedded engine. */
+    {
+        char made[1024];
+        cyboudb_db *fresh = NULL;
+        snprintf(made, sizeof made, "%s.created", argv[1]);
+        remove(made);
+        check("the library creates a database",
+              cyboudb_create(made, 4000, &fresh) == CybouDB_OK && fresh != NULL);
+        check("with every kind of object in it",
+              cyboudb_exec(fresh, "CREATE TABLE t (a INT64)") == CybouDB_OK &&
+              cyboudb_exec(fresh, "CREATE INDEX t_a ON t (a)") == CybouDB_OK &&
+              cyboudb_exec(fresh, "CREATE QUEUE q") == CybouDB_OK &&
+              cyboudb_exec(fresh, "CREATE STREAM s") == CybouDB_OK);
+        check("and it is open read-write",
+              cyboudb_exec(fresh, "INSERT INTO t VALUES (1)") == CybouDB_OK);
+        check("closing it", cyboudb_close(fresh) == CybouDB_OK);
+
+        fresh = NULL;
+        check("a second create at the same path is refused rather than "
+              "quietly replacing it",
+              cyboudb_create(made, 4000, &fresh) != CybouDB_OK &&
+              fresh == NULL);
+        check("and what was there is still there",
+              cyboudb_open(made, CybouDB_OPEN_READWRITE, &fresh)
+                  == CybouDB_OK &&
+              cyboudb_exec(fresh, "INSERT INTO t VALUES (2)") == CybouDB_OK);
+        cyboudb_close(fresh);
+
+        check("a create with nowhere to put the handle is refused",
+              cyboudb_create(made, 4000, NULL) == CybouDB_MISUSE);
+        check("and one with no path", cyboudb_create(NULL, 4000, &fresh)
+              == CybouDB_MISUSE);
+        remove(made);
+    }
+
     printf("cross-primitive suite: %d passed, %d failed\n", checks - failures,
            failures);
     return failures ? 1 : 0;

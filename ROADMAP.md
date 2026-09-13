@@ -1220,6 +1220,33 @@ Also found: `work` is a reserved word - `BEGIN WORK` - so it is not available
 as an object name. Discovered by naming a queue that in the first draft of
 this test.
 
+## Phase 14 - The parts a user touches
+
+**`cyboudb_create`.** The library had no way to make a database: a program
+linking it had to run the command line first to get a file to open, which is a
+strange thing to ask of an embedded engine. It makes one kind - the one
+`create-large` makes, with every feature enabled - because the other creators
+exist to test the format at each stage it grew through, and a caller has no
+reason to choose among them. It refuses to replace a file that is already
+there, since overwriting a database because a path was wrong is not something
+a library should do quietly.
+
+**`examples/worker.c`.** A worker loop with no broker under it: take a job off
+a queue, write its result to a table, append a line to an audit stream, one
+commit. The audit stream is then read by a cursor of its own, which is the
+part a queue could not do. Built and run by CI on both platforms, as the
+vector example already was.
+
+**README.** The opening claim said relational data and vectors; it now says
+what the engine is, with the four-statement transaction that is the point of
+it. Queues, streams and the cross-primitive guarantee have rows in the feature
+table, and the statement list includes all of them.
+
+Found while wiring the example: a library build needs `-DCybouDB_LIBRARY=1`,
+without which the Windows entry stub drags `cyboudb_main` into the link. The
+existing example did not show this because it only uses the vector runtime,
+which touches no database handle and so never pulls the platform object in.
+
 What is decided:
 
 * a stream is not a queue with extra readers, and collapsing them would make
