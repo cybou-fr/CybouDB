@@ -685,11 +685,30 @@ vfs_map_ro:
 ;
 ;  Local slots: [rbp-8]=fd
 ; -----------------------------------------------------------------------------
+section .data
+; rdtsc ticks spent inside vfs_sync - the durability barriers themselves,
+; separated from everything else a commit does. Without it a commit that grows
+; with retained depth cannot be told apart from a kernel flush that grows with
+; the size of the file. It lives here rather than beside the other counters in
+; database.asm because the kernel and hardware harnesses link this file without
+; it, and a counter that breaks a link is worse than no counter.
+; See ROADMAP.md, 0.5.0-preview.2.
+global sync_ticks
+sync_ticks: dq 0
+
+section .text
+
 vfs_sync:
-    FRAME_BEGIN 16, 0
+    FRAME_BEGIN 32, 0
     mov     [rbp - 8], ARG1
-    mov     rdi, ARG2                   ; addr
-    mov     rsi, ARG3                   ; length
+    mov     [rbp - 24], ARG2            ; rdtsc takes rax and rdx, so the
+    mov     [rbp - 32], ARG3            ; arguments go to the frame first
+    rdtsc
+    shl     rdx, 32
+    or      rax, rdx
+    mov     [rbp - 16], rax
+    mov     rdi, [rbp - 24]             ; addr
+    mov     rsi, [rbp - 32]             ; length
     mov     edx, MS_SYNC
     mov     eax, SYS_msync
     syscall
@@ -703,10 +722,17 @@ vfs_sync:
     jae     .fail
 
     xor     eax, eax
-    FRAME_END
-    ret
+    jmp     .done
 .fail:
     mov     rax, -1
+.done:
+    mov     r11, rax                    ; the result, out of rax's way
+    rdtsc
+    shl     rdx, 32
+    or      rax, rdx
+    sub     rax, [rbp - 16]
+    add     [rel sync_ticks], rax
+    mov     rax, r11
     FRAME_END
     ret
 

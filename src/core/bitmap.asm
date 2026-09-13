@@ -46,6 +46,18 @@ global db_bitmap_alloc, db_bitmap_alloc_run, db_bitmap_is_payload
 global db_bitmap_candidate_payload, db_bitmap_leaves
 global db_bitmap_retire, db_bitmap_recount, db_bitmap_headroom
 global db_bitmap_is_fresh, db_bitmap_deep
+
+section .data
+; Commit instrumentation. The question these answer is whether the cost of a
+; commit follows what a transaction changed or what the database has kept:
+; see ROADMAP.md, 0.5.0-preview.2. They are plain counters and the engine
+; never resets them - a caller reads one before and after and subtracts, so
+; two readers measuring different things cannot disturb each other.
+global bitmap_leaves_validated, commit_validations, commit_validate_ticks
+bitmap_leaves_validated: dq 0   ; allocation-map leaf pages proved
+commit_validations:      dq 0   ; calls to db_bitmap_validate
+commit_validate_ticks:   dq 0   ; rdtsc ticks spent inside it
+
 section .text
 
 ; r10 = leaf address, r8 = page index inside that leaf. Return eax = state;
@@ -320,6 +332,7 @@ span_valid:
 .root_known:
     mov     qword [rbp - 48], 0
 .leaf:
+    inc     qword [rel bitmap_leaves_validated]
     mov     ARG1, [rbp - 8]
     mov     r10, ARG1
     mov     ARG1, [r10 + DB_BASE]
@@ -434,6 +447,7 @@ span_valid:
 ; -----------------------------------------------------------------------------
 flat_valid:
     FRAME_BEGIN 48, 0
+    inc     qword [rel bitmap_leaves_validated]
     mov     [rbp - 8], ARG1
     mov     [rbp - 16], ARG2
     mov     [rbp - 24], ARG3
@@ -518,10 +532,18 @@ db_bitmap_validate:
     FRAME_BEGIN 48, 0
     mov     [rbp - 8], ARG1
     mov     [rbp - 16], ARG2
-    mov     r10, ARG1
+    ; rdtsc writes rax and rdx, and rdx is ARG2 on Win64 - so both arguments
+    ; are in the frame before the clock is read, and come back out of it from
+    ; here on rather than out of their registers.
+    inc     qword [rel commit_validations]
+    rdtsc
+    shl     rdx, 32
+    or      rax, rdx
+    mov     [rbp - 32], rax
+    mov     r10, [rbp - 8]
     cmp     qword [r10 + DB_FEATURES], 0
     je      .valid
-    mov     r11, ARG2
+    mov     r11, [rbp - 16]
     cmp     qword [r11 + SB_GENERATION], 0
     je      .bad
     cmp     qword [r11 + SB_FREELIST_ROOT], 0
@@ -578,10 +600,17 @@ db_bitmap_validate:
     mov     ARG1, [rbp - 8]
     mov     ARG2, [rbp - 16]
     call    db_catalog_validate
-    FRAME_END
-    ret
+    jmp     .done
 .bad:
     xor     eax, eax
+.done:
+    mov     r11d, eax                   ; the verdict, out of rax's way
+    rdtsc
+    shl     rdx, 32
+    or      rax, rdx
+    sub     rax, [rbp - 32]
+    add     [rel commit_validate_ticks], rax
+    mov     eax, r11d
     FRAME_END
     ret
 
