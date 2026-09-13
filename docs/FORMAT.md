@@ -162,8 +162,22 @@ rather than opened in a half-understood state.
 | 2048 | `VECTOR` | `PAX` |
 | 4096 | `TOMBSTONES` | `PAX` |
 | 8192 | `INDEX` | `PAX` |
+| 16384 | `QUEUE` | `CATALOG` |
 
 Bit 1 is unassigned and unsupported.
+
+`QUEUE` requires only `CATALOG`, and that is a decision rather than an
+oversight: a queue stores no rows, so it needs no PAX table, no leaf and no
+directory of its own beyond the catalog's. A database may therefore carry
+queues and no tables at all.
+
+What it does need, when a message is longer than a slot holds, is the varlen
+extent machinery - the same chains a TEXT cell uses, owned by the queue's id
+instead of a table's. A file with `QUEUE` and without `VARLEN` may hold queues
+whose messages all fit inline; a message that does not fit is refused rather
+than stored some other way. The creators that emit `QUEUE` emit `VARLEN` too,
+so this is a contract about what a file may be, not a configuration anyone has
+to assemble.
 
 Bits are creation-time decisions. The engine does not upgrade a file in place:
 a database created without `TOMBSTONES` keeps rewriting on DELETE for its whole
@@ -175,6 +189,12 @@ ordinary payload page. What it changes is the catalog: a directory entry may
 name a page of a third type, so a build that does not know the type has to
 refuse the file rather than read an index page as a schema. The layout of that
 page and of the tree is in [INDEX.md](INDEX.md).
+
+
+`QUEUE` changes no existing structure either, for the same reason and with
+the same consequence: a segment page is an ordinary payload page, and what
+the bit changes is that a directory entry may name a page of a fourth type.
+The layout of the queue page and of a segment is in [QUEUE.md](QUEUE.md).
 
 ## What version 1 fixes
 
