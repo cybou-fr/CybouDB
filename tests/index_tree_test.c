@@ -23,6 +23,8 @@ void *cyboudb_test_mem_alloc(size_t size) { return malloc(size); }
 void cyboudb_test_mem_free(void *ptr, size_t size) { (void)size; free(ptr); }
 
 extern int db_rollback(void *ctx);
+extern int db_commit(void *ctx);
+extern int db_bitmap_is_payload(void *ctx, uint64_t page);
 extern int db_index_build(void *ctx, uint64_t owner, const void *entries,
                           uint64_t count, uint64_t *out_root);
 extern int db_index_search(void *ctx, uint64_t root, int64_t key,
@@ -198,6 +200,8 @@ extern int db_index_insert(void *ctx, uint64_t owner, uint64_t root,
                            int64_t key, uint64_t row, uint64_t *out_root);
 extern int db_index_insert_unique(void *ctx, uint64_t owner, uint64_t root,
                                   int64_t key, uint64_t row, uint64_t *out_root);
+extern int db_index_delete(void *ctx, uint64_t owner, uint64_t root,
+                           int64_t key, uint64_t row, uint64_t *out_root);
 
 #define CYBOUDB_E_VALUE 32              /* include/constants.inc */
 
@@ -254,6 +258,49 @@ static int tree_ok(void *ctx, uint64_t root, uint64_t expect) {
 
 /* Insert `count` keys in the order `step` walks them, then require that every
    one of them is found at the row it was given. */
+/* Deleting an entry and adding another, over and over, which is what a
+   statement that moves a key does. Nothing about it is new to the tree, but
+   nothing had ever asked for it either: the delete path had no caller outside
+   this file until an UPDATE stopped rebuilding the index it was changing. */
+static void churn_case(void *ctx, const char *what, uint64_t rows,
+                       uint64_t rounds, int commit) {
+    uint64_t root = 0, next = 0;
+    uint64_t bad_at = ~0ull;
+    int ok = 1;
+    char label[128];
+    for (uint64_t i = 0; i < rows; i++) {
+        if (db_index_insert(ctx, 11, root, (int64_t)i, i, &next) != 0) { ok = 0; break; }
+        root = next;
+    }
+    snprintf(label, sizeof label, "%s: a tree to churn", what);
+    check(label, ok && tree_ok(ctx, root, rows));
+    ok = 1;
+    for (uint64_t i = 0; i < rounds && ok; i++) {
+        int rc = db_index_delete(ctx, 11, root, (int64_t)i, i, &next);
+        if (rc != 0) { ok = 0; bad_at = i; break; }
+        root = next;
+        if (commit != 2) {
+        rc = db_index_insert(ctx, 11, root, (int64_t)(1000000 + i), i, &next);
+        if (rc != 0) { ok = 0; bad_at = i; break; }
+        root = next;
+        }
+        if (commit) { int c = db_commit(ctx); if (c != 0) { ok = 0; bad_at = i; break; } }
+        {
+            int64_t lo = 0, hi = 0;
+            unsigned char *n = db_index_node_addr(ctx, root);
+            if (audit(ctx, root, (int)u32(n, IDX_LEVEL), &lo, &hi) < 0) {
+                ok = 0; bad_at = i;
+            }
+        }
+    }
+    snprintf(label, sizeof label, "%s: %llu moved keys", what,
+             (unsigned long long)rounds);
+    if (!ok) printf("     went wrong at round %llu\n", (unsigned long long)bad_at);
+
+    check(label, ok);
+    check("and the tree still holds together", tree_ok(ctx, root, commit == 2 ? rows - rounds : rows));
+    db_rollback(ctx);
+}
 static void insert_case(void *ctx, const char *what, uint64_t count,
                         uint64_t step, int expect_level) {
     uint64_t root = 0, next = 0;
@@ -401,6 +448,9 @@ static void insert_suite(void *ctx) {
        IDX_MAX_ENTRIES squared - which is where a bulk-built one does, and is
        why building three levels and inserting into them did not cover this. */
     insert_case(ctx, "three levels by insertion", 20000, 1, 2);
+    churn_case(ctx, "moving keys", 5000, 300, 0);
+    churn_case(ctx, "moving keys across commits", 5000, 300, 1);
+    churn_case(ctx, "removing keys across commits", 5000, 300, 2);
     /* Inserting into a tree that is already three levels deep. Building it
        costs one page per 167 entries where inserting costs the height per
        entry, so this reaches the depth without paying for it. */
@@ -467,8 +517,6 @@ static void insert_suite(void *ctx) {
 
 /* --- delete ------------------------------------------------------------ */
 
-extern int db_index_delete(void *ctx, uint64_t owner, uint64_t root,
-                           int64_t key, uint64_t row, uint64_t *out_root);
 
 #define CYBOUDB_E_NOTFOUND 28           /* include/constants.inc */
 

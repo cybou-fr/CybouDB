@@ -1140,10 +1140,22 @@ db_bitmap_seal:
 ;  has nowhere to put the answer and keeps growing instead.
 ; -----------------------------------------------------------------------------
 db_bitmap_retire:
-    FRAME_BEGIN 16, 0
+    FRAME_BEGIN 32, 0
+    mov     [rbp - 8], ARG2
+    mov     [rbp - 16], ARG1
     mov     r10, ARG1
     test    qword [r10 + DB_FEATURES], CybouDB_FEATURE_MAP_SPAN
     jz      .done
+    ; Onto the inactive copy first, exactly as an allocation does. A retire
+    ; that is the first map write of a transaction would otherwise stamp the
+    ; copy a published generation is still reading - and stamping it is worse
+    ; than writing it, because span_stage takes equal generations as proof
+    ; that a leaf has not changed. The next transaction then skips copying
+    ; that leaf and stages a map missing everything this one allocated.
+    mov     ARG1, r10
+    call    span_stage
+    mov     ARG1, [rbp - 16]
+    mov     ARG2, [rbp - 8]
     mov     ARG3, MAP_RETIRED
     call    span_mark
 .done:
