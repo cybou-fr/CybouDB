@@ -1129,7 +1129,41 @@ answers and leaves the reader where it was, because a position is state.
 
 `read` is a keyword now, so it is no longer available as an identifier.
 
-Still to come: `TRIM`, the C ABI.
+**Done: `TRIM`.** `TRIM STREAM name BEFORE position` moves the beginning
+forward, retires the extent chain of every record it drops, and then retires
+every segment entirely behind the new beginning. A position rather than a
+count, so that a caller who has read a cursor's position can trim to it.
+
+A trim may not pass the slowest cursor, and the refusal has a code of its own.
+Skipping would lose a record a reader was promised and failing would leave it
+stuck forever, so refusing is the only answer that keeps both promises - and
+`DROP CURSOR` is the escape hatch, which is explicit rather than a timeout the
+engine would have to invent. Trimming to behind the beginning is nothing to do
+rather than an error: the records are gone, which is what was asked.
+
+**A queue bug found on the way, and it was an old one.** The block in
+`db_queue_pop` that retires the chain a taken message named had no label and
+sat after a loop whose only exit jumped past it. It had never run: every
+`DEQUEUE` of a message longer than a slot leaked its extent pages, for as long
+as the queue has existed.
+
+The test that was meant to catch it ran a hundred round trips of a 4000-byte
+message through a 300-page file and said in its comment that only reclamation
+could survive that. A hundred fits either way; the file runs out at 290. It is
+four hundred now, and fails within thirty round trips of the leak coming back,
+which is checked rather than assumed.
+
+That is the third test this project has had that proved nothing, and all three
+had the same shape: a number chosen to be comfortably large rather than
+computed from what would fail without the thing being tested.
+
+`tests/stream_sql_tests.py` is 103 checks. The trim ones read the shape off the
+disk - beginning, end, segment count, first segment - across a trim that
+crosses a segment boundary and a trim to the end; and two hundred
+append-and-trim rounds of a two-page record run through a 300-page file that
+could hold neither the chains nor the segments if either were kept.
+
+Still to come: the C ABI, and then Stream is done.
 
 What is decided:
 

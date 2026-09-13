@@ -1700,6 +1700,8 @@ sql_parse:
     je      .parse_append
     cmp     rax, TOK_READ
     je      .parse_read
+    cmp     rax, TOK_TRIM
+    je      .parse_trim
     cmp     rax, TOK_DEQUEUE
     je      .parse_dequeue
 
@@ -2414,6 +2416,55 @@ sql_parse:
     mov     [r10 + DROP_TABLE_NAME_PTR], rax
     mov     rax, [rbp - 192 + TOK_LEN]
     mov     [r10 + DROP_TABLE_NAME_LEN], rax
+    jmp     .check_eof
+
+; --- TRIM STREAM name BEFORE position ----------------------------------------
+; A position, not a count: what is kept is said in the same numbers a cursor
+; stands in, so a caller that has read a position can trim to it.
+.parse_trim:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_TRIM
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_STREAM
+    jne     .bad_syntax
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_table_name
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + QUEUE_NAME_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + QUEUE_NAME_LEN], rax
+
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_BEFORE
+    jne     .bad_syntax
+
+    lea     ARG1, [rbp - 160]
+    mov     ARG2, [rbp - 8]
+    mov     ARG3, [rbp - 24]
+    mov     ARG4, [rbp - 40]
+    call    parse_primary
+    test    rax, rax
+    jz      .fail
+    cmp     qword [rax + EXPR_KIND], EXPR_LITERAL
+    jne     .bad_syntax
+    cmp     dword [rax + EXPR_LIT_TYPE], CAT_INT64
+    je      .trim_position
+    cmp     dword [rax + EXPR_LIT_TYPE], CAT_INT32
+    jne     .bad_syntax
+.trim_position:
+    mov     r11, [rax + EXPR_LIT_VAL]
+    mov     r10, [rbp - 48]
+    mov     [r10 + TRIM_POSITION], r11
     jmp     .check_eof
 
 ; --- READ FROM stream AS reader ----------------------------------------------

@@ -56,7 +56,7 @@ extern db_catalog_put_queue, db_queue_push, db_queue_pop, db_queue_peek
 extern db_queue_retire_all
 extern db_catalog_put_stream, db_stream_retire_all, db_stream_append
 extern db_stream_cursor_add, db_stream_cursor_drop
-extern db_stream_peek, db_stream_read
+extern db_stream_peek, db_stream_read, db_stream_trim
 extern db_catalog_page
 extern db_index_retire_tree
 extern db_index_insert, db_index_insert_unique, db_index_delete
@@ -595,6 +595,8 @@ sql_execute_batch:
     je      .exec_append
     cmp     rax, STMT_READ
     je      .exec_read
+    cmp     rax, STMT_TRIM
+    je      .exec_trim
     cmp     rax, STMT_CREATE_CURSOR
     je      .exec_create_cursor
     cmp     rax, STMT_DROP_CURSOR
@@ -1348,6 +1350,14 @@ sql_execute_batch:
 .read_oom:
     mov     eax, SQL_ERR_NO_STORAGE
     jmp     .exec_exit
+
+.exec_trim:
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    mov     ARG3, [r10 + PLAN_DATA1]
+    call    db_stream_trim
+    jmp     .storage_done
 
 .exec_create_cursor:
     mov     ARG1, [rbp - 8]

@@ -1001,6 +1001,8 @@ sql_bind:
     je      .bind_append
     cmp     rax, STMT_READ
     je      .bind_read
+    cmp     rax, STMT_TRIM
+    je      .bind_trim
     cmp     rax, STMT_CREATE_CURSOR
     je      .bind_create_cursor
     cmp     rax, STMT_DROP_CURSOR
@@ -1909,6 +1911,37 @@ sql_bind:
     mov     r10, [rbp - 48]
     mov     [r10 + PLAN_TABLE_ID], rax
     mov     rax, [rbp - 80]
+    mov     [r10 + PLAN_DATA1], rax
+    mov     r11, [rbp - 8]
+    mov     [r10 + PLAN_CTX], r11
+    xor     eax, eax
+    jmp     .binder_exit
+
+; --- BIND TRIM ---------------------------------------------------------------
+; The stream, and the position carried through. Whether a reader would be left
+; behind is a fact about the page, so db_stream_trim answers it.
+.bind_trim:
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + PLAN_TYPE], STMT_TRIM
+    mov     r11, [rbp - 8]
+    test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_STREAM
+    jz      .stream_unsupported
+    mov     r10, [rbp - 16]
+    mov     rcx, [r10 + QUEUE_NAME_LEN]
+    cmp     rcx, 31
+    ja      .bad_tbl_len
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + QUEUE_NAME_PTR]
+    mov     ARG3, [r10 + QUEUE_NAME_LEN]
+    lea     ARG4, [rbp - 56]
+    call    catalog_find_stream
+    test    rax, rax
+    jz      .stream_not_found
+    mov     r10, [rbp - 48]
+    mov     rdx, [rbp - 56]
+    mov     [r10 + PLAN_TABLE_ID], rdx
+    mov     r11, [rbp - 16]
+    mov     rax, [r11 + TRIM_POSITION]
     mov     [r10 + PLAN_DATA1], rax
     mov     r11, [rbp - 8]
     mov     [r10 + PLAN_CTX], r11

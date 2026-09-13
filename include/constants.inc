@@ -53,7 +53,8 @@
 %define CybouDB_E_VALUE      32            ; invalid scalar value or NULL constraint
 %define CybouDB_E_BUSY       33            ; another writer owns the database
 %define CybouDB_E_CURSOR     34            ; no reader of that name on the stream
-%define CybouDB_E_COUNT      35            ; size of the message table
+%define CybouDB_E_RETAINED   35            ; a reader still needs what a trim would drop
+%define CybouDB_E_COUNT      36            ; size of the message table
 
 ; --- Why an operating system call failed -------------------------------------
 ;  The platform layer translates its native error - errno on Linux, the Win32

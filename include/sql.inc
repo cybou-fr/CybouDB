@@ -71,6 +71,8 @@
 %define TOK_TO              93
 %define TOK_CURSOR          94
 %define TOK_READ            95
+%define TOK_TRIM            96
+%define TOK_BEFORE          97
 
 ; Types
 %define TOK_TYPE_INT32      30
@@ -144,6 +146,7 @@
 %define STMT_CREATE_CURSOR  19
 %define STMT_DROP_CURSOR    20
 %define STMT_READ           21
+%define STMT_TRIM           22
 
 ; --- AST Statement header and statement-specific payload --------------------
 %define AST_STMT_TYPE       0           ; qword: STMT_*
@@ -212,6 +215,7 @@
 ; so what is added is the reader.
 %define CURSOR_NAME_PTR       32
 %define CURSOR_NAME_LEN       40
+%define TRIM_POSITION         32       ; TRIM: where the stream now begins
 %define QUEUE_PAYLOAD_SIZE    48
 
 %define SELECT_TABLE_NAME_PTR   0

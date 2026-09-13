@@ -14,10 +14,11 @@ BITS 64
 default rel
 extern db_queue_segments_valid
 extern db_catalog_page, db_catalog_edit, db_catalog_seal
-extern queue_slot_at, queue_slot_copy
+extern queue_slot_at, queue_slot_copy, queue_retire_chain
+extern db_bitmap_retire
 global stream_page_valid
 global db_stream_cursor_add, db_stream_cursor_drop, db_stream_cursor_find
-global db_stream_peek, db_stream_read
+global db_stream_peek, db_stream_read, db_stream_trim
 
 section .text
 
@@ -626,5 +627,207 @@ db_stream_read:
 .r_state:
     mov eax, CybouDB_E_STATE
 .r_done:
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  db_stream_trim(ctx, stream id, position) -> RAX: result code
+;
+;  Everything before that position stops being kept: the extent chain of each
+;  record dropped, and then every segment that is now entirely behind the new
+;  beginning.
+;
+;  A trim may not pass the slowest cursor. A reader whose position is behind it
+;  would be asked, on its next read, for a record that is no longer there, and
+;  there is no good answer to that - skipping loses data a reader was promised,
+;  failing leaves it stuck forever. Refusing is the only answer that keeps both
+;  promises, and the escape hatch is DROP CURSOR, which is explicit.
+;
+;  Trimming to a position already behind the beginning is nothing to do rather
+;  than an error: the records are gone, which is what was asked for.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=id, [rbp-24]=position, [rbp-32]=page,
+;               [rbp-40]=first, [rbp-48]=end, [rbp-56]=segments,
+;               [rbp-64]=first segment, [rbp-72]=walk, [rbp-80]=dropped,
+;               [rbp-88]=kept, [rbp-96]=the new first segment
+; -----------------------------------------------------------------------------
+db_stream_trim:
+    FRAME_BEGIN 128, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_STREAM
+    jz .t_state
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    call db_catalog_page
+    test rax, rax
+    jz .t_state
+    cmp dword [rax + CAT_TYPE], CAT_STREAM
+    jne .t_state
+    mov [rbp - 32], rax
+    mov rdx, [rax + S_FIRST]
+    mov [rbp - 40], rdx
+    mov rcx, [rax + S_END]
+    mov [rbp - 48], rcx
+    mov r11, [rbp - 24]
+    cmp r11, rcx
+    ja .t_value                     ; past what the stream has ever held
+    cmp r11, rdx
+    jbe .t_nothing                  ; already behind the beginning
+
+    ; No reader left behind. Asked before anything is copied.
+    mov qword [rbp - 72], 0
+.t_reader:
+    mov r10, [rbp - 32]
+    mov rax, [rbp - 72]
+    cmp rax, [r10 + S_CURSORS]
+    jae .t_readers_ok
+    shl rax, 5                      ; SCUR_SIZE
+    mov r11, [r10 + S_CURSOR_TABLE + rax + SCUR_POSITION]
+    cmp r11, [rbp - 24]
+    jb .t_retained
+    inc qword [rbp - 72]
+    jmp .t_reader
+.t_readers_ok:
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    lea ARG3, [rbp - 32]
+    call db_catalog_edit
+    test eax, eax
+    jnz .t_done
+    ; stamp clears the span the positions live in; the segment fields and the
+    ; cursor table are outside it and came across with the copy.
+    mov r10, [rbp - 32]
+    mov rax, [rbp - 40]
+    mov [r10 + S_FIRST], rax
+    mov rax, [rbp - 48]
+    mov [r10 + S_END], rax
+    mov ecx, [r10 + S_SEGMENTS]
+    mov [rbp - 56], rcx
+    mov rdx, [r10 + S_FIRST_SEG]
+    mov [rbp - 64], rdx
+
+    ; The chains of the records being dropped, while the directory that
+    ; reaches them is still the old one.
+    mov rax, [rbp - 40]
+    mov [rbp - 72], rax
+.t_record:
+    mov rax, [rbp - 72]
+    cmp rax, [rbp - 24]
+    jae .t_records_done
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 32]
+    mov ARG3, S_ENTRIES
+    mov ARG4, [rbp - 72]
+    call queue_slot_at
+    test rax, rax
+    jz .t_state
+    mov ecx, [rax + QMSG_FLAGS]
+    test ecx, QMSG_FLAG_EXTENT
+    jz .t_record_next
+    mov r11, [rax + QMSG_EXTENT]
+    mov ARG1, [rbp - 8]
+    mov ARG2, r11
+    call queue_retire_chain
+.t_record_next:
+    inc qword [rbp - 72]
+    jmp .t_record
+.t_records_done:
+
+    ; How much of the directory the new beginning leaves behind. A stream
+    ; trimmed to its end names no segment at all, exactly as a drained queue
+    ; does; otherwise it keeps whatever the new beginning is standing in.
+    mov rax, [rbp - 24]
+    xor edx, edx
+    mov rcx, QUEUE_SEG_SLOTS
+    div rcx
+    mov [rbp - 96], rax             ; the segment the new beginning is in
+    mov rdx, [rbp - 24]
+    cmp rdx, [rbp - 48]
+    jne .t_keeping
+    mov rax, [rbp - 56]
+    mov [rbp - 80], rax             ; emptied: every entry goes
+    mov qword [rbp - 88], 0
+    jmp .t_counted
+.t_keeping:
+    mov rax, [rbp - 96]
+    sub rax, [rbp - 64]
+    mov [rbp - 80], rax
+    mov rdx, [rbp - 56]
+    sub rdx, rax
+    mov [rbp - 88], rdx
+.t_counted:
+
+    ; The segments behind it have nothing left to give.
+    mov qword [rbp - 72], 0
+.t_retire:
+    mov rax, [rbp - 72]
+    cmp rax, [rbp - 80]
+    jae .t_retired
+    mov r11, [rbp - 32]
+    add r11, S_ENTRIES
+    mov ARG2, [r11 + rax * 8]
+    mov ARG1, [rbp - 8]
+    call db_bitmap_retire
+    inc qword [rbp - 72]
+    jmp .t_retire
+.t_retired:
+    cmp qword [rbp - 80], 0
+    je .t_publish                   ; nothing moved, so nothing to shift
+
+    ; What is left moves down to entry zero.
+    mov r11, [rbp - 32]
+    add r11, S_ENTRIES
+    mov rcx, [rbp - 80]
+    xor edx, edx
+.t_move:
+    cmp rdx, [rbp - 88]
+    jae .t_moved
+    mov r9, rdx
+    add r9, rcx
+    mov r8, [r11 + r9 * 8]
+    mov [r11 + rdx * 8], r8
+    inc rdx
+    jmp .t_move
+.t_moved:
+    ; And what used to be beyond them is zero, as every tail here is.
+    mov rax, [rbp - 88]
+.t_clear:
+    cmp rax, [rbp - 56]
+    jae .t_publish
+    mov qword [r11 + rax * 8], 0
+    inc rax
+    jmp .t_clear
+
+.t_publish:
+    mov r10, [rbp - 32]
+    mov rax, [rbp - 24]
+    mov [r10 + S_FIRST], rax
+    mov rax, [rbp - 48]
+    mov [r10 + S_END], rax
+    mov rax, [rbp - 88]
+    mov [r10 + S_SEGMENTS], eax
+    mov rax, [rbp - 96]
+    mov [r10 + S_FIRST_SEG], rax
+    mov ARG1, r10
+    call db_catalog_seal
+    xor eax, eax
+    jmp .t_done
+.t_nothing:
+    xor eax, eax
+    jmp .t_done
+.t_value:
+    mov eax, CybouDB_E_VALUE
+    jmp .t_done
+.t_retained:
+    mov eax, CybouDB_E_RETAINED
+    jmp .t_done
+.t_state:
+    mov eax, CybouDB_E_STATE
+.t_done:
     FRAME_END
     ret

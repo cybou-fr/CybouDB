@@ -430,6 +430,87 @@ def main():
         check("and the file checks out", r.returncode == 0 and
               "Status:          OK" in r.stdout, r.stdout)
 
+        # --- TRIM ------------------------------------------------------------
+        def shape(name):
+            page = stream_page(db, name)
+            blob = open(db, "rb").read()
+            return (struct.unpack_from("<Q", blob, page + S_FIRST)[0],
+                    struct.unpack_from("<Q", blob, page + S_END)[0],
+                    struct.unpack_from("<I", blob, page + S_SEGMENTS)[0],
+                    struct.unpack_from("<Q", blob, page + 96)[0])
+
+        query("CREATE STREAM tr;")
+        console("".join(f"APPEND TO tr VALUES ('r{i}');\n"
+                        for i in range(150)) + ".quit\n", db)
+        check("a stream of 150 in three segments", shape("tr") == (0, 150, 3, 0),
+              shape("tr"))
+
+        query("CREATE CURSOR slow ON tr;")
+        r = query("TRIM STREAM tr BEFORE 70;")
+        check("a trim that would pass a reader is refused",
+              r.returncode != 0 and "has not read that far" in r.stdout,
+              r.stdout)
+        check("and the stream is untouched", shape("tr") == (0, 150, 3, 0),
+              shape("tr"))
+
+        r = query("DROP CURSOR slow ON tr;")
+        check("dropping the reader is the escape hatch", r.returncode == 0,
+              r.stdout)
+        r = query("TRIM STREAM tr BEFORE 70;")
+        check("after which the trim goes through", r.returncode == 0 and
+              "Stream trimmed" in r.stdout, r.stdout)
+        check("leaving two segments, starting at the second",
+              shape("tr") == (70, 150, 2, 1), shape("tr"))
+
+        r = query("TRIM STREAM tr BEFORE 40;")
+        check("trimming to behind the beginning is nothing to do",
+              r.returncode == 0, r.stdout)
+        check("and changes nothing", shape("tr") == (70, 150, 2, 1),
+              shape("tr"))
+        r = query("TRIM STREAM tr BEFORE 999;")
+        check("past the end is refused", r.returncode != 0 and
+              "past the end" in r.stdout, r.stdout)
+
+        query("CREATE CURSOR fresh ON tr;")
+        _, positions, _ = readers("tr")
+        check("a reader made after a trim starts at the new beginning",
+              positions == [70], positions)
+        r = query("READ FROM tr AS fresh;")
+        check("and is given the oldest record still kept",
+              r.stdout.strip() == "r70", r.stdout)
+
+        query("DROP CURSOR fresh ON tr;")
+        r = query("TRIM STREAM tr BEFORE 150;")
+        check("trimming to the end empties the stream", r.returncode == 0 and
+              shape("tr") == (150, 150, 0, 2), shape("tr"))
+        r = run("check", db)
+        check("and the file checks out", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
+        r = query("APPEND TO tr VALUES ('after');")
+        check("an emptied stream still takes records", r.returncode == 0,
+              r.stdout)
+        check("continuing from where it left off",
+              shape("tr")[:2] == (150, 151), shape("tr"))
+
+        # What the trim is for: the pages come back. Two hundred rounds of
+        # append-then-trim, each a two-page record, through a file that could
+        # hold neither the chains nor the segments if they were kept.
+        tight2 = str(Path(tmp) / "trim.cdb")
+        run("create-large", tight2, "300", "--force")
+        body = "d" * 4000
+        script = "CREATE STREAM s;\n" + "".join(
+            f"APPEND TO s VALUES ('{body}');\nTRIM STREAM s BEFORE {i + 1};\n"
+            for i in range(200)) + ".quit\n"
+        r = console(script, tight2)
+        check("two hundred append-and-trim rounds through a file too small "
+              "to leak",
+              r.stdout.count("Stream trimmed") == 200 and
+              "error" not in r.stdout,
+              f"{r.stdout.count('Stream trimmed')} trims")
+        r = run("check", tight2)
+        check("leaving a file that checks out", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
+
         # --- and dropping one gives the pages back ---------------------------
         # Without the retire, a stream that is made and dropped forever would
         # spend segments and never give one back. The assertion is a file too

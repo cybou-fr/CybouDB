@@ -20,7 +20,7 @@ global queue_page_valid, db_queue_seg_addr, queue_seg_seal, db_queue_segments_va
 global db_queue_push, db_queue_pop, db_queue_peek, db_queue_depth
 global db_queue_retire_all
 global db_stream_append
-global queue_slot_at, queue_slot_copy
+global queue_slot_at, queue_slot_copy, queue_retire_chain
 global db_stream_retire_all
 
 section .data

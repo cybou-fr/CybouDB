@@ -176,6 +176,8 @@ e_pax: db "error: invalid PAX data page", 10, 0
 e_value: db "error: invalid value or NULL for column type", 10, 0
 e_busy: db "error: database is locked by another writer", 10, 0
 e_cursor: db "error: the stream has no reader of that name", 10, 0
+e_retained: db "error: a reader has not read that far yet - drop it or trim less", 10, 0
+e_trim_past: db "error: that position is past the end of the stream", 10, 0
 
     align 8
 err_table:
@@ -185,7 +187,7 @@ err_table:
     dq e_noent, e_access, e_state, e_generation
     dq e_bitmap, e_cow_pages
     dq e_catalog, e_schema, e_notfound, e_catalog_full
-    dq e_rows, e_pax, e_value, e_busy, e_cursor
+    dq e_rows, e_pax, e_value, e_busy, e_cursor, e_retained
 
 err_no_pax_cli:  db "error: database does not support PAX tables (create with create-pax-multi)", 10, 0
 msg_sql_table_created: db "Table created.", 10, 0
@@ -200,6 +202,7 @@ msg_sql_appended:       db "Record appended.", 10, 0
 msg_sql_cursor_created: db "Cursor created.", 10, 0
 msg_sql_cursor_dropped: db "Cursor dropped.", 10, 0
 msg_sql_read_end:       db "Nothing new for that reader.", 10, 0
+msg_sql_trimmed:        db "Stream trimmed.", 10, 0
 e_cursor_exists: db "error: the stream already has a reader of that name", 10, 0
 
 e_cursor_full:   db "error: a stream holds at most eight readers", 10, 0
@@ -1161,6 +1164,8 @@ cyboudb_exec_query:
     je      .appended
     cmp     qword [r10 + PLAN_TYPE], STMT_READ
     je      .record_read
+    cmp     qword [r10 + PLAN_TYPE], STMT_TRIM
+    je      .stream_trimmed
     cmp     qword [r10 + PLAN_TYPE], STMT_CREATE_CURSOR
     je      .cursor_created
     cmp     qword [r10 + PLAN_TYPE], STMT_DROP_CURSOR
@@ -1274,6 +1279,10 @@ cyboudb_exec_query:
     jmp     .exec_success
 .record_read_end:
     PUTS    msg_sql_read_end
+    jmp     .exec_success
+
+.stream_trimmed:
+    PUTS    msg_sql_trimmed
     jmp     .exec_success
 
 .cursor_created:
@@ -1430,10 +1439,22 @@ cyboudb_exec_query:
     test    r10, r10
     jz      .storage_fail_code
     mov     rdx, [r10 + PLAN_TYPE]
+    cmp     rdx, STMT_TRIM
+    je      .trim_fail
     cmp     rdx, STMT_CREATE_CURSOR
     je      .cursor_fail
     cmp     rdx, STMT_DROP_CURSOR
+    je      .cursor_fail
+    jmp     .storage_fail_code
+
+    ; A position past the end is a value the storage layer refuses; what makes
+    ; it wrong is particular to a trim, so that is said here.
+.trim_fail:
+    cmp     rax, CybouDB_E_VALUE
     jne     .storage_fail_code
+    lea     ARG1, [e_trim_past]
+    jmp     .cursor_fail_say
+
 .cursor_fail:
     ; A missing reader has a code of its own and so answers for itself; these
     ; two are storage codes that mean something narrower here.
