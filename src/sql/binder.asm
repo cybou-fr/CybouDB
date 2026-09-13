@@ -33,6 +33,8 @@ err_join_projection: db "JOIN projections must be explicitly qualified", 0
 err_no_index:        db "database was not created with index support", 0
 err_index_type:      db "an index needs an INT32 or INT64 column", 0
 err_index_missing:   db "index not found in catalog", 0
+err_no_queue:        db "database was not created with queue support", 0
+err_queue_missing:   db "queue not found in catalog", 0
 err_join_key_type: db "JOIN keys currently require INT32 or INT64", 0
 err_order_pending: db "ORDER BY execution is not implemented yet", 0
 err_varlen_pending: db "TEXT/BLOB storage extents are not implemented yet", 0
@@ -86,6 +88,9 @@ catalog_find_object:
     jmp     catalog_find_common
 catalog_find_index:
     mov     r11d, CAT_INDEX
+    jmp     catalog_find_common
+catalog_find_queue:
+    mov     r11d, CAT_QUEUE
     jmp     catalog_find_common
 catalog_find_table:
     mov     r11d, CAT_SCHEMA
@@ -968,6 +973,10 @@ sql_bind:
     je      .bind_create_index
     cmp     rax, STMT_DROP_INDEX
     je      .bind_drop_index
+    cmp     rax, STMT_CREATE_QUEUE
+    je      .bind_create_queue
+    cmp     rax, STMT_DROP_QUEUE
+    je      .bind_drop_queue
 
     mov     eax, SQL_ERR_SYNTAX
     jmp     .binder_exit
@@ -1774,6 +1783,117 @@ sql_bind:
     mov     [r10 + PLAN_SCHEMA_PAGE], rax
     mov     r11, [rbp - 8]
     mov     [r10 + PLAN_CTX], r11
+    xor     eax, eax
+    jmp     .binder_exit
+
+; --- BIND CREATE QUEUE -------------------------------------------------------
+; A queue has no columns and no table behind it, so binding one is the name
+; check and the page image. It takes its id the way a table and an index do,
+; because the three share a directory and an id space.
+.bind_create_queue:
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + PLAN_TYPE], STMT_CREATE_QUEUE
+    mov     r11, [rbp - 8]
+    test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_QUEUE
+    jz      .queue_unsupported
+
+    mov     r10, [rbp - 16]
+    mov     rcx, [r10 + STMT_NAME_LEN]
+    cmp     rcx, 31
+    ja      .bad_tbl_len
+    cmp     rcx, 0
+    je      .bad_tbl_len
+
+    ; One namespace: a queue may not take the name of a table or an index.
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + STMT_NAME_PTR]
+    mov     ARG3, [r10 + STMT_NAME_LEN]
+    xor     ARG4, ARG4
+    call    catalog_find_object
+    test    rax, rax
+    jnz     .dup_table
+
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, CybouDB_PAGE_SIZE
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+    mov     [rbp - 80], rax
+    mov     r11, rax
+    xor     ecx, ecx
+.queue_zero:
+    mov     qword [r11 + rcx * 8], 0
+    inc     ecx
+    cmp     ecx, CybouDB_PAGE_SIZE / 8
+    jb      .queue_zero
+
+    ; The name, padded with the zeroes already there. Head, tail, claim, the
+    ; segment count and the directory stay zero, which is what an empty queue
+    ; is and what the catalog's shape check requires of a new one.
+    mov     r10, [rbp - 16]
+    mov     r11, [rbp - 80]
+    mov     rsi, [r10 + STMT_NAME_PTR]
+    mov     rcx, [r10 + STMT_NAME_LEN]
+    lea     r8, [r11 + Q_NAME]
+    xor     edx, edx
+.queue_name:
+    cmp     rdx, rcx
+    jae     .queue_named
+    mov     al, [rsi + rdx]
+    mov     [r8 + rdx], al
+    inc     rdx
+    jmp     .queue_name
+.queue_named:
+
+    ; The id, one past the last the directory holds.
+    mov     r10, [rbp - 8]
+    mov     rax, [r10 + DB_ROOT]
+    test    rax, rax
+    jz      .first_queue_id
+    shl     rax, CybouDB_PAGE_SHIFT
+    add     rax, [r10 + DB_BASE]
+    mov     ecx, [rax + CAT_COUNT]
+    test    ecx, ecx
+    jz      .first_queue_id
+    dec     ecx
+    shl     rcx, 4
+    mov     rax, [rax + CAT_DATA + rcx]
+    inc     rax
+    jmp     .queue_id_ready
+.first_queue_id:
+    mov     rax, 1
+.queue_id_ready:
+    mov     r10, [rbp - 48]
+    mov     [r10 + PLAN_TABLE_ID], rax
+    mov     rax, [rbp - 80]
+    mov     [r10 + PLAN_DATA1], rax
+    mov     r11, [rbp - 8]
+    mov     [r10 + PLAN_CTX], r11
+    xor     eax, eax
+    jmp     .binder_exit
+
+; --- BIND DROP QUEUE ---------------------------------------------------------
+.bind_drop_queue:
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + PLAN_TYPE], STMT_DROP_QUEUE
+    mov     r11, [rbp - 8]
+    test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_QUEUE
+    jz      .queue_unsupported
+
+    mov     r10, [rbp - 16]
+    mov     rcx, [r10 + DROP_TABLE_NAME_LEN]
+    cmp     rcx, 31
+    ja      .bad_tbl_len
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + DROP_TABLE_NAME_PTR]
+    mov     ARG3, [r10 + DROP_TABLE_NAME_LEN]
+    lea     ARG4, [rbp - 56]
+    call    catalog_find_queue
+    test    rax, rax
+    jz      .queue_not_found
+    mov     r10, [rbp - 48]
+    mov     rdx, [rbp - 56]
+    mov     [r10 + PLAN_TABLE_ID], rdx
     xor     eax, eax
     jmp     .binder_exit
 
@@ -2603,6 +2723,24 @@ sql_bind:
     mov     ARG2, SQL_ERR_TABLE_NOT_FOUND
     xor     ARG3, ARG3
     lea     ARG4, [err_index_missing]
+    call    set_binder_error
+    mov     eax, SQL_ERR_TABLE_NOT_FOUND
+    jmp     .binder_exit
+
+.queue_unsupported:
+    mov     ARG1, [rbp - 40]
+    mov     ARG2, SQL_ERR_TYPE_MISMATCH
+    xor     ARG3, ARG3
+    lea     ARG4, [err_no_queue]
+    call    set_binder_error
+    mov     eax, SQL_ERR_TYPE_MISMATCH
+    jmp     .binder_exit
+
+.queue_not_found:
+    mov     ARG1, [rbp - 40]
+    mov     ARG2, SQL_ERR_TABLE_NOT_FOUND
+    xor     ARG3, ARG3
+    lea     ARG4, [err_queue_missing]
     call    set_binder_error
     mov     eax, SQL_ERR_TABLE_NOT_FOUND
     jmp     .binder_exit

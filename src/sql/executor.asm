@@ -52,6 +52,7 @@ default rel
 extern db_catalog_put, db_catalog_drop, db_catalog_truncate_data, db_pax_insert, db_pax_update_one, db_pax_capacity, db_commit, db_rollback
 extern db_pax_mark_dead, db_pax_dead_total
 extern db_catalog_put_index, db_catalog_set_index_root, db_index_of_table
+extern db_catalog_put_queue
 extern db_catalog_page
 extern db_index_retire_tree
 extern db_index_insert, db_index_insert_unique, db_index_delete
@@ -578,6 +579,10 @@ sql_execute_batch:
     je      .exec_create_index
     cmp     rax, STMT_DROP_INDEX
     je      .exec_drop_index
+    cmp     rax, STMT_CREATE_QUEUE
+    je      .exec_create_queue
+    cmp     rax, STMT_DROP_QUEUE
+    je      .exec_drop_queue
     cmp     rax, STMT_BEGIN
     je      .exec_begin
     cmp     rax, STMT_COMMIT
@@ -1204,6 +1209,25 @@ sql_execute_batch:
     mov     ARG1, r10
     mov     ARG2, [rax + IDX_ROOT]
     call    db_index_retire_tree
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    call    db_catalog_drop
+    jmp     .storage_done
+
+; A queue is one catalog page and nothing else until something enqueues, so
+; creating one is the entry and dropping one is its removal. When segments
+; exist the drop will have to retire them, the way dropping an index retires
+; its tree - which is why that is a line in the roadmap and not a silence here.
+.exec_create_queue:
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    mov     ARG3, [r10 + PLAN_DATA1]
+    call    db_catalog_put_queue
+    jmp     .storage_done
+
+.exec_drop_queue:
     mov     ARG1, [rbp - 8]
     mov     r10, [rbp - 16]
     mov     ARG2, [r10 + PLAN_TABLE_ID]

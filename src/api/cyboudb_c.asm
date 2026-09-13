@@ -528,6 +528,10 @@ cyboudb_step:
     je      .step_drop                  ; both run through the executor
     cmp     rcx, STMT_DROP_INDEX
     je      .step_drop
+    cmp     rcx, STMT_CREATE_QUEUE
+    je      .step_drop
+    cmp     rcx, STMT_DROP_QUEUE
+    je      .step_drop                  ; and the fourth kind, the same way
 
     mov     eax, CybouDB_C_ERROR
     jmp     .step_exit

@@ -63,7 +63,9 @@ str_meta_help:          db ".help", 0
 str_meta_info:          db ".info", 0
 str_meta_tables:        db ".tables", 0
 str_meta_schema:        db ".schema", 0
-str_meta_indexes:       db ".indexes", 0
+str_meta_indexes:       db ".indexes", 0
+str_meta_queues:        db ".queues", 0
+str_queue_holding:      db " holding ", 0
 str_idx_unique:         db "unique ", 0
 str_idx_on:             db " on ", 0
 str_idx_lparen:         db " (", 0
@@ -748,6 +750,15 @@ repl_handle_meta:
     test    rax, rax
     jnz     .meta_indexes
 
+    ; 8. Check .queues
+    mov     ARG1, [rbp - 16]
+    mov     ARG2, [rbp - 32]
+    lea     ARG3, [str_meta_queues]
+    mov     ARG4, 7
+    call    str_eq_exact
+    test    rax, rax
+    jnz     .meta_queues
+
     ; Unknown command
     PUTS    str_err_unknown_meta
     mov     r10, [rbp - 16]
@@ -791,6 +802,15 @@ repl_handle_meta:
 .meta_tables:
     mov     ARG1, [rbp - 8]
     call    repl_meta_tables
+    xor     eax, eax
+    FRAME_END
+    ret
+
+.meta_queues:
+    ; Every queue, with what it is holding. No filter: a queue belongs to no
+    ; table, so there is nothing to narrow it by.
+    mov     ARG1, [rbp - 8]
+    call    repl_meta_queues
     xor     eax, eax
     FRAME_END
     ret
@@ -951,6 +971,67 @@ repl_meta_tables:
 
 .no_tables:
     mov     rbx, [rbp - 32]
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  repl_meta_queues(ARG1 = db_ctx)
+;
+;  Every queue, and how many messages it is holding. A queue belongs to no
+;  table, so there is nothing to filter by and the walk is one pass.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-40]=directory, [rbp-48]=entries,
+;               [rbp-56]=queue page, [rbp-64]=rbx
+; -----------------------------------------------------------------------------
+repl_meta_queues:
+    FRAME_BEGIN 80, 0
+    mov     [rbp - 8], ARG1
+    mov     [rbp - 64], rbx
+    test    qword [ARG1 + DB_FEATURES], CybouDB_FEATURE_QUEUE
+    jz      .q_done
+    mov     rax, [ARG1 + DB_ROOT]
+    test    rax, rax
+    jz      .q_done
+    mov     r10, [ARG1 + DB_BASE]
+    shl     rax, CybouDB_PAGE_SHIFT
+    add     r10, rax
+    mov     [rbp - 40], r10
+    cmp     dword [r10 + CAT_MAGIC], CAT_MAGIC_VALUE
+    jne     .q_done
+    cmp     dword [r10 + CAT_TYPE], CAT_DIRECTORY
+    jne     .q_done
+    mov     ecx, [r10 + CAT_COUNT]
+    test    ecx, ecx
+    jz      .q_done
+    mov     [rbp - 48], rcx
+    xor     rbx, rbx
+.q_entry:
+    mov     r10, [rbp - 40]
+    mov     r11, rbx
+    shl     r11, 4
+    lea     r11, [r10 + CAT_DATA + r11]
+    mov     rax, [r11 + 8]
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     r8, [rbp - 8]
+    add     rax, [r8 + DB_BASE]
+    cmp     dword [rax + CAT_TYPE], CAT_QUEUE
+    jne     .q_next
+    mov     [rbp - 56], rax
+    lea     ARG1, [rax + Q_NAME]
+    call    puts_asciiz
+    PUTS    str_queue_holding
+    mov     rax, [rbp - 56]
+    mov     ARG1, [rax + Q_TAIL]
+    sub     ARG1, [rax + Q_HEAD]
+    call    put_u64
+    PUTS    str_repl_nl
+.q_next:
+    inc     rbx
+    cmp     rbx, [rbp - 48]
+    jb      .q_entry
+.q_done:
+    mov     rbx, [rbp - 64]
+    xor     eax, eax
     FRAME_END
     ret
 

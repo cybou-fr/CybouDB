@@ -63,6 +63,7 @@
 %define TOK_ROLLBACK        85
 %define TOK_INDEX           86
 %define TOK_UNIQUE          87
+%define TOK_QUEUE           88
 
 ; Types
 %define TOK_TYPE_INT32      30
@@ -126,6 +127,8 @@
 %define STMT_DELETE         9
 %define STMT_CREATE_INDEX   10
 %define STMT_DROP_INDEX     11
+%define STMT_CREATE_QUEUE   12
+%define STMT_DROP_QUEUE     13
 
 ; --- AST Statement header and statement-specific payload --------------------
 %define AST_STMT_TYPE       0           ; qword: STMT_*

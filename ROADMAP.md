@@ -839,10 +839,26 @@ sitting past the segment count was exactly that until `tests/queue_page_test.c`
 asked for it, and the tail is now required to be zero the way every other tail
 in this format is.
 
-Not done: `CREATE QUEUE` and `DROP QUEUE`, then `ENQUEUE` and `DEQUEUE`, then
-the C ABI. Nothing writes a segment page yet, so the segment walk and the
-deep per-message pass are written and unexercised - which is worth saying
-rather than letting a passing suite imply otherwise.
+`CREATE QUEUE name` and `DROP QUEUE name` work from the command line, the
+console and the C ABI, through `sql_execute_batch` and not three times over.
+`.queues` lists what exists and how deep each one is. The namespace check goes
+both ways - a queue may not take a table's or an index's name, and neither may
+take a queue's - and no statement resolves an object of the wrong kind:
+`DROP QUEUE` will not drop a table, `DROP TABLE` will not drop a queue, and a
+queue cannot be selected from.
+
+Adding the statements found a fault older than queues. The command line
+reported the result of any statement it did not recognise by reading
+`PLAN_DATA1` as an insert batch, so `DROP QUEUE`, which leaves that field
+zero, took the process with it. The default is now an explicit `INSERT` case
+and a neutral line for anything else: a new statement kind should print the
+wrong word at worst.
+
+Not done: `ENQUEUE` and `DEQUEUE`. Nothing writes a segment page yet, so the
+segment walk and the deep per-message pass are written and unexercised - which
+is worth saying rather than letting a passing suite imply otherwise. Dropping a
+queue that holds segments will have to retire them, the way dropping an index
+retires its tree.
 
 What is decided:
 

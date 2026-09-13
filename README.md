@@ -390,8 +390,9 @@ All test suites run in CI on both Linux and Windows.
 * **[docs/INDEX.md](docs/INDEX.md)** - secondary B+tree indexes: the page
   layout, what a row id means, and when an index is rebuilt.
 * **[docs/QUEUE.md](docs/QUEUE.md)** - durable FIFO queues: the page layout,
-  why a message is addressed by position rather than threaded on pointers, and
-  what delivery does and does not promise. Decided, not yet implemented.
+  why a message is addressed by position rather than threaded on pointers,
+  what `DEQUEUE` does and does not promise, and what is reserved for leases.
+  `CREATE QUEUE` and `DROP QUEUE` work; `ENQUEUE` and `DEQUEUE` do not yet.
 
 ---
 

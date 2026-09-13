@@ -191,6 +191,9 @@ msg_sql_table_created: db "Table created.", 10, 0
 msg_sql_table_dropped: db "Table dropped.", 10, 0
 msg_sql_index_created: db "Index created.", 10, 0
 msg_sql_index_dropped: db "Index dropped.", 10, 0
+msg_sql_queue_created: db "Queue created.", 10, 0
+msg_sql_queue_dropped: db "Queue dropped.", 10, 0
+msg_sql_done:          db "OK.", 10, 0
 msg_sql_insert_prefix: db "INSERT ", 0
 msg_sql_update_prefix: db "UPDATE ", 0
 msg_sql_delete_prefix: db "DELETE ", 0
@@ -1134,6 +1137,17 @@ cyboudb_exec_query:
     je      .index_created
     cmp     qword [r10 + PLAN_TYPE], STMT_DROP_INDEX
     je      .index_dropped
+    cmp     qword [r10 + PLAN_TYPE], STMT_CREATE_QUEUE
+    je      .queue_created
+    cmp     qword [r10 + PLAN_TYPE], STMT_DROP_QUEUE
+    je      .queue_dropped
+    ; Anything else has to say so rather than be assumed to be an INSERT. It
+    ; used to fall through into the line below, which reads PLAN_DATA1 as a
+    ; batch - and a statement that leaves that field zero, as DROP QUEUE does,
+    ; took the process with it. A new statement kind should print the wrong
+    ; word at worst.
+    cmp     qword [r10 + PLAN_TYPE], STMT_INSERT
+    jne     .mutation_unnamed
 
     ; Insert completed: print "INSERT <rows>\n"
     PUTS    msg_sql_insert_prefix
@@ -1178,6 +1192,18 @@ cyboudb_exec_query:
 
 .create_done:
     PUTS    msg_sql_table_created
+    jmp     .exec_success
+
+.queue_created:
+    PUTS    msg_sql_queue_created
+    jmp     .exec_success
+
+.queue_dropped:
+    PUTS    msg_sql_queue_dropped
+    jmp     .exec_success
+
+.mutation_unnamed:
+    PUTS    msg_sql_done
     jmp     .exec_success
 
 .index_created:

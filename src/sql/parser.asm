@@ -1719,6 +1719,8 @@ sql_parse:
     je      .parse_create_index
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_UNIQUE
     je      .parse_create_index
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_QUEUE
+    je      .parse_create_queue
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_TABLE
     jne     .bad_syntax
 
@@ -2170,6 +2172,8 @@ sql_parse:
     call    sql_tok_next
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_INDEX
     je      .parse_drop_index
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_QUEUE
+    je      .parse_drop_queue
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_TABLE
     jne     .bad_syntax
 
@@ -2265,6 +2269,44 @@ sql_parse:
     call    sql_tok_next
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_RPAREN
     jne     .bad_syntax
+    jmp     .check_eof
+
+; --- CREATE QUEUE name -------------------------------------------------------
+; A queue has no columns, so there is nothing after the name. It shares the
+; name slot a CREATE TABLE uses, because it shares the namespace.
+.parse_create_queue:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_CREATE_QUEUE
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_table_name
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + STMT_NAME_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + STMT_NAME_LEN], rax
+    jmp     .check_eof
+
+; --- DROP QUEUE name ---------------------------------------------------------
+.parse_drop_queue:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_DROP_QUEUE
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_table_name
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + DROP_TABLE_NAME_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + DROP_TABLE_NAME_LEN], rax
     jmp     .check_eof
 
 ; --- DROP INDEX name ---------------------------------------------------------
