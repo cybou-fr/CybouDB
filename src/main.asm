@@ -67,6 +67,14 @@ str_opt_pax:     db "--pax", 0
 str_opt_compress: db "--compress", 0
 str_opt_help:    db "--help", 0
 str_opt_h:       db "-h", 0
+str_cmd_version: db "version", 0
+str_opt_version: db "--version", 0
+; The product version, which the on-disk format version is not: a file
+; written by any build of version 1 of the format is readable by any other,
+; and this says which build is asking.
+msg_product:     db "CybouDB 0.5.0-preview.1", 10
+                 db "  on-disk format: version 1", 10
+                 db "  https://github.com/cybou-fr/CybouDB", 10, 0
 
 msg_usage:
     db "CybouDB - mmap-backed storage engine", 10
@@ -96,7 +104,8 @@ msg_usage:
     db "  cyboudb check  <path>           verify every page, not just the", 10
     db "                               newest generation's", 10
     db "  cyboudb alloc  <path> <count>   allocate pages and commit", 10
-    db "  cyboudb free   <path> <page>    free a page and commit", 10, 0
+    db "  cyboudb free   <path> <page>    free a page and commit", 10
+    db "  cyboudb version                 print the version and exit", 10, 0
 
 msg_created:     db "Database created", 10
                  db "  Pages:           ", 0
@@ -349,6 +358,18 @@ cyboudb_main:
     jnz     .cmd_check
 
     mov     ARG1, [rbp - 16]
+    lea     ARG2, [str_cmd_version]
+    call    os_str_eq_ascii
+    test    rax, rax
+    jnz     .cmd_version
+
+    mov     ARG1, [rbp - 16]
+    lea     ARG2, [str_opt_version]
+    call    os_str_eq_ascii
+    test    rax, rax
+    jnz     .cmd_version
+
+    mov     ARG1, [rbp - 16]
     lea     ARG2, [str_cmd_info]
     call    os_str_eq_ascii
     test    rax, rax
@@ -378,6 +399,19 @@ cyboudb_main:
     mov     ARG1, 1
     call    os_argv
     mov     [rbp - 16], rax
+
+    ; The only subcommand that needs nothing after it.
+    mov     ARG1, [rbp - 16]
+    lea     ARG2, [str_cmd_version]
+    call    os_str_eq_ascii
+    test    rax, rax
+    jnz     .cmd_version
+
+    mov     ARG1, [rbp - 16]
+    lea     ARG2, [str_opt_version]
+    call    os_str_eq_ascii
+    test    rax, rax
+    jnz     .cmd_version
 
     mov     ARG1, [rbp - 16]
     lea     ARG2, [str_opt_help]
@@ -475,6 +509,12 @@ cyboudb_main:
 .usage:
     PUTS    msg_usage
     mov     eax, EXIT_USAGE
+    FRAME_END
+    ret
+
+.cmd_version:
+    PUTS    msg_product
+    xor     eax, eax
     FRAME_END
     ret
 

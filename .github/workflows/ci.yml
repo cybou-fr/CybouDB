@@ -31,6 +31,7 @@ jobs:
       - name: COW core and fault-injection tests
         run: |
           sh build.sh --core-tests
+          python3 tests/root_roundtrip.py ./cyboudb
           python3 tests/cow_tests.py ./cyboudb ./build/cow_harness
           python3 tests/bitmap_tests.py ./cyboudb ./build/cow_harness
           python3 tests/catalog_tests.py ./cyboudb ./build/cow_harness
@@ -43,6 +44,7 @@ jobs:
           python3 tests/varlen_sql_tests.py ./cyboudb
           python3 tests/vector_sql_tests.py ./cyboudb
           python3 tests/index_sql_tests.py ./cyboudb
+          python3 tests/sql_tests.py ./cyboudb
           python3 tests/queue_sql_tests.py ./cyboudb
           python3 tests/stream_sql_tests.py ./cyboudb
           python3 tests/transaction_tests.py ./cyboudb
@@ -152,6 +154,7 @@ jobs:
       - name: COW core and fault-injection tests
         shell: bash
         run: |
+          python tests/root_roundtrip.py ./cyboudb.exe
           python tests/cow_tests.py ./cyboudb.exe ./build/cow_harness.exe
           python tests/bitmap_tests.py ./cyboudb.exe ./build/cow_harness.exe
           python tests/catalog_tests.py ./cyboudb.exe ./build/cow_harness.exe
@@ -162,6 +165,7 @@ jobs:
           python tests/varlen_sql_tests.py ./cyboudb.exe
           python tests/vector_sql_tests.py ./cyboudb.exe
           python tests/index_sql_tests.py ./cyboudb.exe
+          python tests/sql_tests.py ./cyboudb.exe
           python tests/queue_sql_tests.py ./cyboudb.exe
           python tests/stream_sql_tests.py ./cyboudb.exe
           python tests/transaction_tests.py ./cyboudb.exe

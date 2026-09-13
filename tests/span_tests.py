@@ -52,8 +52,12 @@ with tempfile.TemporaryDirectory() as temporary:
         run(binary, "create-large", path, total, "--force")
         b = path.read_bytes()
         # COW, catalog, PAX, PAX_MULTI, MAP_SPAN, runs, tree, zone maps,
-        # varlen, vectors, INDEX and QUEUE - what create-large emits.
-        assert u64(b, 16) == 0x3E | 64 | 128 | 256 | 1024 | 2048 | 8192 | 16384
+        # varlen, vectors, INDEX, QUEUE and STREAM - what create-large emits.
+        # Spelled out rather than derived: a bit that appears or disappears
+        # from a created file without anyone meaning it is what this catches,
+        # so it has to be a number somebody had to change on purpose.
+        assert u64(b, 16) == (0x3E | 64 | 128 | 256 | 1024 | 2048 | 8192
+                              | 16384 | 32768)
         st, alloc, k = states(b, total)
         assert k == leaves(total) and alloc == 3 + 2 * k
         assert st[:alloc] == [2] * alloc and st[alloc:] == [0] * (total - alloc)

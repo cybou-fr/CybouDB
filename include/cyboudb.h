@@ -19,6 +19,16 @@
 extern "C" {
 #endif
 
+/* --- Version --------------------------------------------------------------
+ * The product version, which is not the on-disk format version. A file
+ * written by any build of format version 1 is readable by any other; this
+ * says which build is doing the asking.
+ */
+#define CybouDB_VERSION         "0.5.0-preview.1"
+#define CybouDB_VERSION_MAJOR   0
+#define CybouDB_VERSION_MINOR   5
+#define CybouDB_VERSION_PATCH   0
+
 /* --- Return & Status Codes ------------------------------------------------ */
 #define CybouDB_OK              0       /* Successful result */
 #define CybouDB_ROW             100     /* cyboudb_step() has another row ready */

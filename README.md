@@ -30,14 +30,21 @@ operating-system primitives: memory-mapped I/O, fixed-size pages,
 cache-conscious data layouts, SIMD predicate evaluation and minimal runtime
 dependencies.
 
-> **Project status: pre-release.** The on-disk format, the transaction
-> semantics and the recovery behaviour are frozen as version 1 and written down
-> in [docs/FORMAT.md](docs/FORMAT.md), [docs/TRANSACTIONS.md](docs/TRANSACTIONS.md)
-> and [docs/RECOVERY.md](docs/RECOVERY.md). SQL, the columnar executor, exact
-> vector search, tombstoned DELETE with compaction and secondary B+tree indexes
-> are implemented and tested on Linux and Windows. A plan uses an index for an
-> equality or a range over an indexed column, and an ARM64 backend does not
-> exist. There is no release, and CybouDB is not production-ready.
+> **Project status: pre-release (0.5.0-preview.1).** The on-disk format, the
+> transaction semantics and the recovery behaviour are frozen as version 1 and
+> written down in [docs/FORMAT.md](docs/FORMAT.md),
+> [docs/TRANSACTIONS.md](docs/TRANSACTIONS.md) and
+> [docs/RECOVERY.md](docs/RECOVERY.md). SQL, the columnar executor, exact vector
+> search, tombstoned DELETE with compaction, secondary B+tree indexes, durable
+> queues and append-only streams are implemented and tested on Linux and
+> Windows.
+>
+> What is not there, stated rather than implied: no ARM64 backend, no WAL, no
+> second writer, no encryption, no ANN index, no lease semantics on the queue,
+> and no daemon - CybouDB is a library and a command line, not a server. A plan
+> uses an index for an equality or a range over an indexed column and for
+> nothing else. **CybouDB is not production-ready**, and a preview is a thing to
+> read and try rather than a thing to run a business on.
 
 ---
 
@@ -60,11 +67,11 @@ dependencies.
 | DELETE strategy | working; truncation, per-row tombstones, or a compacting rewrite, chosen per statement from what the table already holds. No explicit `VACUUM` |
 | SQL types and semantics | fixed-width storage working for `INT32`, `INT64`, `FLOAT32`, `BOOL`; persistent `TEXT`/`BLOB` storage working for `create-large` databases |
 | CLI: `query` | working; executes statements, autocommits mutations, tabular output |
-| CLI: `create`, `info`, `check`, `alloc`, `free` | working |
+| CLI: `create`, `info`, `check`, `alloc`, `free`, `version` | working |
 | Open proportional to the change, not the file | working; `cyboudb check` still reads everything |
 | Linux x86-64, raw syscalls, no libc | working |
 | Windows x64, kernel32 only | working |
-| Storage, fault-injection, and SQL test suites | working; 3,300+ automated tests on Linux and Windows |
+| Storage, fault-injection, and SQL test suites | working; 18,000+ automated checks on Linux and Windows, every one of them run by CI on both |
 | CI on Linux and Windows | working; every push builds and runs the whole suite on both, and the two jobs run the same tests |
 | Interactive console (REPL) | working; interactive terminal (`ReadConsoleW` / stdin), piped scripts, multiline queries, meta-commands (Phase 4) |
 | Public C library ABI (`cyboudb.h`, `libcyboudb.a`, `cyboudb.lib`) | working; borrowed typed batch views, prepared statement caching (Phase 5) |

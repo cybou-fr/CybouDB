@@ -18,7 +18,9 @@ def run(*args, ok=True):
 
 
 directory = pathlib.Path("build/testrun")
+directory.mkdir(parents=True, exist_ok=True)
 path = directory / "root.cdb"
+path.unlink(missing_ok=True)
 run("create", path, 16)
 run("alloc", path, 2)
 data = bytearray(path.read_bytes())

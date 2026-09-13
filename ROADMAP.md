@@ -1247,6 +1247,37 @@ without which the Windows entry stub drags `cyboudb_main` into the link. The
 existing example did not show this because it only uses the vector runtime,
 which touches no database handle and so never pulls the platform object in.
 
+## Phase 15 - Hardening for a preview
+
+**A red test nobody was running.** `tests/span_tests.py` asserts the exact
+feature mask a `create-large` file carries. Adding the STREAM bit to that
+creator broke it, and I did not notice for four commits, because I had been
+running the suites I had touched rather than the suites CI runs. The mask
+assertion is right to be a literal - a bit that appears in a created file
+without anyone meaning it is exactly what it is for - so it was the expectation
+that needed changing, on purpose, with the reason written next to it.
+
+**Two suites CI never ran.** `tests/sql_tests.py` (242 checks) and
+`tests/root_roundtrip.py` were in the tree and in nobody's pipeline. The second
+had also stopped working: it wanted a `build/testrun` directory that nothing
+creates. Both are in CI now, on both platforms.
+
+The lesson is the one the run itself taught: after this, the check before
+claiming green is every suite CI runs, not the ones the change seemed to touch.
+
+**A version.** The binary could not say what it was - there was a format
+version and no product version. `cyboudb version` and `--version` print it,
+`CybouDB_VERSION` is in the header, and a test asserts the two agree, because a
+binary that reports a version the header contradicts is worse than one with no
+version at all. The URL in it was wrong in its first draft; `git remote` is
+what settled it.
+
+**README.** The test count said 3,300 and the true figure is over 18,000 - the
+kernel suite alone is 13,181 and the hardware suite 3,670. The status block now
+names what is absent - no ARM64, no WAL, no second writer, no encryption, no
+ANN index, no queue leases, no daemon - rather than leaving it to be inferred
+from what is not claimed.
+
 What is decided:
 
 * a stream is not a queue with extra readers, and collapsing them would make
