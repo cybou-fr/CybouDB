@@ -113,6 +113,26 @@ where it belongs.
 Duplicate keys are allowed unless the index is unique; entries with equal keys
 are ordered by row, which keeps every entry distinct and the order total.
 
+### Copying a node twice in one transaction
+
+An insert copies the path from the root to the leaf, and a statement that
+inserts many rows walks that path once a row. The nodes near the root are the
+same nodes every time.
+
+Copy-on-write exists to keep a published generation readable, and a page this
+transaction allocated is not reachable from any published generation. So it is
+already its own copy, and copying it again spends a page to produce the same
+bytes. The index asks the allocation map whether the node is above the
+high-water the transaction started at, and writes in place when it is.
+
+What that was costing: a `CREATE INDEX` over fifty thousand rows left 146439
+allocated pages behind it, against 2113 now. A commit is mostly one flush, and
+a flush costs what the file has had written to it, so the difference showed up
+as an INSERT into an indexed table costing eight times one into a plain one.
+
+This is safe here because a B+tree node has exactly one parent. A structure
+where a fresh page could be reached from two places would need the copy.
+
 ### What a node records about its subtree
 
 Every node carries the number of entries at or below it, and that field is

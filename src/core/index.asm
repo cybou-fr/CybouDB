@@ -499,7 +499,7 @@ index_insert_node:
     mov ARG1, [r10 + II_CTX]
     mov ARG2, [rbp - 16]
     lea ARG3, [rbp - 32]
-    call db_cow_copy_page
+    call index_copy_node
     test eax, eax
     jnz .done
     mov r10, [rbp - 8]
@@ -1027,6 +1027,36 @@ index_entry_close:
 .done:
     ret
 
+; index_copy_node(ARG1 = ctx, ARG2 = node id, ARG3 = out id) -> RAX: result
+;
+; A node this transaction already allocated is already its own copy. Copying it
+; again spends a page to produce the same bytes, and a statement that walks the
+; same path once a row - a CREATE INDEX over a whole table, or an INSERT of
+; many - spends the height of the tree per row doing it. Nothing published
+; reaches a page this transaction allocated, so writing into it is what
+; copy-on-write already does to the copy.
+index_copy_node:
+    FRAME_BEGIN 32, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    call db_bitmap_is_fresh
+    test eax, eax
+    jz .copy
+    mov r10, [rbp - 24]
+    mov rax, [rbp - 16]
+    mov [r10], rax
+    xor eax, eax
+    FRAME_END
+    ret
+.copy:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 24]
+    call db_cow_copy_page
+    FRAME_END
+    ret
+
 ; index_copy_for_edit(ARG1 = state, ARG2 = node id, ARG3 = out id)
 ;   -> RAX: result, RDX: the copy's address.
 index_copy_for_edit:
@@ -1035,7 +1065,7 @@ index_copy_for_edit:
     mov [rbp - 24], ARG3
     mov r10, ARG1
     mov ARG1, [r10 + II_CTX]
-    call db_cow_copy_page
+    call index_copy_node
     test eax, eax
     jnz .done
     mov r10, [rbp - 8]

@@ -557,6 +557,45 @@ def main():
         b = rows("SELECT v FROM t WHERE id > 10;", wide_plain)
         check("and so does one too wide to be worth the tree",
               a == b and len(a) == 4989, f"{len(a)} vs {len(b)}")
+        # --- what building one costs the file --------------------------------
+        # A build that walks the tree once a row copies the path once a row,
+        # and every copy used to be a page: three pages a row staged, a table
+        # of fifty thousand rows leaving a hundred and forty thousand pages
+        # behind it, and a commit spending milliseconds flushing a file that
+        # size. A node this transaction already allocated is already its own
+        # copy, so the second walk down the same path spends nothing.
+        #
+        # The high-water mark is what this reads, because that is what the
+        # flush cost followed. The old behaviour would move it by about three
+        # pages a row; the bound here is a tenth of one, which is wide enough
+        # not to pin an implementation and narrow enough to catch a return to
+        # copying per row.
+        def high_water(path):
+            for line in run("info", path).stdout.splitlines():
+                if "Allocated Pages" in line:
+                    return int(line.split(":")[1].strip())
+            return -1
+
+        staged = str(Path(tmp) / "staged.cdb")
+        run("create-large", staged, "60000", "--force")
+        query("CREATE TABLE t (id INT64 NOT NULL, v INT64);", staged)
+        script = []
+        for base in range(0, 2000, 250):
+            values = ", ".join(f"({i}, {i})" for i in range(base, base + 250))
+            script.append(f"INSERT INTO t VALUES {values};")
+        subprocess.run([str(cyboudb), "console", staged],
+                       input=chr(10).join(script) + chr(10), capture_output=True,
+                       text=True, encoding="utf-8", errors="replace")
+        before = high_water(staged)
+        r = query("CREATE INDEX s_id ON t (id);", staged)
+        check("an index over two thousand rows", r.returncode == 0, r.stdout)
+        grew = high_water(staged) - before
+        check("built without staging a page a row", 0 <= grew < 200,
+              f"the high-water moved by {grew} pages")
+        r = run("check", staged)
+        check("and the file it left checks out", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
+
         r = run("check", wide)
         check("with a file that checks out", r.returncode == 0 and
               "Status:          OK" in r.stdout, r.stdout)

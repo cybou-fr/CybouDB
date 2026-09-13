@@ -658,9 +658,23 @@ has the numbers:
 * **UPDATE and DELETE rebuild** where they could patch, which makes both linear
   in the table. The statement has the rows that matched but not the keys they
   carried, and that is what would have to change.
-* **CREATE INDEX stages about three pages per row**, because it builds by
-  inserting one row at a time. A sort and a bulk build would stage the tree
-  itself and nothing else.
+* **CREATE INDEX no longer stages a page a row.** It builds by inserting one
+  row at a time, which walks the path from the root once a row - and every
+  node on that path used to be copied again, because copy-on-write was asked
+  for a copy and gave one. A node this transaction already allocated is
+  already its own copy: nothing published reaches it, so writing into it is
+  what copy-on-write does to the copy anyway. The second walk down the same
+  path now spends nothing.
+
+  Fifty thousand rows left 146439 allocated pages behind them and now leave
+  2113, and an INSERT into that table went from 10.4 ms to 1.32 ms - which is
+  what the same table costs without an index at all, because the cost was
+  never the index but the flush of a file that much of had been written. A
+  sort and a bulk build would still stage less, and would no longer be worth
+  much.
+
+  `tests/index_sql_tests.py` pins the high-water mark a build moves, which is
+  the number the flush followed.
 * **A plan consults an index for one comparison against an indexed column**,
   of any of the five shapes `=`, `<`, `<=`, `>`, `>=`. Each becomes a pair of
   inclusive bounds, the tree names the rows between them, the scan is put where
