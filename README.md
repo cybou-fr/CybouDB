@@ -273,6 +273,9 @@ The suites and what each one covers are listed in
   not a queue with extra readers, and what a trim may not pass.
 * **[docs/VARLEN.md](docs/VARLEN.md)** — the TEXT/BLOB extent chain.
 * **[docs/TESTING.md](docs/TESTING.md)** — every test suite and what it proves.
+* **[docs/COMMIT_VALIDATION.md](docs/COMMIT_VALIDATION.md)** — how a commit
+  proves what it publishes, and the design for making that cost the change
+  rather than the database.
 * Storage internals: [COW](docs/COW.md) · [CATALOG](docs/CATALOG.md) ·
   [PAX](docs/PAX.md) · [PAX_MULTI](docs/PAX_MULTI.md) ·
   [SPAN_MAP](docs/SPAN_MAP.md) · [COMPRESSION](docs/COMPRESSION.md) ·

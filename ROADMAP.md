@@ -62,13 +62,23 @@ path and a v1 reader that keeps working — never a quiet break.
 **The goal in one sentence: the cost of a commit must depend on what the
 transaction changed, not on how much the database has accumulated.**
 
-Today it is the other way round. An `ENQUEUE` costs 812 us at queue depth 500
-and 1,193 us at depth 2,000, because the commit walks the retained queue graph
-again. The experiment that skipped CRC over old pages already proved the cost
-is not checksums — it is the structural visits — and that experiment was
+Today it is the other way round. One `ENQUEUE` changes one slot, and the commit
+visits 2.14 queue segments at depth 0 and 163.41 at depth 10,000 - the whole
+retained directory, re-proved entry by entry. The experiment that skipped CRC
+over old pages showed the cost is the visit and not the checksum, and was
 reverted because it let a damaged old segment through a commit.
-[benchmarks/results/2026-09-13-queue.md](benchmarks/results/2026-09-13-queue.md)
-records both halves.
+
+The measured baseline is
+[benchmarks/results/2026-09-14-commit-baseline.md](benchmarks/results/2026-09-14-commit-baseline.md),
+and it corrects the claim the preview.1 release notes make. The structural
+defect is real and linear in depth. But on durable storage that walk is 2.4% of
+a commit on Linux and 6.1% on Windows, and **93% of a commit's growth with depth
+is the flush**, whose cost tracks the size of the file. With the flush out of
+the way - the same probe on tmpfs - validation is 72% of a commit at depth
+10,000, which is the honest size of the prize.
+
+So this is an algorithmic fix, stated as one: `O(1)` visits per commit.
+It is not a latency fix, and it is not sold as one.
 
 This release is deliberately narrow. No `CLAIM`/`ACK`, no ARM64, no ANN, no
 `GROUP BY`, no WAL, no encryption, no second writer, no daemon.
@@ -185,9 +195,18 @@ stay exactly as they are, and nothing here touches them.
 | Format version | 1 | **1** |
 | Public SQL and C API | current | **unchanged** |
 
-The benchmark harness also needs a **test-only** no-sync mode, to separate
-validation CPU cost from NVMe flush latency. Test and benchmark builds only;
-there will be no public `--unsafe-fast`.
+Acceptance is counter-based rather than clock-based, because wall time at these
+depths is dominated by a component this work does not touch. Separating
+validation CPU from flush latency needs no unsafe mode in the engine: running
+`benchmarks/commit_probe.c` on tmpfs does it, which is how the 72% figure above
+was obtained.
+
+The design is written out in
+[docs/COMMIT_VALIDATION.md](docs/COMMIT_VALIDATION.md), including the one
+decision that has to be taken before any assembly: proof inheritance narrows
+what a commit catches for queues to the policy every other object type already
+follows, and seven cases in `tests/queue_page_test.c` currently assert the
+opposite.
 
 ### The order of work
 
@@ -196,9 +215,20 @@ there will be no public `--unsafe-fast`.
 2. **Instrumentation before optimisation.** Counters for visited queue and
    stream segments, catalog pages, changed map leaves, dirty pages, and
    validation time. Baseline at depth 0 / 500 / 1,000 / 2,000 / 10,000.
+   *(done - [benchmarks/results/2026-09-14-commit-baseline.md](benchmarks/results/2026-09-14-commit-baseline.md).
+   It confirmed the structural defect and corrected the premise: on durable
+   storage validation is 2.4% of a commit on Linux and 6.1% on Windows, and
+   93% of a commit's growth with depth is the flush, not the walk. So the
+   goal here is algorithmic - O(1) visits - and acceptance is counter-based,
+   not clock-based.)*
 3. **A design document before any assembly.** Base proof, candidate proof,
    inherited subtree, allocation transition, dirty object, retired page; what a
    normal commit guarantees and what is left to `cyboudb check`.
+   *(done - [docs/COMMIT_VALIDATION.md](docs/COMMIT_VALIDATION.md). It raises
+   one decision that has to be taken before step 4: inheritance narrows what a
+   commit catches for queues, which is the policy every other object type
+   already follows, but seven cases in `tests/queue_page_test.c` currently
+   assert the opposite.)*
 4. **The transaction change-set.** Every allocate, retire, catalog and object
    mutation registers centrally. No hidden mutation may bypass it.
 5. **Incremental catalog and object walk.** Unchanged root or page id inherits;
