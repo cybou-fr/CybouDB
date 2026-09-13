@@ -6,6 +6,18 @@
  * which is the difference between a commit that proves the path a transaction
  * touched and one that proves the whole index.
  *
+ * `cyboudb_exec` commits. An explicit db_commit after it used to stand here,
+ * which made every number this printed the cost of two commits - and since a
+ * commit is mostly one fsync, of two fsyncs.
+ *
+ * What the numbers are mostly made of is that fsync. Against a fifty-thousand
+ * row table whose index had staged a hundred and forty thousand pages, an
+ * INSERT measured 10.4 ms where the same statement against the same table
+ * without an index measured 1.3 ms - and with vfs_sync stubbed out, 0.06 ms
+ * against 0.04 ms. The index costs tens of microseconds a row; the rest is
+ * the flush, and the flush costs what it does because the file has had a lot
+ * written to it. See ROADMAP.md.
+ *
  * Usage: index_probe <database> <first id to insert>
  *
  * SPDX-License-Identifier: Apache-2.0
@@ -29,7 +41,6 @@ extern unsigned long long catalog_pages_validated;
 extern unsigned long long pax_leaves_validated;
 extern unsigned long long pages_flushed;
 extern unsigned long long index_child_reads;
-extern int db_commit(void *ctx);
 
 int main(int argc, char **argv) {
     cyboudb_db *db = NULL;
@@ -63,10 +74,6 @@ int main(int argc, char **argv) {
                  first + i, first + i);
         if (cyboudb_exec(db, sql) != CybouDB_OK) {
             fprintf(stderr, "exec failed: %s\n", cyboudb_errmsg(db));
-            return 2;
-        }
-        if (db_commit(db) != CybouDB_OK) {
-            fprintf(stderr, "commit failed\n");
             return 2;
         }
     }

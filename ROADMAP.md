@@ -628,18 +628,33 @@ has the numbers:
   walking it whenever that subtree is older than the candidate generation -
   which, under copy-on-write, is every subtree a transaction did not touch.
   `cyboudb check` still walks everything and recomputes the sizes.
-* **An indexed INSERT is much cheaper than it was, and still not flat.** Two
-  causes were found by measurement and removed. A parent used to call into
-  every child to find out the child was old, which costs the page fault the
-  walk exists to avoid; it now asks the allocation map whether this
-  transaction wrote the page. And sealing a node used to recompute its subtree
-  size from its children - up to 251 random pages on a node that was otherwise
-  four page copies - where every writer now adjusts the size where it makes
-  the change. `tests/index_probe.c` measures 33 ms to 2.1 ms at 5000 rows and
-  47 ms to 14.1 ms at 50000, with 44 and 151 nodes visited becoming 4 and 5,
-  and the child reads gone. Against 1.7 ms unindexed, what is left at 50000
-  rows is about 12 ms that five page touches cannot explain, and it is not
-  attributed.
+* **An indexed INSERT costs tens of microseconds; an indexed database costs
+  milliseconds to flush.** Two causes were found by measurement and removed. A
+  parent used to call into every child to find out the child was old, which
+  costs the page fault the walk exists to avoid; it now asks the allocation map
+  whether this transaction wrote the page. And sealing a node used to recompute
+  its subtree size from its children - up to 167 random pages on a node that
+  was otherwise four page copies - where every writer now adjusts the size
+  where it makes the change. That took 33 ms to 2.1 ms at 5000 rows and 47 ms
+  to 14.1 ms at 50000, with 44 and 151 nodes visited becoming 4 and 5.
+
+  What was left - about 12 ms at 50000 rows that five page touches could not
+  explain - has now been attributed, and none of it is the index. Two things
+  were wrong with the question.
+
+  `tests/index_probe.c` called `db_commit` after `cyboudb_exec`, which already
+  commits, so every number it had ever printed was the cost of two commits.
+  And stubbing `vfs_sync` out collapses what remains: 10.4 ms becomes 0.06 ms
+  indexed, and the same table without an index goes 1.3 ms to 0.04 ms. The
+  whole difference is the flush. Index maintenance is about twenty microseconds
+  a row, which is the four page copies it looked like all along.
+
+  The flush is slower on the indexed file because more of that file has been
+  written: 146439 allocated pages against 4306 for the same table without an
+  index. Per-INSERT cost tracks that number and not the file's size - the same
+  database in a file three times larger flushes in the same time. So the lever
+  is the next entry, which is what put 570 MB through the allocator in the
+  first place, and not anything on the insert path.
 * **UPDATE and DELETE rebuild** where they could patch, which makes both linear
   in the table. The statement has the rows that matched but not the keys they
   carried, and that is what would have to change.

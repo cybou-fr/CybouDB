@@ -1324,12 +1324,20 @@ span_reuse:
 ;
 ;  Counts what the allocator may reuse and restarts its sweep. Called once when
 ;  a database is opened and once at the end of every commit, walking leaf by
-;  leaf and stopping at the high-water, so a mostly empty file costs almost
-;  nothing. Keeping this exact rather than incremental is what lets a full file
-;  report its real headroom to the space preflights.
+;  leaf and stopping at the high-water. Keeping this exact rather than
+;  incremental is what lets a full file report its real headroom to the space
+;  preflights.
 ;
-;  Local slots: [rbp-8]=ctx, [rbp-16]=count, [rbp-24]=leaf index,
-;               [rbp-32]=leaf address, [rbp-40]=span base, [rbp-48]=entries
+;  It is exact and it is also on the commit path, so it is counted a machine
+;  word at a time rather than an entry at a time. An entry is two bits and a
+;  retired one is both of them, so `w & (w >> 1) & 0x5555...` leaves one bit
+;  per retired page and a popcount finishes the word: thirty-two pages an
+;  iteration instead of one.
+;
+;  This was not where a commit's time went - stubbing the whole function out
+;  changes nothing measurable, because a commit is mostly one fsync. It is the
+;  only term here that grows with the allocated size of the file, though, and
+;  the fsync is not ours to make smaller.
 ; -----------------------------------------------------------------------------
 db_bitmap_recount:
     FRAME_BEGIN 64, 0
@@ -1360,17 +1368,57 @@ db_bitmap_recount:
     mov     ARG3, [rbp - 24]
     call    leaf_addr
     mov     [rbp - 32], rax
-    mov     r10, rax
-    xor     r8d, r8d
-.entry:
-    call    map_get
-    cmp     eax, MAP_RETIRED
-    jne     .next_entry
-    inc     qword [rbp - 16]
-.next_entry:
-    inc     r8
-    cmp     r8, [rbp - 48]
-    jb      .entry
+    lea     r11, [rax + MAP_DATA]       ; the entries themselves
+    xor     r9d, r9d                    ; retired pages in this leaf
+.word:
+    mov     rax, [rbp - 48]
+    test    rax, rax
+    jz      .leaf_counted
+    mov     rdx, [r11]                  ; thirty-two entries
+    add     r11, 8
+    cmp     rax, 32
+    jae     .word_whole
+    ; The last word of a leaf holds fewer entries than it has room for, and
+    ; what follows them is not ours to count.
+    mov     rcx, rax
+    add     rcx, rcx                    ; two bits an entry
+    mov     r8, 1
+    shl     r8, cl
+    dec     r8
+    and     rdx, r8
+    mov     qword [rbp - 48], 0
+    jmp     .word_count
+.word_whole:
+    sub     qword [rbp - 48], 32
+.word_count:
+    mov     r8, rdx
+    shr     r8, 1
+    and     r8, rdx
+    mov     rax, 0x5555555555555555
+    and     r8, rax                     ; one bit per retired entry
+    ; Counting those bits, without asking the processor whether it can.
+    mov     rdx, r8
+    shr     rdx, 1
+    and     rdx, rax
+    sub     r8, rdx
+    mov     rax, 0x3333333333333333
+    mov     rdx, r8
+    and     rdx, rax
+    shr     r8, 2
+    and     r8, rax
+    add     r8, rdx
+    mov     rdx, r8
+    shr     rdx, 4
+    add     r8, rdx
+    mov     rax, 0x0f0f0f0f0f0f0f0f
+    and     r8, rax
+    mov     rax, 0x0101010101010101
+    imul    r8, rax
+    shr     r8, 56
+    add     r9, r8
+    jmp     .word
+.leaf_counted:
+    add     [rbp - 16], r9
     inc     qword [rbp - 24]
     jmp     .leaf
 .counted:
