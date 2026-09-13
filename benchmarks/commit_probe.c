@@ -116,6 +116,11 @@ static void read_counters(counters *c) {
 /* Fill an object to `depth` records, then measure `rounds` more single-record
  * commits on top of it. The fill is not measured - only what a commit costs
  * once that much is already retained. */
+/* The allocation map has one leaf per CybouDB_MAP_LEAF_PAGES pages, so the
+ * number of leaves a commit touches is a property of the file's size rather
+ * than of what it holds. Making that adjustable is the only way to see it. */
+static unsigned long file_pages = 60000;
+
 static int measure(const char *path, unsigned long depth, unsigned long rounds,
                    int is_queue, counters *out)
 {
@@ -127,7 +132,7 @@ static int measure(const char *path, unsigned long depth, unsigned long rounds,
         : "APPEND TO s VALUES ('a record of some length')";
 
     remove(path);
-    CHECK(cyboudb_create(path, 60000, &db), "create");
+    CHECK(cyboudb_create(path, file_pages, &db), "create");
     if (is_queue) {
         CHECK(cyboudb_exec(db, "CREATE QUEUE q"), "CREATE QUEUE");
     } else {
@@ -189,6 +194,8 @@ int main(int argc, char **argv) {
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--rounds") == 0 && i + 1 < argc) {
             rounds = strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "--pages") == 0 && i + 1 < argc) {
+            file_pages = strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "--depths") == 0 && i + 1 < argc) {
             char *s = argv[++i], *tok;
             ndepths = 0;
@@ -196,7 +203,8 @@ int main(int argc, char **argv) {
                  tok = strtok(NULL, ","))
                 depths[ndepths++] = strtoul(tok, NULL, 10);
         } else {
-            printf("usage: commit_probe [--depths a,b,c] [--rounds n]\n");
+            printf("usage: commit_probe [--depths a,b,c] [--rounds n]"
+                   " [--pages n]\n");
             return 2;
         }
     }
@@ -204,8 +212,8 @@ int main(int argc, char **argv) {
     tpns = ticks_per_ns();
     printf("CybouDB %s - what one commit visits, by retained depth\n",
            CybouDB_VERSION);
-    printf("%lu measured commits at each depth, one record per transaction.\n",
-           rounds);
+    printf("%lu measured commits at each depth, one record per transaction,"
+           " in a file of %lu pages.\n", rounds, file_pages);
     printf("rdtsc measured at %.3f GHz. \"valid\" is time inside "
            "db_bitmap_validate.\n", tpns);
 

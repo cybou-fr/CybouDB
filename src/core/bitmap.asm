@@ -46,7 +46,7 @@ global db_bitmap_alloc, db_bitmap_alloc_run, db_bitmap_is_payload
 global db_bitmap_candidate_payload, db_bitmap_leaves
 global db_bitmap_retire, db_bitmap_recount, db_bitmap_headroom
 global db_bitmap_is_fresh, db_bitmap_deep
-global cs_record, cs_reset, cs_release, cs_audit
+global cs_record, cs_reset, cs_release, cs_audit, cs_leaf_explained
 extern os_mem_alloc, os_mem_free
 
 section .data
@@ -388,6 +388,33 @@ span_valid:
     mov     r10, [rbp - 56]
     cmp     [r10 + MAP_CRC], eax
     jne     .bad
+
+    ; This leaf carries the candidate's generation, so this transaction wrote
+    ; it, so the change-set has to account for every entry it moved. Bounded
+    ; to leaves that were actually written, which is why it can run on every
+    ; commit rather than only in an `--audit` build.
+    mov     r10, [rbp - 8]
+    cmp     qword [r10 + DB_CS_PROVE], 0
+    je      .leaf_explained
+    mov     r11, [r10 + DB_SB_PTR]
+    test    r11, r11
+    jz      .leaf_explained
+    mov     rax, [r11 + SB_BITMAP_ROOT]
+    cmp     rax, [rbp - 40]
+    je      .leaf_explained             ; one copy, so nothing to compare
+    mov     ARG2, rax
+    mov     ARG3, [rbp - 48]
+    mov     ARG1, [r10 + DB_BASE]
+    call    leaf_addr
+    mov     ARG2, rax
+    mov     ARG3, [rbp - 56]
+    mov     ARG4, [rbp - 72]
+    mov     ARG1, [rbp - 8]
+    call    cs_leaf_explained
+    test    eax, eax
+    jz      .bad
+.leaf_explained:
+    mov     r10, [rbp - 56]             ; the leaf again: the calls above took it
 
     ; A leaf that starts beyond the high-water can only be free, and saying so
     ; in one pass keeps opening a mostly empty large file cheap.
@@ -867,6 +894,99 @@ cs_release:
     mov     r10, [rbp - 8]
     mov     qword [r10 + DB_CS_COUNT], 0
     mov     qword [r10 + DB_CS_OVERFLOW], 0
+    FRAME_END
+    ret
+
+
+; cs_leaf_explained(ARG1 = ctx, ARG2 = published leaf, ARG3 = staged leaf,
+;                   ARG4 = first page this leaf describes) -> eax = 1 when
+; every entry that differs between the two is one the change-set registered.
+;
+; The invariant from docs/COMMIT_VALIDATION.md section 6, made always-on by
+; being bounded: only leaves this transaction stamped with its own generation
+; are handed here, so the cost follows the change rather than the file. The
+; exhaustive form is cs_audit, which walks every page and is what `--audit`
+; builds; this is the part that can be afforded on every commit.
+;
+; The two leaves are compared eight bytes at a time, 32 entries a step, on a
+; page the checksum above has just pulled into cache.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=published, [rbp-24]=staged,
+;               [rbp-32]=first page, [rbp-40]=byte offset, [rbp-48]=the page
+cs_leaf_explained:
+    FRAME_BEGIN 64, 0
+    mov     [rbp - 8], ARG1
+    mov     [rbp - 16], ARG2
+    mov     [rbp - 24], ARG3
+    mov     [rbp - 32], ARG4
+    mov     r10, ARG1
+    cmp     qword [r10 + DB_CS_OVERFLOW], 0
+    jne     .ok                         ; an incomplete log explains nothing
+    mov     qword [rbp - 40], MAP_DATA
+.word:
+    mov     rax, [rbp - 40]
+    cmp     rax, MAP_CRC - 8
+    ja      .ok
+    mov     r10, [rbp - 16]
+    mov     r11, [rbp - 24]
+    mov     rdx, [r10 + rax]
+    cmp     rdx, [r11 + rax]
+    je      .next_word
+    xor     r9d, r9d                    ; which entry of the 32, 0..31
+.entry:
+    cmp     r9d, 32
+    jae     .next_word
+    mov     ecx, r9d
+    shl     ecx, 1                      ; cl: two bits to an entry
+    mov     r10, [rbp - 16]
+    mov     r11, [rbp - 24]
+    mov     rax, [rbp - 40]
+    mov     rdx, [r10 + rax]
+    shr     rdx, cl
+    and     edx, 3                      ; what the published map says
+    mov     r8, [r11 + rax]
+    shr     r8, cl
+    and     r8d, 3                      ; what the staged map says
+    cmp     edx, r8d
+    je      .next_entry
+    ; page = first + (byte offset - MAP_DATA) * 4 + entry
+    sub     rax, MAP_DATA
+    shl     rax, 2
+    add     rax, [rbp - 32]
+    add     rax, r9
+    mov     [rbp - 48], rax
+    ; It has to be in the log, ending in the state the staged map gives it.
+    mov     r10, [rbp - 8]
+    mov     r11, [r10 + DB_CS_LOG]
+    test    r11, r11
+    jz      .bad
+    mov     rcx, [r10 + DB_CS_COUNT]
+.scan:
+    test    rcx, rcx
+    jz      .bad                        ; a change nobody registered
+    dec     rcx
+    mov     rax, rcx
+    shl     rax, 4
+    mov     rdx, [r11 + rax + CS_ENTRY_PAGE]
+    cmp     rdx, [rbp - 48]
+    jne     .scan
+    mov     rdx, [r11 + rax + CS_ENTRY_STATES]
+    shr     rdx, 8
+    and     edx, 0xff
+    cmp     edx, r8d
+    jne     .scan                       ; an earlier hop of the same page
+.next_entry:
+    inc     r9d
+    jmp     .entry
+.next_word:
+    add     qword [rbp - 40], 8
+    jmp     .word
+.ok:
+    mov     eax, 1
+    FRAME_END
+    ret
+.bad:
+    xor     eax, eax
     FRAME_END
     ret
 

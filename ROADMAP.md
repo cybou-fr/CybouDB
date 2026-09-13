@@ -247,6 +247,13 @@ opposite.
 6. **Incremental allocation-map proof.** Changed leaves and legal transitions —
    including the attempt to retire a page still reachable through an inherited
    subtree.
+   *(done, and measurement changed what it was for: the expensive half was
+   already incremental through `db_bitmap_deep`, and growing a file from
+   60,000 to 4,000,000 pages moves the leaf count from 4 to 249 per commit
+   while validation time stays at 15-18 us. So the work became the invariant
+   rather than the speed - `cs_leaf_explained` requires every entry a touched
+   leaf moved to be one the change-set registered, on every commit, bounded by
+   the change.)*
 7. **Attack the validator.** A corrupt new segment, an illegal map transition, a
    changed owner, a stale queue entry, a duplicated page, a retired inherited
    page, a malformed dirty catalog page, rollback, a failure at the first sync,

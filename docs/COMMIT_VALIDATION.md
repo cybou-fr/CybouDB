@@ -370,6 +370,38 @@ Measured: [benchmarks/results/2026-09-14-commit-inheritance.md](../benchmarks/re
 
 ---
 
+## 6c. Implemented: the map, proved as a delta (step 6)
+
+The expensive half of the map proof was already incremental before this work
+began, and measuring said so: `span_valid` gates the leaf checksum and the
+entry scan on `db_bitmap_deep`, so a leaf an older generation stamped is
+skipped. What remains per untouched leaf is a handful of header fields, and
+raising a file from 60,000 to 4,000,000 pages takes the leaf count from 4 to
+249 per commit while validation time stays at 15-18 us. There was no speed
+left to win, and chasing it anyway would have been optimising a number rather
+than a cost.
+
+What was missing was the invariant. `cs_leaf_explained` now runs on every
+commit, on the leaves the transaction stamped with its own generation, and
+requires every entry that differs from the published copy to be one the
+change-set registered:
+
+> The candidate allocation map may differ from the base map only by transitions
+> this transaction registered. An entry that differs for any other reason is a
+> refused commit.
+
+It is bounded by the change rather than the file, which is what makes it
+affordable outside an `--audit` build - and the two leaves are compared eight
+bytes at a time on a page the checksum has just pulled into cache. `DB_CS_PROVE`
+scopes it to a commit proving its own candidate: `db_open` looks at generations
+this process did not write, where the two map copies differ for reasons no
+change-set describes.
+
+The exhaustive form, `cs_audit`, stays: it walks every page and is what
+`--audit` builds, which is how the recording itself is held to being complete.
+
+---
+
 ## 7. What has to be attacked before this is believed
 
 Happy-path tests prove nothing here. The suite must try to make the validator

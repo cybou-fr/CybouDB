@@ -1160,9 +1160,13 @@ db_commit:
     mov     ARG3, [r10 + DB_GENERATION]
     inc     ARG3
     call    write_superblock
+    mov     r10, [rbp - 8]
+    mov     qword [r10 + DB_CS_PROVE], 1
     mov     ARG1, [rbp - 8]
     lea     ARG2, [rbp - 32 - CybouDB_SB_SIZE]
     call    db_bitmap_validate
+    mov     r10, [rbp - 8]
+    mov     qword [r10 + DB_CS_PROVE], 0
     test    eax, eax
     jz      .e_bitmap
     ; With DB_CS_AUDIT on, the change-set has to explain every difference

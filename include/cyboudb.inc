@@ -97,7 +97,12 @@
 %define DB_CS_COUNT       200           ; qword: transitions this transaction
 %define DB_CS_OVERFLOW    208           ; qword: 1 = the log is not complete
 %define DB_CS_AUDIT       216           ; qword: 1 = prove the log at commit
-%define CybouDB_DB_SIZE      224
+; Set by db_commit while it validates the candidate it has staged. Outside
+; that, the published and staged map copies differ for reasons no change-set
+; describes - db_open is looking at generations this process did not write -
+; so the leaf check would be asking a question that has no answer.
+%define DB_CS_PROVE       224           ; qword: 1 = a staged candidate, here
+%define CybouDB_DB_SIZE      232
 
 ; Entries in the log: page id, then the two states packed into one qword so an
 ; entry is 16 bytes and the whole thing is a flat array with no allocator.
