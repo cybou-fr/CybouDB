@@ -1,0 +1,22 @@
+==============================================================================================
+Durable work queue - 2,000 messages, 32-byte payload, median of 3 runs
+  microseconds per message, lower is better
+==============================================================================================
+
+Engine                           enqueue         dequeue          worker   enqueue-batch
+----------------------------------------------------------------------------------------
+CybouDB                         1102.15u        1776.17u        3022.69u          21.90u
+SQLite rollback+FULL            2204.14u        2373.14u        2265.79u          19.34u
+SQLite WAL+FULL                  323.00u         347.82u         365.46u           3.83u
+SQLite WAL+NORMAL                 18.20u          28.61u          39.47u           0.50u
+----------------------------------------------------------------------------------------
+
+CybouDB against each SQLite configuration (above 1.00 means CybouDB is faster):
+  vs SQLite rollback+FULL            2.00x           1.34x           0.75x           0.88x   (SQLite default durability)
+  vs SQLite WAL+FULL                 0.29x           0.20x           0.12x           0.17x   (WAL, every commit fsynced)
+  vs SQLite WAL+NORMAL               0.02x           0.02x           0.01x           0.02x   (WEAKER: may lose recent commits)
+
+  enqueue        one message, one transaction
+  dequeue        one message, one transaction
+  worker         take a job and write its result, ONE transaction
+  enqueue-batch  100 messages per transaction

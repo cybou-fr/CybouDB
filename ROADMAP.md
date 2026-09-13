@@ -1361,6 +1361,51 @@ statement through `sql_execute_batch`.
 
 ---
 
+## Phase 17 - What the queue benchmark found
+
+`benchmarks/queue_bench.c` measures the thing the scan benchmarks cannot: a
+durable job queue, against SQLite used as one, which is how most of them are
+written. **CybouDB loses it**, and the write-up
+([results/2026-09-13-queue.md](benchmarks/results/2026-09-13-queue.md)) says so
+in those words.
+
+Against SQLite's default durability CybouDB is 2.0x faster to enqueue and 1.34x
+to dequeue. Against SQLite in WAL mode at the same durability it is 3.4x to 8.3x
+*slower*, and against the WAL+NORMAL configuration most production code runs,
+50x to 100x slower. The queue primitive is worth having for what it guarantees,
+not for how fast it is, and nothing should claim otherwise.
+
+Two causes, and only the first is a fair price:
+
+1. **Two flushes against one.** The commit protocol flushes the data pages and
+   then the publication; SQLite's WAL appends and flushes once. A flush is about
+   300 us on this machine, which is very nearly the whole of SQLite's WAL+FULL
+   number. Roughly 2x of the gap is buying the same durability with twice the
+   syncs. A WAL would close it; there isn't one.
+
+2. **Commit cost grows with queue depth, and this is a defect.** Per-message
+   enqueue cost went 764 us, 830 us, 1092 us at depths of 500, 1,000 and 2,000,
+   while SQLite stayed flat at about 320 us. Step 1 of the commit proves the
+   staged graph by walking what the generation reaches, so a deeper queue is a
+   bigger walk: O(depth) per commit, O(depth^2) to fill a queue. The validation
+   is worth keeping - it is what refuses to publish an incoherent file - but it
+   has to become proportional to the change, the way `db_catalog_page` already
+   made INSERT proportional. **This is the first thing to fix after the
+   preview**, and it applies to every object, not only queues.
+
+Found while building the harness, and a release blocker rather than a roadmap
+item: **re-stepping a prepared INSERT that carries a TEXT or BLOB literal
+crashes.** `prepare("INSERT INTO t VALUES (1, 'x')")`, step, `cyboudb_reset`,
+step - segfault in `db_var_write_chain`, reached from
+`db_var_materialize_batch`. An INT-only INSERT re-steps correctly, so the
+materialisation of a varlen value is rewriting the bound batch in place and the
+second execution reads an extent descriptor as a pointer. No test re-steps a
+prepared INSERT after executing one, which is why this survived; SQLite supports
+exactly that and the C API exposes `reset`, so it has to work or refuse, not
+crash.
+
+---
+
 ## Known gaps outside the phases
 
 Small, real, and worth fixing when they are next touched:

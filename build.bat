@@ -97,6 +97,12 @@ if "%~1"=="--worker-example" (
     set SOURCES=src\api\cyboudb_c.asm !BASE_SOURCES!
 )
 
+if "%~1"=="--queue-bench" (
+    set OUT=build\cyboudb.lib
+    set OBJDIR=build\lib
+    set SOURCES=src\api\cyboudb_c.asm !BASE_SOURCES!
+)
+
 if "%~1"=="--for-experiment" (
     set OUT=build\cyboudb.lib
     set OBJDIR=build\lib
@@ -175,6 +181,7 @@ for %%F in (%SOURCES%) do (
     if "%~1"=="--delete-bench" set DEFS=-DCybouDB_LIBRARY=1
     if "%~1"=="--vector-example" set DEFS=-DCybouDB_LIBRARY=1
     if "%~1"=="--worker-example" set DEFS=-DCybouDB_LIBRARY=1
+    if "%~1"=="--queue-bench" set DEFS=-DCybouDB_LIBRARY=1
     if "%~1"=="--for-experiment" set DEFS=-DCybouDB_LIBRARY=1
     if "%~1"=="--c-tests" set DEFS=-DCybouDB_LIBRARY=1 -DCybouDB_API_TEST_ALLOC=1
     "%NASM%" -f win64 %INC% !DEFS! %%F -o %OBJDIR%\%%~nF.obj
@@ -188,6 +195,7 @@ if "%~1"=="--vector-bench" goto :build_lib
 if "%~1"=="--delete-bench" goto :build_lib
 if "%~1"=="--vector-example" goto :build_lib
 if "%~1"=="--worker-example" goto :build_lib
+if "%~1"=="--queue-bench" goto :build_lib
 if "%~1"=="--for-experiment" goto :build_lib
 if "%~1"=="--c-tests" goto :build_c_tests
 
@@ -276,6 +284,10 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     )
     if "%~1"=="--worker-example" (
         cl.exe /O2 /W3 /nologo /Iinclude examples\worker.c /Febuild\worker_example.exe /Fobuild\worker_example.obj /link build\cyboudb.lib kernel32.lib
+        if errorlevel 1 goto :fail
+    )
+    if "%~1"=="--queue-bench" (
+        cl.exe /O2 /W3 /nologo /Iinclude benchmarks\queue_bench.c /Febuild\queue_bench.exe /Fobuild\queue_bench.obj /link build\cyboudb.lib kernel32.lib
         if errorlevel 1 goto :fail
     )
     if "%~1"=="--for-experiment" (
