@@ -99,7 +99,14 @@ int main(int argc, char **argv) {
     sql_zone_force_off = argc > 8 ? atoi(argv[8]) : 0;
     cyboudb_db *db = NULL;
     cyboudb_stmt *stmt = NULL;
-    uint64_t ctx[20] = {0}, arena[4] = {0}, error[13] = {0}, mark = 0;
+    /* The internal path hands db_open a descriptor of its own rather than
+     * going through cyboudb_open. CybouDB_DB_SIZE is not public, so this is
+     * sized well past it on purpose: it was uint64_t[20], which is 160 bytes
+     * against a descriptor that had already grown to 184, and the overrun
+     * landed on `arena` and `error` below it. It cost nothing until the
+     * descriptor grew again, and then showed up as two backends disagreeing
+     * about zone-pruning counters rather than as a crash. */
+    uint64_t ctx[64] = {0}, arena[4] = {0}, error[13] = {0}, mark = 0;
     void *ast = NULL, *plan = NULL, *memory = NULL;
     if (internal) {
         const void *path = argv[1];

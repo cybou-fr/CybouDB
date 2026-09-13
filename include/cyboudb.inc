@@ -63,7 +63,30 @@
 ; durability, protects the same boundary without the quadratic term. Cleared
 ; wherever staged state is published or discarded.
 %define DB_VALIDATED      176           ; qword: graph checked in this transaction
-%define CybouDB_DB_SIZE      184
+
+; --- the transaction change-set ---------------------------------------------
+; What this transaction did to the allocation map, as (page, from, to) rather
+; than as a map to be diffed. A commit that knows what changed can prove the
+; change instead of re-proving the graph; see docs/COMMIT_VALIDATION.md.
+;
+; The log is allocated on first use and kept for the life of the descriptor,
+; so a transaction never pays for it twice and a commit never fails for want
+; of it. If it cannot be allocated, or a transaction makes more transitions
+; than it holds, DB_CS_OVERFLOW is set and stays set until the transaction
+; ends: an incomplete log must never be treated as a complete one, and the
+; only safe reading of it is the exhaustive walk the engine does today.
+%define DB_CS_LOG         184           ; qword: transition log, 0 = none yet
+%define DB_CS_COUNT       192           ; qword: transitions this transaction
+%define DB_CS_OVERFLOW    200           ; qword: 1 = the log is not complete
+%define DB_CS_AUDIT       208           ; qword: 1 = prove the log at commit
+%define CybouDB_DB_SIZE      216
+
+; Entries in the log: page id, then the two states packed into one qword so an
+; entry is 16 bytes and the whole thing is a flat array with no allocator.
+%define CS_ENTRY_SIZE     16
+%define CS_ENTRY_PAGE     0
+%define CS_ENTRY_STATES   8             ; from | (to << 8)
+%define CybouDB_CS_CAPACITY  8192          ; 128 KiB; past this, overflow
 
 ; --- Transaction States ---
 %define CybouDB_TX_NONE      0

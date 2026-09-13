@@ -119,6 +119,29 @@ Built with `--c-tests`:
   public header including a private one, or a missing exported symbol, fails in
   CI rather than for the first person who downloads the package.
 
+## The change-set audit
+
+```sh
+sh build.sh --audit          # build/cyboudb_audit
+```
+
+Builds the ordinary command line with `CybouDB_AUDIT_CHANGESET`, which makes
+every commit prove that the transaction's change-set explains every difference
+between the published allocation map and the staged one. A mutation that
+reaches a page without registering is refused as an inconsistent staged map.
+
+It is not a shipped build - the check walks both maps in full, which is the
+cost that `0.5.0-preview.2` exists to remove. Its purpose is that any suite run
+against this binary becomes a test of whether the change-set is complete, so
+there is no separate suite to maintain:
+
+```sh
+sh tests/run_tests.sh ./build/cyboudb_audit
+python3 tests/queue_sql_tests.py ./build/cyboudb_audit      # and the rest
+```
+
+See [COMMIT_VALIDATION.md](COMMIT_VALIDATION.md).
+
 ## Argument register lint
 
 * `tests/abi_arg_lint.py`: reads every `.asm` file for the one mistake this

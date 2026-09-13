@@ -22,6 +22,11 @@ INC="-Iinclude/"
 BASE_SOURCES="src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/queue.asm src/core/stream.asm src/core/compress.asm src/core/vector_arena.asm src/core/checksum.asm src/sql/tokenizer.asm src/sql/parser.asm src/sql/binder.asm src/sql/executor.asm src/sql/select_cursor.asm src/sql/join_cursor.asm src/sql/order_executor.asm src/sql/zone_predicate.asm src/sql/result_rows.asm src/sql/kernels_scalar.asm src/sql/kernels_avx2.asm src/sql/for_kernels_avx2.asm src/sql/vector_kernels_scalar.asm src/sql/vector_kernels_avx2.asm src/sql/vector_topk.asm src/sql/bmi2.asm src/sql/popcount.asm src/platform/linux/os_posix.asm"
 SOURCES="src/main.asm src/console/repl.asm $BASE_SOURCES"
 
+if [ "${1:-}" = "--audit" ]; then
+    OUT=build/cyboudb_audit
+    OBJDIR=build/audit
+fi
+
 if [ "${1:-}" = "--core-tests" ]; then
     OUT=build/cow_harness
     OBJDIR=build/core-tests
@@ -193,6 +198,13 @@ for f in $SOURCES; do
     defs=""
     if [ "${1:-}" = "--core-tests" ] && [ "$f" = src/core/database.asm ]; then
         defs="-Dvfs_sync=test_sync -DCybouDB_TEST_COMMIT_HOOK=1"
+    fi
+    # --audit builds the ordinary command line with the change-set audit armed,
+    # so that every existing suite run against it becomes a test of whether any
+    # mutation reaches a page without registering. It is not a shipped build:
+    # the audit walks both allocation maps in full on every commit.
+    if [ "${1:-}" = "--audit" ]; then
+        defs="$defs -DCybouDB_AUDIT_CHANGESET=1"
     fi
     nasm -f elf64 $INC $defs "$f" -o "$o"
     OBJS="$OBJS $o"

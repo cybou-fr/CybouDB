@@ -46,6 +46,8 @@ global db_bitmap_alloc, db_bitmap_alloc_run, db_bitmap_is_payload
 global db_bitmap_candidate_payload, db_bitmap_leaves
 global db_bitmap_retire, db_bitmap_recount, db_bitmap_headroom
 global db_bitmap_is_fresh, db_bitmap_deep
+global cs_record, cs_reset, cs_release, cs_audit
+extern os_mem_alloc, os_mem_free
 
 section .data
 ; Commit instrumentation. The question these answer is whether the cost of a
@@ -783,11 +785,185 @@ span_stage:
     FRAME_END
     ret
 
+
+; =============================================================================
+;  The transaction change-set
+; =============================================================================
+;  Every allocation-map transition a transaction makes, as (page, from, to).
+;  A commit that knows what changed can prove the change rather than re-prove
+;  the graph; docs/COMMIT_VALIDATION.md says what that will become. Nothing
+;  reads it to make a decision yet - this records it, and cs_audit proves the
+;  record is complete, which is the part that has to be true before anything
+;  is allowed to trust it.
+;
+;  span_mark is the only place a live transaction changes a page's state in
+;  the span layout, so it is the only place that records. The flat layout is
+;  not routed through it and is excluded from the audit rather than pretended
+;  about.
+; -----------------------------------------------------------------------------
+
+; cs_record(ARG1 = ctx, ARG2 = page, ARG3 = from, ARG4 = to)
+cs_record:
+    FRAME_BEGIN 48, 0
+    mov     [rbp - 8], ARG1
+    mov     [rbp - 16], ARG2
+    mov     [rbp - 24], ARG3
+    mov     [rbp - 32], ARG4
+    mov     r10, [rbp - 8]
+    cmp     qword [r10 + DB_CS_OVERFLOW], 0
+    jne     .done                       ; already incomplete; leave it so
+    cmp     qword [r10 + DB_CS_LOG], 0
+    jne     .have_log
+    mov     ARG1, CybouDB_CS_CAPACITY * CS_ENTRY_SIZE
+    call    os_mem_alloc
+    test    rax, rax
+    jz      .overflow                   ; no log is a truthful "I do not know"
+    mov     r10, [rbp - 8]
+    mov     [r10 + DB_CS_LOG], rax
+.have_log:
+    mov     r10, [rbp - 8]
+    mov     rax, [r10 + DB_CS_COUNT]
+    cmp     rax, CybouDB_CS_CAPACITY
+    jae     .overflow
+    mov     r11, [r10 + DB_CS_LOG]
+    shl     rax, 4                      ; * CS_ENTRY_SIZE
+    add     r11, rax
+    mov     rax, [rbp - 16]
+    mov     [r11 + CS_ENTRY_PAGE], rax
+    mov     rax, [rbp - 32]
+    shl     rax, 8
+    or      rax, [rbp - 24]
+    mov     [r11 + CS_ENTRY_STATES], rax
+    inc     qword [r10 + DB_CS_COUNT]
+    jmp     .done
+.overflow:
+    mov     r10, [rbp - 8]
+    mov     qword [r10 + DB_CS_OVERFLOW], 1
+.done:
+    FRAME_END
+    ret
+
+; cs_reset(ARG1 = ctx). The log is kept; only what it holds is forgotten, so a
+; transaction never pays to allocate it twice.
+cs_reset:
+    mov     r10, ARG1
+    mov     qword [r10 + DB_CS_COUNT], 0
+    mov     qword [r10 + DB_CS_OVERFLOW], 0
+    ret
+
+; cs_release(ARG1 = ctx). Gives the log back.
+cs_release:
+    FRAME_BEGIN 16, 0
+    mov     [rbp - 8], ARG1
+    mov     r10, ARG1
+    mov     ARG1, [r10 + DB_CS_LOG]
+    test    ARG1, ARG1
+    jz      .none
+    mov     ARG2, CybouDB_CS_CAPACITY * CS_ENTRY_SIZE
+    call    os_mem_free
+    mov     r10, [rbp - 8]
+    mov     qword [r10 + DB_CS_LOG], 0
+.none:
+    mov     r10, [rbp - 8]
+    mov     qword [r10 + DB_CS_COUNT], 0
+    mov     qword [r10 + DB_CS_OVERFLOW], 0
+    FRAME_END
+    ret
+
+; cs_audit(ARG1 = ctx) -> eax = 1 when every page whose state differs between
+; the published map and the staged one is explained by the log.
+;
+; This is the completeness check, and it is the whole reason the change-set can
+; be believed later: a mutation that reaches a page without registering is
+; exactly the hole that would make an inherited proof false. It walks both maps
+; in full, so it is not something a normal commit can afford - DB_CS_AUDIT
+; turns it on, and `build.sh --audit` is what sets that.
+cs_audit:
+    FRAME_BEGIN 64, 0
+    mov     [rbp - 8], ARG1
+    mov     r10, ARG1
+    cmp     qword [r10 + DB_CS_AUDIT], 0
+    je      .ok
+    cmp     qword [r10 + DB_CS_OVERFLOW], 0
+    jne     .ok                         ; incomplete by design; nothing claimed
+    test    qword [r10 + DB_FEATURES], CybouDB_FEATURE_MAP_SPAN
+    jz      .ok                         ; flat map does not record
+    mov     r11, [r10 + DB_SB_PTR]
+    mov     rax, [r11 + SB_BITMAP_ROOT]
+    mov     [rbp - 16], rax             ; the published map
+    mov     rax, [r10 + DB_BITMAP]
+    cmp     rax, [rbp - 16]
+    je      .ok                         ; nothing staged, nothing to explain
+    mov     [rbp - 24], rax             ; the staged map
+    mov     qword [rbp - 32], CybouDB_MIN_PAGES
+.page:
+    mov     r10, [rbp - 8]
+    mov     rax, [rbp - 32]
+    cmp     rax, [r10 + DB_PAGES]
+    jae     .ok
+    mov     ARG4, 1
+    mov     ARG3, rax
+    mov     ARG2, [rbp - 16]
+    mov     ARG1, [r10 + DB_BASE]
+    call    map_locate
+    mov     r10, rax
+    mov     r8, rdx
+    call    map_get
+    mov     [rbp - 40], rax             ; what it was
+    mov     r10, [rbp - 8]
+    mov     ARG4, 1
+    mov     ARG3, [rbp - 32]
+    mov     ARG2, [rbp - 24]
+    mov     ARG1, [r10 + DB_BASE]
+    call    map_locate
+    mov     r10, rax
+    mov     r8, rdx
+    call    map_get
+    mov     [rbp - 48], rax             ; what it is
+    mov     r11, [rbp - 40]
+    cmp     rax, r11
+    je      .next                       ; unchanged, so nothing to explain
+    mov     r10, [rbp - 8]
+    mov     rcx, [r10 + DB_CS_COUNT]
+    mov     r11, [r10 + DB_CS_LOG]
+    test    r11, r11
+    jz      .bad
+.scan:
+    test    rcx, rcx
+    jz      .bad                        ; a transition nobody registered
+    dec     rcx
+    mov     rax, rcx
+    shl     rax, 4
+    mov     rdx, [r11 + rax + CS_ENTRY_PAGE]
+    cmp     rdx, [rbp - 32]
+    jne     .scan
+    mov     rdx, [r11 + rax + CS_ENTRY_STATES]
+    shr     rdx, 8
+    and     rdx, 0xff
+    cmp     rdx, [rbp - 48]
+    jne     .scan                       ; an earlier hop; keep looking back
+.next:
+    inc     qword [rbp - 32]
+    jmp     .page
+.ok:
+    mov     eax, 1
+    FRAME_END
+    ret
+.bad:
+    xor     eax, eax
+    FRAME_END
+    ret
+
 ; span_mark(ARG1 = descriptor, ARG2 = page id, ARG3 = state). The staged copy
 ; only; stamps the leaf so db_bitmap_seal knows to reseal it.
+;
+; Every state change a live transaction makes in the span layout comes through
+; here, which is what makes one call to cs_record enough to have recorded all
+; of them.
 span_mark:
-    FRAME_BEGIN 32, 0
+    FRAME_BEGIN 48, 0
     mov     [rbp - 8], ARG1
+    mov     [rbp - 16], ARG2            ; the page, kept for the change-set
     mov     [rbp - 24], ARG3
     mov     r10, ARG1
     mov     ARG4, 1
@@ -797,12 +973,21 @@ span_mark:
     call    map_locate
     mov     r10, rax
     mov     r8, rdx
+    call    map_get                     ; the state it is leaving
+    mov     [rbp - 32], rax
     mov     r11, [rbp - 8]
     mov     rax, [r11 + DB_GENERATION]
     inc     rax
     mov     [r10 + MAP_GENERATION], rax
     mov     r9, [rbp - 24]
     call    map_set
+    ; Recorded after the write, so the log never claims a transition that did
+    ; not happen.
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [rbp - 16]
+    mov     ARG3, [rbp - 32]
+    mov     ARG4, [rbp - 24]
+    call    cs_record
     FRAME_END
     ret
 

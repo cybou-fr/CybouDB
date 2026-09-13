@@ -257,11 +257,18 @@ and what is validated is the legality of each transition:
 
 ```text
 FREE     -> PAYLOAD          allocation
-FREE     -> METADATA         allocation
+FREE     -> METADATA         a gap the map reserves as it grows
 PAYLOAD  -> RETIRED          copy-on-write replacement
 METADATA -> RETIRED          copy-on-write replacement
-RETIRED  -> FREE             reclamation, only past every pinned reader
+RETIRED  -> PAYLOAD          reuse, once no reader is pinned to the generation
+                             that still reaches it
 ```
+
+A page does not pass back through `FREE` on its way to being reused:
+`span_reuse` finds a `RETIRED` page in both the published and the staged map
+and the caller marks it `PAYLOAD` directly. An earlier draft of this document
+listed `RETIRED -> FREE` as the reclamation step, which is what the state names
+suggest and not what the code does.
 
 Anything else is a refused commit. Which gives the invariant this rests on:
 
@@ -283,6 +290,44 @@ maintained incrementally from the transitions rather than recomputed, and then
 **checked** against the sum on the leaves this transaction wrote plus the base
 total. If maintenance and recomputation ever disagree, the commit is refused:
 that disagreement is the signal that a mutation escaped the change-set.
+
+---
+
+## 6a. Implemented: the change-set (step 4)
+
+The recording half exists, as of the commit that added this section. It is
+inert - nothing reads it to make a decision yet - and that is deliberate: what
+had to be established first is that it is **complete**.
+
+`span_mark` is the only place a live transaction changes a page's state in the
+span layout, so it is the only place that records, and it gets the outgoing
+state for free from the `map_locate` it already does. The log is a flat array
+of `(page, from, to)` allocated once per descriptor. If it cannot be allocated,
+or a transaction makes more transitions than it holds, `DB_CS_OVERFLOW` is set
+and stays set for that transaction: an incomplete log must never be mistaken
+for a complete one.
+
+Completeness is proved rather than asserted. `cs_audit` walks the published and
+the staged map in full and requires every page whose state differs to be
+explained by an entry in the log. It is off in a normal build - it costs
+exactly the walk this work exists to remove - and `sh build.sh --audit` /
+`build.bat --audit` builds the command line with it armed.
+
+That makes every existing suite a test of the change-set, which is how it was
+checked: the storage, SQL, queue, stream, transaction, delete, tombstone,
+crash, REPL and compatibility suites were all run against the audit build on
+both platforms, plus a stress workload that forces page reuse - 120 inserts,
+enqueues and appends, 60 dequeues, a ranged `DELETE`, an `UPDATE`, a `TRIM`,
+`DROP INDEX` and `DROP QUEUE`. Nothing escaped the log.
+
+The negative control matters more than any of that: with the single
+`call cs_record` commented out, the audit build refuses its first commit with
+*staged allocation map or root is inconsistent*. A check that has never been
+seen to fail is not evidence.
+
+The flat (non-span) layout does not route through `span_mark` and is excluded
+from the audit rather than pretended about. It is the legacy allocator, it is
+not what `create` makes, and incremental validation is not planned for it.
 
 ---
 

@@ -51,6 +51,7 @@ extern test_commit_hook
 %endif
 extern crc32c
 extern db_cow_alloc_page
+extern cs_reset, cs_release, cs_audit
 extern db_bitmap_init, db_bitmap_validate, db_bitmap_seal
 extern db_bitmap_leaves, db_bitmap_recount
 
@@ -277,6 +278,8 @@ create_common:
 
     mov     [rbp - 48], rax            ; preserve sync status across cleanup
 
+    lea     ARG1, [rbp + CREATE_CTX]
+    call    cs_release                  ; the temporary descriptor had one too
     mov     ARG1, [rbp - 40]
     mov     ARG2, [rbp - 32]
     call    vfs_unmap
@@ -483,6 +486,11 @@ db_open:
     jnz     .zero_ctx
     mov     r10, ARG2
     mov     qword [r10 + DB_HANDLE], -1
+%ifdef CybouDB_AUDIT_CHANGESET
+    ; A build made to prove the change-set is complete. Every commit then has
+    ; to explain its map differences from the log, walking both maps in full.
+    mov     qword [r10 + DB_CS_AUDIT], 1
+%endif
     mov     rax, [rbp - 88]
     mov     [r10 + DB_WRITABLE], rax
     mov     rax, [rbp - 104]
@@ -1118,6 +1126,14 @@ db_commit:
     call    db_bitmap_validate
     test    eax, eax
     jz      .e_bitmap
+    ; With DB_CS_AUDIT on, the change-set has to explain every difference
+    ; between the published map and the staged one. It is off by default: the
+    ; check walks both maps in full, which is the cost this whole line of work
+    ; exists to remove.
+    mov     ARG1, [rbp - 8]
+    call    cs_audit
+    test    eax, eax
+    jz      .e_bitmap
     ; db_bitmap_validate walks the typed graph as well, so the staged graph is
     ; proved here, before any of it can outlive the process. That is what lets
     ; appends inside the transaction stop walking it one at a time - see
@@ -1242,6 +1258,9 @@ db_commit:
     mov     qword [r10 + DB_DIRTY_HI], 0
     mov     qword [r10 + DB_VALIDATED], 0
     mov     ARG1, r10
+    call    cs_reset
+    mov     r10, [rbp - 8]
+    mov     ARG1, r10
     call    db_bitmap_recount           ; the pages this generation retired
 
     mov     eax, CybouDB_OK
@@ -1311,6 +1330,9 @@ db_rollback:
     mov     qword [r10 + DB_DIRTY_LO], 0
     mov     qword [r10 + DB_DIRTY_HI], 0
     mov     qword [r10 + DB_VALIDATED], 0
+    mov     ARG1, r10
+    call    cs_reset
+    mov     r10, [rbp - 8]
 
     ; In span layout, copy active leaves to inactive copy
     test    qword [r10 + DB_FEATURES], CybouDB_FEATURE_MAP_SPAN
@@ -1394,6 +1416,8 @@ db_close:
     mov     ARG1, r10
     call    db_rollback
 .no_uncommitted_tx:
+    mov     ARG1, [rbp - 8]
+    call    cs_release
     mov     r10, [rbp - 8]
     mov     rax, [r10 + DB_BASE]
     test    rax, rax

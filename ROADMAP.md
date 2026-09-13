@@ -231,6 +231,10 @@ opposite.
    assert the opposite.)*
 4. **The transaction change-set.** Every allocate, retire, catalog and object
    mutation registers centrally. No hidden mutation may bypass it.
+   *(done for allocation transitions - `span_mark` records, `cs_audit` proves
+   the record complete, and `build.sh --audit` arms it so every existing suite
+   becomes that proof. Catalog and object entries follow in step 5, where
+   something first reads them.)*
 5. **Incremental catalog and object walk.** Unchanged root or page id inherits;
    changed is walked into. Queue and stream compare old and new directories and
    visit only what moved.
