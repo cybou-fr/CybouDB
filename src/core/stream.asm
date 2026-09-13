@@ -14,8 +14,10 @@ BITS 64
 default rel
 extern db_queue_segments_valid
 extern db_catalog_page, db_catalog_edit, db_catalog_seal
+extern queue_slot_at, queue_slot_copy
 global stream_page_valid
 global db_stream_cursor_add, db_stream_cursor_drop, db_stream_cursor_find
+global db_stream_peek, db_stream_read
 
 section .text
 
@@ -432,7 +434,197 @@ db_stream_cursor_drop:
     mov eax, CybouDB_E_STATE
     jmp .d_done
 .d_missing:
-    mov eax, CybouDB_E_NOTFOUND
+    mov eax, CybouDB_E_CURSOR
 .d_done:
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  db_stream_peek(ctx, stream id, name, length, out_length, out_cursor)
+;      -> RAX: result code
+;
+;  How much room the next record for this reader needs, and which cursor it
+;  is - so that a caller can size a buffer before anything moves, and the
+;  read that follows does not resolve the name a second time.
+;
+;  E_CURSOR when the stream has no reader of that name; E_NOTFOUND when it has
+;  one and that reader has seen everything, which is the queue's answer for an
+;  empty queue and means the same thing to a caller: nothing to hand back.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=id, [rbp-24]=name, [rbp-32]=length,
+;               [rbp-40]=out length, [rbp-48]=out cursor, [rbp-56]=page,
+;               [rbp-64]=cursor address
+; -----------------------------------------------------------------------------
+db_stream_peek:
+    FRAME_BEGIN 96, 2
+    mov r10, IN_ARG5
+    mov r11, IN_ARG6
+    mov [rbp - 40], r10
+    mov [rbp - 48], r11
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov [rbp - 32], ARG4
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_STREAM
+    jz .p_state
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    call db_catalog_page
+    test rax, rax
+    jz .p_state
+    cmp dword [rax + CAT_TYPE], CAT_STREAM
+    jne .p_state
+    mov [rbp - 56], rax
+    mov ARG1, rax
+    mov ARG2, [rbp - 24]
+    mov ARG3, [rbp - 32]
+    call db_stream_cursor_find
+    cmp rax, -1
+    je .p_no_cursor
+    mov r11, [rbp - 48]
+    mov [r11], rax
+    mov ARG1, [rbp - 56]
+    mov ARG2, rax
+    call stream_cursor_slot
+    mov [rbp - 64], rax
+
+    mov r10, [rbp - 56]
+    mov r11, [rax + SCUR_POSITION]  ; in a register no argument aliases
+    cmp r11, [r10 + S_END]
+    jae .p_caught_up
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 56]
+    mov ARG3, S_ENTRIES
+    mov ARG4, r11
+    call queue_slot_at
+    test rax, rax
+    jz .p_state                     ; a page that does not reach its own reader
+    mov ecx, [rax + QMSG_LENGTH]
+    mov r11, [rbp - 40]
+    mov [r11], rcx
+    xor eax, eax
+    FRAME_END
+    ret
+.p_caught_up:
+    mov eax, CybouDB_E_NOTFOUND
+    FRAME_END
+    ret
+.p_no_cursor:
+    mov eax, CybouDB_E_CURSOR
+    FRAME_END
+    ret
+.p_state:
+    mov eax, CybouDB_E_STATE
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  db_stream_read(ctx, stream id, cursor index, buffer, out_length, capacity)
+;      -> RAX: result code
+;
+;  The record this reader has not seen, and then the reader has seen it. The
+;  bytes are copied before the position moves, so a copy that fails leaves a
+;  reader that will be given the same record again - which is the only failure
+;  a reader can survive.
+;
+;  Nothing is removed. Another cursor still sees the record, and what stops it
+;  being kept is a trim.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=id, [rbp-24]=index, [rbp-32]=buffer,
+;               [rbp-40]=out length, [rbp-48]=capacity, [rbp-56]=page,
+;               [rbp-64]=position
+; -----------------------------------------------------------------------------
+db_stream_read:
+    FRAME_BEGIN 96, 2
+    mov r10, IN_ARG5
+    mov r11, IN_ARG6
+    mov [rbp - 40], r10
+    mov [rbp - 48], r11
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov [rbp - 32], ARG4
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_STREAM
+    jz .r_state
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    call db_catalog_page
+    test rax, rax
+    jz .r_state
+    cmp dword [rax + CAT_TYPE], CAT_STREAM
+    jne .r_state
+    mov [rbp - 56], rax
+    mov r11, [rbp - 24]             ; likewise: ARG1 is RCX on one of the two
+    cmp r11, [rax + S_CURSORS]
+    jae .r_state
+    mov ARG1, rax
+    mov ARG2, r11
+    call stream_cursor_slot
+    mov r11, [rax + SCUR_POSITION]
+    mov [rbp - 64], r11
+    mov r10, [rbp - 56]
+    cmp r11, [r10 + S_END]
+    jae .r_caught_up
+    ; Both positions, before the edit: stamp clears the span they live in, and
+    ; a stream that comes back saying it holds nothing while naming segments is
+    ; one the commit refuses - which is how this was found.
+    mov r11, [r10 + S_FIRST]
+    mov [rbp - 72], r11
+    mov r11, [r10 + S_END]
+    mov [rbp - 80], r11
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 56]
+    mov ARG3, S_ENTRIES
+    mov ARG4, [rbp - 64]            ; the position, out of its slot: the save
+    call queue_slot_at              ; above needed the register it was in
+    test rax, rax
+    jz .r_state
+    mov r10, [rbp - 48]
+    PASS_ARG6 r10
+    mov r10, [rbp - 40]
+    PASS_ARG5 r10
+    mov ARG4, [rbp - 32]
+    mov ARG3, rax
+    mov ARG2, [rbp - 16]
+    mov ARG1, [rbp - 8]
+    call queue_slot_copy
+    test eax, eax
+    jnz .r_done
+
+    ; And now the reader has seen it. The page is copied for this, because a
+    ; position is state and a commit is what makes state true.
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    lea ARG3, [rbp - 56]
+    call db_catalog_edit
+    test eax, eax
+    jnz .r_done
+    mov r10, [rbp - 56]
+    mov r11, [rbp - 72]
+    mov [r10 + S_FIRST], r11
+    mov r11, [rbp - 80]
+    mov [r10 + S_END], r11
+    mov ARG1, r10
+    mov ARG2, [rbp - 24]
+    call stream_cursor_slot
+    mov rdx, [rbp - 64]
+    inc rdx
+    mov [rax + SCUR_POSITION], rdx
+    mov ARG1, [rbp - 56]
+    call db_catalog_seal
+    xor eax, eax
+    jmp .r_done
+.r_caught_up:
+    mov eax, CybouDB_E_NOTFOUND
+    jmp .r_done
+.r_state:
+    mov eax, CybouDB_E_STATE
+.r_done:
     FRAME_END
     ret

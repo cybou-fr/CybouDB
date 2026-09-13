@@ -70,6 +70,7 @@
 %define TOK_APPEND          92
 %define TOK_TO              93
 %define TOK_CURSOR          94
+%define TOK_READ            95
 
 ; Types
 %define TOK_TYPE_INT32      30
@@ -142,6 +143,7 @@
 %define STMT_APPEND         18
 %define STMT_CREATE_CURSOR  19
 %define STMT_DROP_CURSOR    20
+%define STMT_READ           21
 
 ; --- AST Statement header and statement-specific payload --------------------
 %define AST_STMT_TYPE       0           ; qword: STMT_*

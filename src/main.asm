@@ -175,6 +175,7 @@ e_rows: db "error: row count or index exceeds table capacity", 10, 0
 e_pax: db "error: invalid PAX data page", 10, 0
 e_value: db "error: invalid value or NULL for column type", 10, 0
 e_busy: db "error: database is locked by another writer", 10, 0
+e_cursor: db "error: the stream has no reader of that name", 10, 0
 
     align 8
 err_table:
@@ -184,7 +185,7 @@ err_table:
     dq e_noent, e_access, e_state, e_generation
     dq e_bitmap, e_cow_pages
     dq e_catalog, e_schema, e_notfound, e_catalog_full
-    dq e_rows, e_pax, e_value, e_busy
+    dq e_rows, e_pax, e_value, e_busy, e_cursor
 
 err_no_pax_cli:  db "error: database does not support PAX tables (create with create-pax-multi)", 10, 0
 msg_sql_table_created: db "Table created.", 10, 0
@@ -198,8 +199,9 @@ msg_sql_stream_dropped: db "Stream dropped.", 10, 0
 msg_sql_appended:       db "Record appended.", 10, 0
 msg_sql_cursor_created: db "Cursor created.", 10, 0
 msg_sql_cursor_dropped: db "Cursor dropped.", 10, 0
+msg_sql_read_end:       db "Nothing new for that reader.", 10, 0
 e_cursor_exists: db "error: the stream already has a reader of that name", 10, 0
-e_cursor_missing: db "error: the stream has no reader of that name", 10, 0
+
 e_cursor_full:   db "error: a stream holds at most eight readers", 10, 0
 msg_sql_enqueued:      db "ENQUEUE 1", 10, 0
 msg_sql_queue_empty:   db "(empty)", 10, 0
@@ -1157,6 +1159,8 @@ cyboudb_exec_query:
     je      .stream_dropped
     cmp     qword [r10 + PLAN_TYPE], STMT_APPEND
     je      .appended
+    cmp     qword [r10 + PLAN_TYPE], STMT_READ
+    je      .record_read
     cmp     qword [r10 + PLAN_TYPE], STMT_CREATE_CURSOR
     je      .cursor_created
     cmp     qword [r10 + PLAN_TYPE], STMT_DROP_CURSOR
@@ -1255,6 +1259,21 @@ cyboudb_exec_query:
 
 .appended:
     PUTS    msg_sql_appended
+    jmp     .exec_success
+
+; The same shape a DEQUEUE reports in: the bytes, or a line saying there were
+; none. A reader that has seen everything is not an error - it is the answer.
+.record_read:
+    mov     r10, [rbp - 40]
+    cmp     qword [r10 + PLAN_DATA3], 0
+    je      .record_read_end
+    mov     ARG1, [r10 + PLAN_DATA1]
+    mov     ARG2, [r10 + PLAN_DATA2]
+    call    os_write
+    PUTS    str_nl
+    jmp     .exec_success
+.record_read_end:
+    PUTS    msg_sql_read_end
     jmp     .exec_success
 
 .cursor_created:
@@ -1416,19 +1435,16 @@ cyboudb_exec_query:
     cmp     rdx, STMT_DROP_CURSOR
     jne     .storage_fail_code
 .cursor_fail:
+    ; A missing reader has a code of its own and so answers for itself; these
+    ; two are storage codes that mean something narrower here.
     cmp     rax, CybouDB_E_SCHEMA
     je      .cursor_fail_exists
-    cmp     rax, CybouDB_E_NOTFOUND
-    je      .cursor_fail_missing
     cmp     rax, CybouDB_E_FULL
     jne     .storage_fail_code
     lea     ARG1, [e_cursor_full]
     jmp     .cursor_fail_say
 .cursor_fail_exists:
     lea     ARG1, [e_cursor_exists]
-    jmp     .cursor_fail_say
-.cursor_fail_missing:
-    lea     ARG1, [e_cursor_missing]
 .cursor_fail_say:
     call    puts_asciiz
     mov     rbx, [rbp - 56]

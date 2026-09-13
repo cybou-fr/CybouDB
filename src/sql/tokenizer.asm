@@ -73,6 +73,7 @@ kw_stream:          db "stream", 0
 kw_append:          db "append", 0
 kw_to:              db "to", 0
 kw_cursor:          db "cursor", 0
+kw_read:            db "read", 0
 
     align 8
 kw_table_entries:
@@ -134,6 +135,7 @@ kw_table_entries:
     dq kw_append,   6, TOK_APPEND
     dq kw_to,       2, TOK_TO
     dq kw_cursor,   6, TOK_CURSOR
+    dq kw_read,     4, TOK_READ
     dq 0,          0, 0                 ; terminator
 
 section .text

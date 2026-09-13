@@ -56,6 +56,7 @@ extern db_catalog_put_queue, db_queue_push, db_queue_pop, db_queue_peek
 extern db_queue_retire_all
 extern db_catalog_put_stream, db_stream_retire_all, db_stream_append
 extern db_stream_cursor_add, db_stream_cursor_drop
+extern db_stream_peek, db_stream_read
 extern db_catalog_page
 extern db_index_retire_tree
 extern db_index_insert, db_index_insert_unique, db_index_delete
@@ -553,7 +554,7 @@ eval_predicate_encoded:
 ;  nonzero answer means the sink itself failed and the statement fails with it.
 ; -----------------------------------------------------------------------------
 sql_execute_batch:
-    FRAME_BEGIN EXEC_FRAME_SIZE, 1
+    FRAME_BEGIN EXEC_FRAME_SIZE, 2   ; a READ passes six
     mov     [rbp - 8], ARG1
     mov     [rbp - 16], ARG2
     mov     [rbp - 24], ARG3
@@ -592,6 +593,8 @@ sql_execute_batch:
     je      .exec_drop_stream
     cmp     rax, STMT_APPEND
     je      .exec_append
+    cmp     rax, STMT_READ
+    je      .exec_read
     cmp     rax, STMT_CREATE_CURSOR
     je      .exec_create_cursor
     cmp     rax, STMT_DROP_CURSOR
@@ -1288,6 +1291,63 @@ sql_execute_batch:
     mov     ARG4, [r10 + PLAN_DATA2]
     call    db_stream_append
     jmp     .storage_done
+
+; A record comes back the way a message does: through the plan, because a READ
+; answers with one value and a stream has no schema to present it as a row. The
+; peek is what sizes the buffer, and it hands back the cursor so that the read
+; does not resolve the reader's name a second time.
+.exec_read:
+    mov     r10, [rbp - 16]
+    mov     qword [r10 + PLAN_DATA3], 0
+    lea     r11, [rbp - 1848]
+    PASS_ARG6 r11                   ; which cursor it turned out to be
+    lea     r11, [rbp - 1840]
+    PASS_ARG5 r11                   ; how much room the record needs
+    mov     ARG4, [r10 + PLAN_DATA2]
+    mov     ARG3, [r10 + PLAN_DATA1]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    mov     ARG1, [rbp - 8]
+    call    db_stream_peek
+    cmp     eax, CybouDB_E_NOTFOUND
+    je      .read_caught_up
+    test    eax, eax
+    jnz     .storage_done
+    mov     ARG2, [rbp - 1840]
+    test    ARG2, ARG2
+    jnz     .read_sized
+    mov     ARG2, 1                 ; a record of no bytes still needs an address
+.read_sized:
+    mov     ARG1, [rbp - 24]
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .read_oom
+    mov     r10, [rbp - 16]
+    mov     [r10 + PLAN_DATA1], rax
+    mov     r11, [rbp - 1840]
+    PASS_ARG6 r11                   ; capacity: exactly what the peek asked for
+    lea     r11, [rbp - 1856]
+    PASS_ARG5 r11
+    mov     ARG4, rax
+    mov     ARG3, [rbp - 1848]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    mov     ARG1, [rbp - 8]
+    call    db_stream_read
+    cmp     eax, CybouDB_E_NOTFOUND
+    je      .read_caught_up
+    test    eax, eax
+    jnz     .storage_done
+    mov     r10, [rbp - 16]
+    mov     r11, [rbp - 1856]
+    mov     [r10 + PLAN_DATA2], r11
+    mov     qword [r10 + PLAN_DATA3], 1
+    xor     eax, eax
+    jmp     .exec_exit
+.read_caught_up:
+    xor     eax, eax
+    jmp     .exec_exit
+.read_oom:
+    mov     eax, SQL_ERR_NO_STORAGE
+    jmp     .exec_exit
 
 .exec_create_cursor:
     mov     ARG1, [rbp - 8]

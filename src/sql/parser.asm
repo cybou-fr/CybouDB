@@ -1698,6 +1698,8 @@ sql_parse:
     je      .parse_enqueue
     cmp     rax, TOK_APPEND
     je      .parse_append
+    cmp     rax, TOK_READ
+    je      .parse_read
     cmp     rax, TOK_DEQUEUE
     je      .parse_dequeue
 
@@ -2412,6 +2414,48 @@ sql_parse:
     mov     [r10 + DROP_TABLE_NAME_PTR], rax
     mov     rax, [rbp - 192 + TOK_LEN]
     mov     [r10 + DROP_TABLE_NAME_LEN], rax
+    jmp     .check_eof
+
+; --- READ FROM stream AS reader ----------------------------------------------
+; The reader is named because a stream has more than one, and which one is
+; asking is the whole of what the answer depends on.
+.parse_read:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_READ
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_FROM
+    jne     .bad_syntax
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_table_name
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + QUEUE_NAME_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + QUEUE_NAME_LEN], rax
+
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_AS
+    jne     .bad_syntax
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_table_name
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + CURSOR_NAME_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + CURSOR_NAME_LEN], rax
     jmp     .check_eof
 
 ; --- CREATE CURSOR reader ON stream ------------------------------------------

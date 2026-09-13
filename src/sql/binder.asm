@@ -999,6 +999,8 @@ sql_bind:
     je      .bind_drop_stream
     cmp     rax, STMT_APPEND
     je      .bind_append
+    cmp     rax, STMT_READ
+    je      .bind_read
     cmp     rax, STMT_CREATE_CURSOR
     je      .bind_create_cursor
     cmp     rax, STMT_DROP_CURSOR
@@ -1919,6 +1921,10 @@ sql_bind:
 ; whether it has room for another, are facts about the page, and the page is
 ; the core's to read. The binder carries the name; db_stream_cursor_add and
 ; db_stream_cursor_drop own the rules.
+.bind_read:
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + PLAN_TYPE], STMT_READ
+    jmp     .bind_cursor_common
 .bind_create_cursor:
     mov     r10, [rbp - 48]
     mov     qword [r10 + PLAN_TYPE], STMT_CREATE_CURSOR

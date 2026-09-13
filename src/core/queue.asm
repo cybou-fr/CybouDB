@@ -20,6 +20,7 @@ global queue_page_valid, db_queue_seg_addr, queue_seg_seal, db_queue_segments_va
 global db_queue_push, db_queue_pop, db_queue_peek, db_queue_depth
 global db_queue_retire_all
 global db_stream_append
+global queue_slot_at, queue_slot_copy
 global db_stream_retire_all
 
 section .data
@@ -382,6 +383,125 @@ queue_copy_seg:
     FRAME_END
     ret
 
+; -----------------------------------------------------------------------------
+;  queue_slot_at(ARG1 = ctx, ARG2 = object page, ARG3 = where that object's
+;                directory starts, ARG4 = position) -> RAX: the slot, or 0
+;
+;  Where a position lives is arithmetic and a directory lookup, and it is the
+;  same arithmetic for a queue and for a stream: the fields it reads sit at
+;  one offset in both, and the one that does not is the argument.
+;
+;  Zero when the directory does not reach the position, which is a page that
+;  disagrees with itself rather than an empty object - callers check emptiness
+;  before they ask.
+; -----------------------------------------------------------------------------
+queue_slot_at:
+    FRAME_BEGIN 48, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov rax, ARG4
+    xor edx, edx
+    mov rcx, QUEUE_SEG_SLOTS
+    div rcx
+    mov [rbp - 32], rdx             ; the slot inside the segment
+    mov r10, [rbp - 16]
+    sub rax, [r10 + Q_FIRST_SEG]    ; S_FIRST_SEG is the same offset
+    jb .s_none
+    mov ecx, [r10 + Q_SEGMENTS]     ; as is S_SEGMENTS
+    cmp rax, rcx
+    jae .s_none
+    add r10, [rbp - 24]
+    mov r11, [r10 + rax * 8]
+    mov ARG1, [rbp - 8]
+    mov ARG2, r11
+    call db_queue_seg_addr
+    mov rdx, [rbp - 32]
+    shl rdx, 6                      ; QUEUE_SLOT_SIZE
+    lea rax, [rax + QSEG_SLOTS + rdx]
+    FRAME_END
+    ret
+.s_none:
+    xor eax, eax
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  queue_slot_copy(ARG1 = ctx, ARG2 = owner id, ARG3 = slot, ARG4 = buffer,
+;                  ARG5 = where to write the length, ARG6 = buffer capacity)
+;      -> RAX: result code
+;
+;  The payload out of a slot, from the slot itself or from the extent chain it
+;  names. The owner id is what the chain is checked against, so a message can
+;  only ever read pages its own object owns.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=owner, [rbp-24]=slot, [rbp-32]=buffer,
+;               [rbp-40]=length out, [rbp-48]=capacity, [rbp-56]=length,
+;               [rbp-80]=extent descriptor
+; -----------------------------------------------------------------------------
+queue_slot_copy:
+    FRAME_BEGIN 96, 2
+    ; The stack-passed pair first, before anything can touch what carries them.
+    mov r10, IN_ARG5
+    mov r11, IN_ARG6
+    mov [rbp - 40], r10
+    mov [rbp - 48], r11
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov [rbp - 32], ARG4
+
+    mov r8, [rbp - 24]
+    mov ecx, [r8 + QMSG_LENGTH]
+    mov [rbp - 56], rcx
+    mov ecx, [r8 + QMSG_FLAGS]
+    test ecx, QMSG_FLAG_EXTENT
+    jnz .c_extent
+    mov rcx, [rbp - 56]
+    cmp rcx, QMSG_INLINE_MAX
+    ja .c_state                     ; a slot cannot hold that, so this is not one
+    mov r9, [rbp - 32]
+    xor edx, edx
+.c_byte:
+    cmp rdx, rcx
+    jae .c_copied
+    mov al, [r8 + QMSG_PAYLOAD + rdx]
+    mov [r9 + rdx], al
+    inc rdx
+    jmp .c_byte
+
+.c_extent:
+    ; The chain, validated before a byte of it is copied - which is what
+    ; db_var_read_chain is for, and why this does not read pages itself.
+    mov rax, [r8 + QMSG_EXTENT]
+    mov [rbp - 80 + VAR_CELL_ROOT], rax
+    mov rax, [rbp - 56]
+    mov [rbp - 80 + VAR_CELL_LENGTH], rax
+    mov r10, [rbp - 8]
+    mov rax, [rbp - 48]
+    PASS_ARG6 rax
+    mov rax, [rbp - 32]
+    PASS_ARG5 rax
+    mov ARG4, [rbp - 16]
+    lea ARG3, [rbp - 80]
+    mov ARG2, [r10 + DB_SB_PTR]
+    mov ARG1, r10
+    call db_var_read_chain
+    test eax, eax
+    jnz .c_done
+
+.c_copied:
+    mov r11, [rbp - 40]
+    mov rax, [rbp - 56]
+    mov [r11], rax
+    xor eax, eax
+    jmp .c_done
+.c_state:
+    mov eax, CybouDB_E_STATE
+.c_done:
+    FRAME_END
+    ret
+
 ; db_queue_depth(ARG1 = ctx, ARG2 = queue id) -> RAX: messages held, or -1
 db_queue_depth:
     FRAME_BEGIN 16, 0
@@ -732,50 +852,22 @@ db_queue_pop:
     mov rdx, [rbp - 80]
     shl rdx, 6
     lea r8, [rax + QSEG_SLOTS + rdx]
-    mov ecx, [r8 + QMSG_LENGTH]
-    mov [rbp - 104], rcx
-    mov [rbp - 136], r8             ; the slot, for the flags below
-    mov ecx, [r8 + QMSG_FLAGS]
-    test ecx, QMSG_FLAG_EXTENT
-    jnz .o_extent
-    mov rcx, [rbp - 104]
-    cmp rcx, QMSG_INLINE_MAX
-    ja .o_state                     ; a slot cannot hold that, so this is not one
-    mov r9, [rbp - 24]
-    xor edx, edx
-.o_byte:
-    cmp rdx, rcx
-    jae .o_copied
-    mov al, [r8 + QMSG_PAYLOAD + rdx]
-    mov [r9 + rdx], al
-    inc rdx
-    jmp .o_byte
+    mov [rbp - 136], r8
 
-.o_extent:
-    ; The chain, validated before a byte of it is copied - which is what
-    ; db_var_read_chain is for, and why the queue does not read pages itself.
-    mov r8, [rbp - 136]
-    mov rax, [r8 + QMSG_EXTENT]
-    mov [rbp - 144 + VAR_CELL_ROOT], rax
-    mov rax, [rbp - 104]
-    mov [rbp - 144 + VAR_CELL_LENGTH], rax
-    mov r10, [rbp - 8]
-    mov rax, [rbp - 152]
-    PASS_ARG6 rax                   ; capacity: what the caller said it has
-    mov rax, [rbp - 24]
-    PASS_ARG5 rax
-    mov ARG4, [rbp - 16]
-    lea ARG3, [rbp - 144]
-    mov ARG2, [r10 + DB_SB_PTR]
-    mov ARG1, r10
-    call db_var_read_chain
+    mov r10, [rbp - 152]
+    PASS_ARG6 r10                   ; capacity: what the caller said it has
+    mov r10, [rbp - 32]
+    PASS_ARG5 r10
+    mov ARG4, [rbp - 24]
+    mov ARG3, [rbp - 136]
+    mov ARG2, [rbp - 16]
+    mov ARG1, [rbp - 8]
+    call queue_slot_copy
     test eax, eax
     jnz .o_done
-
-.o_copied:
-    mov r11, [rbp - 32]
-    mov rax, [rbp - 104]
-    mov [r11], rax
+    mov r8, [rbp - 136]
+    mov ecx, [r8 + QMSG_LENGTH]
+    mov [rbp - 104], rcx
 
     ; How much of the directory the move leaves behind. A queue that has just
     ; run dry names no segment at all; otherwise the head keeps whatever it is

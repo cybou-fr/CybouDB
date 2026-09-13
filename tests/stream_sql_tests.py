@@ -365,12 +365,70 @@ def main():
         check("after all of which the file checks out", r.returncode == 0 and
               "Status:          OK" in r.stdout, r.stdout)
 
-        # A prefix is not the name. "read" must not find "reader".
-        query("CREATE CURSOR reader ON sub;")
-        r = query("DROP CURSOR read ON sub;")
+        # A prefix is not the name: "consum" must not find "consumer". Not
+        # "read", which is a keyword now and so is not a name at all.
+        query("CREATE CURSOR consumer ON sub;")
+        r = query("DROP CURSOR consum ON sub;")
         check("a prefix of a reader's name is not that reader",
               r.returncode != 0 and "no reader of that name" in r.stdout,
               r.stdout)
+
+        # --- READ ------------------------------------------------------------
+        # What makes a stream a stream: the record is still there for the next
+        # reader, and every reader gets it.
+        query("CREATE STREAM rd;")
+        query("APPEND TO rd VALUES ('one');")
+        query("APPEND TO rd VALUES ('two');")
+        query("CREATE CURSOR x ON rd;")
+        query("CREATE CURSOR y ON rd;")
+
+        r = query("READ FROM rd AS x;")
+        check("a reader is given the oldest record it has not seen",
+              r.returncode == 0 and r.stdout.strip() == "one", r.stdout)
+        r = query("READ FROM rd AS x;")
+        check("then the next", r.returncode == 0 and r.stdout.strip() == "two",
+              r.stdout)
+        r = query("READ FROM rd AS x;")
+        check("and then it has seen everything, which is not an error",
+              r.returncode == 0 and "Nothing new" in r.stdout, r.stdout)
+
+        r = query("READ FROM rd AS y;")
+        check("the other reader still gets the first record",
+              r.returncode == 0 and r.stdout.strip() == "one", r.stdout)
+        names, positions, _ = readers("rd")
+        check("and the two stand in different places",
+              sorted(zip(names, positions)) == [("x", 2), ("y", 1)],
+              f"{names} {positions}")
+        check("with nothing removed", "rd holding 2" in
+              console(".streams\n.quit\n", db).stdout)
+
+        r = query("READ FROM rd AS nobody;")
+        check("a reader the stream does not have says so",
+              r.returncode != 0 and "no reader of that name" in r.stdout,
+              r.stdout)
+        r = query("READ FROM q AS x;")
+        check("and a queue is not read this way", r.returncode != 0, r.stdout)
+
+        # A record past what a slot holds comes back whole, through the same
+        # chain an APPEND put it in.
+        long_record = "z" * 200
+        query("APPEND TO rd VALUES ('" + long_record + "');")
+        r = query("READ FROM rd AS x;")
+        check("a record longer than a slot comes back whole",
+              r.returncode == 0 and r.stdout.strip() == long_record,
+              f"{len(r.stdout.strip())} bytes")
+
+        # A position is state, so a rollback puts the reader back.
+        _, before, _ = readers("rd")
+        r = console("BEGIN;\nREAD FROM rd AS y;\nROLLBACK;\n.quit\n", db)
+        check("a read inside a rolled back transaction still answered",
+              "two" in r.stdout, r.stdout)
+        _, after, _ = readers("rd")
+        check("but the reader did not move", before == after,
+              f"{before} -> {after}")
+        r = run("check", db)
+        check("and the file checks out", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
 
         # --- and dropping one gives the pages back ---------------------------
         # Without the retire, a stream that is made and dropped forever would

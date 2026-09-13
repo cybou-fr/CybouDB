@@ -1094,7 +1094,42 @@ that a prefix of a reader's name is not that reader - proved by removing the
 check that the stored name stops where the given one does, which fails that
 test and only that one.
 
-Still to come: `READ`, `TRIM`, the C ABI.
+**Done: `READ`.** `READ FROM stream AS reader` gives that reader the oldest
+record it has not seen and then it has seen it. Nothing is removed - another
+cursor still gets the same record - and a reader that has seen everything is
+answered rather than refused, because being caught up is not an error.
+
+Locating a position and copying a payload out of a slot are now
+`queue_slot_at` and `queue_slot_copy`, lifted out of `db_queue_pop` and shared.
+The queue's suites are what says the lift was clean.
+
+Two bugs, both mine, both in the same ten lines:
+
+* the edit that moves a cursor forward publishes through `db_catalog_edit`,
+  which stamps the page - and stamping clears the span `first` and `end` live
+  in. The first version did not put them back, and I had written a comment
+  arguing it did not need to. The commit refused the page: a stream that holds
+  nothing while naming a segment is not a stream. The validator earned its
+  keep.
+* fixing that, the save I added reused the register the position was sitting
+  in, so the read located the slot at `end` - one past the last record, which
+  is empty. Every position advanced correctly and every record came back as
+  zero bytes. The lint cannot see this one: the register was not an argument
+  register, it was just live.
+
+Finding the second took eight rebuilds of narrowing, and the thing that
+finally placed it was making the routine write a sentinel through the pointer
+it had been handed: the sentinel arrived, so the plumbing was right and the
+slot was wrong. Worth remembering as the cheaper first move.
+
+`tests/stream_sql_tests.py` is 86 checks. Two readers on one stream stand in
+different places and both are given every record; a 200-byte record comes back
+whole through the extent chain; and a `READ` inside a rolled back transaction
+answers and leaves the reader where it was, because a position is state.
+
+`read` is a keyword now, so it is no longer available as an identifier.
+
+Still to come: `TRIM`, the C ABI.
 
 What is decided:
 
