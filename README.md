@@ -383,21 +383,50 @@ Build the varlen drivers with `sh build.sh --varlen-tests` and
 
 Built with `--sql-tests` (`build/sql_harness`) and `--kernel-tests` (`build/kernel_harness`):
 
-* `tests/sql_tests.py` (also callable via `tests/sql_tests.ps1` / `.sh`):
-  78 end-to-end SQL integration and boundary tests covering `CREATE TABLE`,
-  `INSERT INTO`, `SELECT`, expressions, precedence, constraints, and rollbacks.
+* `tests/sql_tests.py`: 242 end-to-end SQL integration and boundary tests
+  covering `CREATE TABLE`, `INSERT INTO`, `SELECT`, expressions, precedence,
+  constraints, and rollbacks.
 * `tests/sql_api_tests.py`: 193 contract tests verifying error domains, source
   locations, MXCSR preservation, prepared plan fast-path contracts and fallbacks,
   and float literal conversions against an independent rational oracle.
 * `tests/sql_pruning_tests.py`: 36 tests verifying required-column pruning and physical layout access.
 * `tests/sql_sink_tests.py`: 69 tests covering scalar and batch row delivery.
-* `tests/kernel_tests.py`: 2,756 exhaustive scalar predicate kernel tests across all comparison operators, types, and NULL permutations.
+* `tests/kernel_tests.py`: 13,181 exhaustive predicate kernel tests across all
+  comparison operators, types, and NULL permutations, run once per dispatch
+  mode so the AVX2 and scalar paths are checked against each other.
 
 ### Hardware Optimization Tests
 
 Built with `--hardware-tests` (`build/hardware_harness`):
 
-* `tests/hardware_tests.py`: 1,276 oracle test cases verifying hardware SSE4.2 CRC-32C against reference scalar CRC-32C across buffer sizes (0..8180 bytes) and byte alignments, plus BMI2 `pext`, `pdep`, `bzhi`, and NULL mask compaction routines with bit-for-bit scalar fallbacks.
+* `tests/hardware_tests.py`: 3,670 oracle test cases verifying hardware SSE4.2 CRC-32C against reference scalar CRC-32C across buffer sizes (0..8180 bytes) and byte alignments, plus BMI2 `pext`, `pdep`, `bzhi`, and NULL mask compaction routines with bit-for-bit scalar fallbacks.
+
+### Queue, Stream and Cross-Primitive Tests
+
+Built with `--c-tests`:
+
+* `tests/queue_sql_tests.py` (65) and `tests/queue_page_test.c` (75): the queue
+  page and its validation at both depths, the shared namespace, segment
+  boundaries, and four hundred round trips of a two-page message through a file
+  too small to survive a leak.
+* `tests/stream_sql_tests.py` (103) and `tests/stream_page_test.c` (63): the
+  stream page and its cursors, the type boundary against queues, `APPEND`,
+  `READ`, `TRIM`, and the cursor table read back off the disk.
+* `tests/queue_api_test.c` (23) and `tests/stream_api_test.c` (30): a message
+  and a record through the C ABI, including a buffer too small being refused
+  rather than filled.
+* `tests/cross_primitive_test.c` (45): one transaction over a table, its index,
+  a queue and a stream - committed, rolled back, and failing in the middle.
+
+### Argument register lint
+
+* `tests/abi_arg_lint.py`: reads every `.asm` file for the one mistake this
+  project keeps making - an argument register read after something else has
+  taken it, in either direction. ARG1..ARG6 are different machine registers on
+  Win64 and System V, so the bug reads correctly on one platform and passes the
+  wrong value on the other. Seven such bugs were found by failing tests before
+  the lint existed; it has caught six since, two of them already in the tree and
+  live on Windows.
 
 All test suites run in CI on both Linux and Windows.
 
@@ -408,6 +437,8 @@ All test suites run in CI on both Linux and Windows.
 * **[ARCHITECTURE.md](ARCHITECTURE.md)** - the design: layering, the on-disk
   format, the commit protocol, the allocator, and how one format is meant to
   serve several hardware-native execution engines.
+* **[CHANGELOG.md](CHANGELOG.md)** - what is in each release, and the rule
+  that the on-disk format version is not the product version.
 * **[ROADMAP.md](ROADMAP.md)** - the phases, and what is actually done.
 * **[docs/FORMAT.md](docs/FORMAT.md)** - the on-disk format, version 1, and the
   compatibility promise that goes with it.
