@@ -222,6 +222,25 @@ int main(int argc, char **argv) {
               cyboudb_exec(fresh, "INSERT INTO t VALUES (1)") == CybouDB_OK);
         check("closing it", cyboudb_close(fresh) == CybouDB_OK);
 
+        /* The profile a caller gets when nobody asked them to choose. The
+           tombstone reservation is the one that cannot be added later - see
+           docs/TOMBSTONES.md - so a library that created files without it
+           would be handing out databases whose DELETE can only rewrite. */
+        {
+            FILE *handle = fopen(made, "rb");
+            unsigned char header[64];
+            uint64_t features = 0;
+            check("the file can be read back", handle != NULL &&
+                  fread(header, 1, sizeof header, handle) == sizeof header);
+            if (handle) fclose(handle);
+            memcpy(&features, header + 16, 8);
+            check("the default profile reserves tombstones",
+                  (features & 4096u) != 0);
+            check("and carries queues, streams and indexes with them",
+                  (features & 8192u) && (features & 16384u) &&
+                  (features & 32768u));
+        }
+
         fresh = NULL;
         check("a second create at the same path is refused rather than "
               "quietly replacing it",

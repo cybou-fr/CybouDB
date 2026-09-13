@@ -56,6 +56,7 @@ extern db_bitmap_leaves, db_bitmap_recount
 
 global db_create, db_open, db_alloc_page, db_free_page, db_commit, db_rollback, db_close
 global db_create_tombstones
+global db_create_default
 global db_create_cow
 global db_create_catalog
 global db_create_pax, db_create_pax_multi
@@ -120,6 +121,15 @@ db_create_compressed:
 ; separate creator rather than a bit added to create-large: the reservation
 ; changes how many rows a leaf holds, so it would move every existing
 ; database's layout out from under files that already exist.
+;
+; This is also the profile a caller who was not asked gets: db_create_default
+; is the same entry point, and cyboudb_create uses it. The reservation can only
+; be made at creation - docs/TOMBSTONES.md, there is no in-place upgrade - so a
+; library creating files without it would hand every one of its users a
+; database whose DELETE can only ever rewrite the table. The other creators
+; exist to test the format at the stages it grew through; this one is what a
+; user should get.
+db_create_default:
 db_create_tombstones:
     mov eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR | CybouDB_FEATURE_TOMBSTONES | CybouDB_FEATURE_INDEX | CybouDB_FEATURE_QUEUE | CybouDB_FEATURE_STREAM
     jmp create_common

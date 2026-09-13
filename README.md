@@ -55,7 +55,7 @@ dependencies.
 | On-disk format v1, checksummed and validated | working |
 | Memory-mapped storage, 4 KiB logical pages | working |
 | Page allocator with a free list | working |
-| Two-superblock metadata publication | working; page mutations are not crash-safe |
+| Two-superblock metadata publication | working; a commit is one checksummed publication and the highest valid generation wins. The exception is a **legacy** file made by plain `create`, which has no COW bit: its page mutations happen in place and are not crash-safe. Every other creator, and everything the library makes, stages and publishes |
 | Persisted COW mode and allocation map | working; `create-cow`, then `alloc` / `info` |
 | Typed catalog and COW root-path updates | working; up to 251 tables, 64 columns per table |
 | PAX columnar table storage | working; whole 64-row groups, typed columns, NULL masks |
@@ -67,7 +67,7 @@ dependencies.
 | DELETE strategy | working; truncation, per-row tombstones, or a compacting rewrite, chosen per statement from what the table already holds. No explicit `VACUUM` |
 | SQL types and semantics | fixed-width storage working for `INT32`, `INT64`, `FLOAT32`, `BOOL`; persistent `TEXT`/`BLOB` storage working for `create-large` databases |
 | CLI: `query` | working; executes statements, autocommits mutations, tabular output |
-| CLI: `create`, `info`, `check`, `alloc`, `free`, `version` | working |
+| CLI: `create`, `info`, `check`, `alloc`, `free`, `version` | working. `create` makes a legacy non-COW file and exists for format tests; `create-large` is the one to use, and `cyboudb_create` in the library adds per-row tombstones on top of it |
 | Open proportional to the change, not the file | working; `cyboudb check` still reads everything |
 | Linux x86-64, raw syscalls, no libc | working |
 | Windows x64, kernel32 only | working |
@@ -415,8 +415,16 @@ Built with `--c-tests`:
 * `tests/queue_api_test.c` (23) and `tests/stream_api_test.c` (30): a message
   and a record through the C ABI, including a buffer too small being refused
   rather than filled.
-* `tests/cross_primitive_test.c` (45): one transaction over a table, its index,
+* `tests/cross_primitive_test.c` (48): one transaction over a table, its index,
   a queue and a stream - committed, rolled back, and failing in the middle.
+* `tests/cross_primitive_crash_tests.py` (17): the same transaction, crashed.
+  A committed file has its publication put back while every staged page stays
+  on the disk - what a machine that lost power between the data sync and the
+  publication is left holding - and a reader must find the old state entire.
+  Also a torn newest superblock, one that never reached the platter, and the
+  mirror case where the *older* copy is the damaged one and the committed
+  transaction has to survive. The invariant is that every outcome is wholly
+  old or wholly new: never a message taken with no row to show for it.
 
 ### Argument register lint
 

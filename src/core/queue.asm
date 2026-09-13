@@ -1177,3 +1177,7 @@ queue_retire_common:
     xor eax, eax
     FRAME_END
     ret
+
+%ifdef CybouDB_LINUX
+section .note.GNU-stack noalloc noexec nowrite progbits
+%endif

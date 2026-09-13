@@ -246,10 +246,11 @@ int cyboudb_open(const char *path, uint32_t flags, cyboudb_db **out_db);
 /**
  * Create a database file and open it read-write.
  *
- * One kind of database is made: the one with every feature enabled, which is
- * what the command line calls `create-large`. Tables, secondary indexes,
- * TEXT/BLOB storage, vectors, tombstones, queues and streams are all
- * available in it.
+ * One kind of database is made, and it is the one to want: tables, secondary
+ * indexes, TEXT/BLOB storage, vectors, queues, streams, and the per-row
+ * tombstone reservation that lets DELETE mark rows instead of rewriting the
+ * table. That reservation exists only if it was made when the file was
+ * created, so this is the profile rather than a smaller one.
  *
  * @param path     UTF-8 path. An existing file is not replaced.
  * @param pages    Size of the file in 4 KiB pages.

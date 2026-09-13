@@ -30,7 +30,7 @@ pax_bool_columns: resq 1
 pax_null_columns: resq 1
 pax_for_columns:  resq 1
 global pax_leaves_validated
-pax_leaves_validated: dq 0
+pax_leaves_validated: resq 1
 
 section .text
 

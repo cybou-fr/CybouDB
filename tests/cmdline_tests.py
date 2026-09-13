@@ -5,8 +5,6 @@
 # =============================================================================
 
 import os
-import pathlib
-import re
 import subprocess
 import sys
 import tempfile
@@ -92,20 +90,8 @@ def main():
              res.returncode != 0 and ("exceeds" in res.stdout or "too long" in res.stdout or "Usage" in res.stdout or "error" in res.stdout),
              f"rc={res.returncode}")
 
-    # 8. The version, and that the binary and the header agree about it. A
-    #    released binary that cannot say what it is, or says something the
-    #    header does not, is worse than one with no version at all.
-    header = (pathlib.Path(__file__).resolve().parents[1]
-              / "include" / "cyboudb.h").read_text(encoding="utf-8")
-    declared = re.search(r'#define CybouDB_VERSION\s+"([^"]+)"', header)
-    for argument in ("version", "--version"):
-        res = subprocess.run([CYBOUDB_EXE, argument], capture_output=True,
-                             text=True)
-        test(f"{argument}_reports_the_build",
-             res.returncode == 0 and declared is not None and
-             f"CybouDB {declared.group(1)}" in res.stdout, res.stdout)
-    test("version_names_the_format_it_writes",
-         "format: version 1" in res.stdout, res.stdout)
+    # The version is checked in tests/version_tests.py, which runs on both
+    # platforms. This suite is the Windows argument parser and nothing else.
 
     print(f"\nWindows Command Line test suite: {passed_tests} passed, {failed_tests} failed")
     sys.exit(0 if failed_tests == 0 else 1)

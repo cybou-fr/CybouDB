@@ -17,7 +17,7 @@ default rel
 
 ; --- External engine functions -----------------------------------------------
 extern db_open, db_close, db_commit, db_rollback
-extern db_create_large
+extern db_create_default
 extern db_catalog_put, db_catalog_drop, db_catalog_truncate_data, db_pax_insert
 extern db_var_read_chain
 extern sql_select_open, sql_select_next
@@ -190,10 +190,16 @@ cyboudb_open:
 ;  the library had to run the command line to get a file to open, which is a
 ;  strange thing to ask of an embedded engine.
 ;
-;  One kind of database: the one with every feature turned on, which is what
-;  `create-large` makes. The other creators exist to test the format at each
-;  stage it grew through, and a library caller has no reason to choose among
-;  them - a file without queues is not a smaller file, only a poorer one.
+;  One kind of database, and it is the one a caller should want: everything
+;  `create-large` has plus the per-row tombstone reservation. That reservation
+;  can only be made at creation - docs/TOMBSTONES.md, there is no in-place
+;  upgrade - so a library that left it out would hand every one of its users a
+;  database whose DELETE can only ever rewrite the table.
+;
+;  The other creators exist to test the format at each stage it grew through,
+;  and a caller has no reason to choose among them: a file without queues is
+;  not a smaller file, only a poorer one. Compression is the one thing left
+;  out, because it does not yet make a file smaller on disk.
 ;
 ;  It refuses to replace a file that is already there. Overwriting a database
 ;  because a path was wrong is not a thing a library should do quietly.
@@ -228,7 +234,7 @@ cyboudb_create:
 %endif
     mov     ARG2, [rbp - 16]
     xor     ARG3, ARG3                  ; do not replace what is already there
-    call    db_create_large
+    call    db_create_default
     test    eax, eax
     jnz     .create_error
 

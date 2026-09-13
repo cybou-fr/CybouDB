@@ -1278,6 +1278,54 @@ names what is absent - no ARM64, no WAL, no second writer, no encryption, no
 ANN index, no queue leases, no daemon - rather than leaving it to be inferred
 from what is not claimed.
 
+## Phase 16 - Release candidate
+
+Feature freeze. Everything here is a contract or a hygiene fix, and the four
+that matter came out of review rather than out of a test.
+
+**The compatibility promise was too strong, and contradicted the format.**
+CHANGELOG said a file written by any 0.x build is readable by every other. It is
+not, and must not be: an unknown `flags_incompat` bit *obliges* a reader to
+refuse the file, and `INDEX`, `QUEUE` and `STREAM` are exactly such bits. The
+promise runs one way - a newer release reads an older file, an older binary is
+not guaranteed to open a newer one - and the refusal is the format working,
+because guessing is how a storage engine loses data quietly. FORMAT.md had this
+right all along; the CHANGELOG restated it wrongly.
+
+**`cyboudb_create` made a database whose DELETE could never mark.** It called
+`db_create_large`, which is everything except `TOMBSTONES` and `COMPRESSION`,
+while its own comment claimed "every feature turned on". The tombstone
+reservation can only be made at creation - docs/TOMBSTONES.md says there is no
+in-place upgrade - so every database the library created was one whose DELETE
+could only ever rewrite the table, while the README advertised tombstoned
+DELETE as a feature of the engine. Not a correctness bug; a product-contract
+bug, and the last moment to fix it for free. There is now a
+`db_create_default`, which is the tombstone profile, and that is what the
+library makes.
+
+**Two build warnings.** `pax_leaves_validated` was `dq 0` in `.bss`, which NASM
+warns about and which reserves nothing; it is `resq 1`. `queue.asm` and
+`stream.asm` had no `.note.GNU-stack`, so the linker inferred an executable
+stack - checked at the binary rather than by the absence of a warning:
+`readelf -lW` now says `GNU_STACK ... RW`.
+
+**The crash gate.** `tests/cross_primitive_crash_tests.py` takes a committed
+file, puts the publication back the way it was, and leaves every staged page on
+the disk. That is what a machine that lost power between the data sync and the
+publication is holding, and a reader has to find the old state entire. Also a
+torn newest superblock, one that never reached the platter, and the mirror case
+where the older copy is damaged and the committed transaction must survive -
+because a recovery that took whichever superblock verified, rather than the
+newest that verifies, would pass everything else and lose a commit.
+
+Two of its first five failures were the test's own fault, and one of them is
+worth recording: the stream record `'did the job'` contains the queue payload
+`'the job'`, so a substring check reported a message on the queue whenever the
+record existed. The markers are disjoint now. The third was a case that did not
+belong: a superblock with a *correct* checksum and different contents is not a
+crash, because a torn write cannot produce a correct CRC - it was testing the
+engine against something no disk does.
+
 What is decided:
 
 * a stream is not a queue with extra readers, and collapsing them would make
