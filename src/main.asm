@@ -185,6 +185,8 @@ e_busy: db "error: database is locked by another writer", 10, 0
 e_cursor: db "error: the stream has no reader of that name", 10, 0
 e_retained: db "error: a reader has not read that far yet - drop it or trim less", 10, 0
 e_trim_past: db "error: that position is past the end of the stream", 10, 0
+e_damaged: db "error: the newest generation is damaged - an older one is intact,"
+           db " and an ordinary open would silently use it", 10, 0
 
     align 8
 err_table:
@@ -195,6 +197,7 @@ err_table:
     dq e_bitmap, e_cow_pages
     dq e_catalog, e_schema, e_notfound, e_catalog_full
     dq e_rows, e_pax, e_value, e_busy, e_cursor, e_retained
+    dq e_damaged
 
 err_no_pax_cli:  db "error: database does not support PAX tables (create with create-pax-multi)", 10, 0
 msg_sql_table_created: db "Table created.", 10, 0
@@ -668,7 +671,10 @@ cyboudb_main:
 
 ; ------------------------------------------------------------------ info -----
 .cmd_check:
-    mov     qword [rbp - 32], 1         ; verify every page, then print the same
+    ; Deep, and asking about integrity rather than recoverability: `check`
+    ; reports a damaged newest generation instead of quietly using the one
+    ; before it. An ordinary open still recovers. docs/RECOVERY.md.
+    mov     qword [rbp - 32], CybouDB_VERIFY_DEEP | CybouDB_VERIFY_INTEGRITY
     jmp     .open_to_read
 .cmd_info:
     mov     qword [rbp - 32], 0

@@ -297,9 +297,14 @@ def main():
         fallback_path = os.path.join(temp_dir, "fallback.cdb")
         with open(fallback_path, 'wb') as f:
             f.write(b_fb)
+        # Recovery and integrity are different questions, and this file is
+        # the case where they give different answers: the newest generation is
+        # deliberately broken and the one before it is intact. An ordinary
+        # open recovers and says nothing; `check` is what reports the damage.
+        # See docs/RECOVERY.md.
         res = run_cmd(['check', fallback_path])
-        test('corrupted_latest_leaf_falls_back_to_prior_gen',
-             res.returncode == 0 and 'Status:          OK' in res.stdout,
+        test('corrupted_latest_leaf_is_reported_by_check',
+             res.returncode != 0 and 'damaged' in res.stdout.lower(),
              res.stdout)
 
         res = run_cmd(['query', fallback_path, 'SELECT count(*) FROM fb_vec;'])

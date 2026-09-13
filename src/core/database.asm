@@ -724,7 +724,20 @@ db_open:
     mov     ARG2, [rbp - 40]
     call    db_bitmap_validate
     test    eax, eax
-    jz      .check_b
+    jnz     .a_validated
+    ; Its checksum verified and its graph did not. Remember which generation,
+    ; not that it happened: a *superseded* copy failing is ordinary, because
+    ; the pages it named have been retired and handed out again since. Only
+    ; the newest generation failing is damage, and that comparison cannot be
+    ; made until both copies have been looked at.
+    mov     r10, [rbp - 16]
+    mov     r11, [rbp - 40]
+    mov     rax, [r11 + SB_GENERATION]
+    cmp     rax, [r10 + DB_DAMAGED]
+    jbe     .check_b
+    mov     [r10 + DB_DAMAGED], rax
+    jmp     .check_b
+.a_validated:
     mov     r10, [rbp - 40]
     mov     rax, [r10 + SB_GENERATION]
     mov     [rbp - 72], rax
@@ -747,7 +760,15 @@ db_open:
     mov     ARG2, [rbp - 48]
     call    db_bitmap_validate
     test    eax, eax
-    jz      .sb_chosen
+    jnz     .b_validated
+    mov     r10, [rbp - 16]
+    mov     r11, [rbp - 48]
+    mov     rax, [r11 + SB_GENERATION]
+    cmp     rax, [r10 + DB_DAMAGED]
+    jbe     .sb_chosen
+    mov     [r10 + DB_DAMAGED], rax
+    jmp     .sb_chosen
+.b_validated:
     mov     r10, [rbp - 48]
     mov     rax, [r10 + SB_GENERATION]
     mov     [rbp - 80], rax
@@ -823,11 +844,29 @@ db_open:
     mov     ARG1, r11
     call    db_bitmap_recount           ; what the live generation retired
 
+    ; An open asking about integrity is told what recovery just papered over.
+    ; An ordinary open is not: falling back to the generation before a damaged
+    ; one is the recovery protocol working, and docs/RECOVERY.md calls that
+    ; success. The two questions are different and now have different answers.
+    mov     r10, [rbp - 16]
+    test    qword [r10 + DB_VERIFY], CybouDB_VERIFY_INTEGRITY
+    jz      .not_asking
+    mov     rax, [r10 + DB_DAMAGED]
+    test    rax, rax
+    jz      .not_asking
+    cmp     rax, [r10 + DB_GENERATION]
+    ja      .e_damaged                  ; a newer generation than the one in
+                                        ; use failed to validate: something
+                                        ; damaged what had already been proved
+.not_asking:
     mov     eax, CybouDB_OK
     FRAME_END
     ret
 
     ; --- failures after the mapping exists: unmap and close ------------------
+.e_damaged:
+    mov     eax, CybouDB_E_DAMAGED
+    jmp     .unmap_and_fail
 .e_magic:
     mov     eax, CybouDB_E_MAGIC
     jmp     .unmap_and_fail

@@ -85,29 +85,39 @@ generation, which is why `RETIRED` is a state rather than a return to `FREE`.
 
 ---
 
-## 3. What a commit guarantees, and what it does not
+## 3. Three guarantees that were one mechanism
 
-This has to be stated before the mechanism, because the mechanism narrows it.
+The first draft of this document said a commit's narrowed responsibility moves
+to `cyboudb check`. That was checked, and it was false - and false before any
+of this work, not because of it. `check` was an ordinary open with deep
+verification, and an ordinary open *recovers*: when the newest generation did
+not validate it fell back to the one before it and reported success. So damage
+to the newest generation printed `Status: OK`.
+
+Three questions had one answer between them. They now have three:
 
 ```text
-a normal commit
-    proves the effects of this transaction:
-      every page it wrote, byte for byte
-      every edge it changed
-      every allocation transition it registered
-    and inherits the proof of everything it did not touch
+recovery    an ordinary open finds the newest generation that validates and
+            falls back to the one before it. Falling back is success, and
+            nothing here changes that.
 
-cyboudb check
-    proves every page reachable from every generation, from scratch,
-    inheriting nothing
+commit      proves that what this transaction publishes is a well-formed
+            graph: every page it wrote, every edge it changed, every
+            allocation transition it registered - and inherits the proof of
+            everything it did not touch.
+
+integrity   `cyboudb check` reports damage, including damage recovery would
+            hide. A superblock whose own checksum verifies while the graph it
+            published does not is damage, not the residue of an interrupted
+            publication - a torn superblock fails its own checksum and is
+            reported as the ordinary thing it is.
 ```
 
-A commit answers *did the engine build a well-formed graph*. It is not, and
-after this change will less resemble, a scan for damage the engine did not
-cause. That job belongs to `cyboudb check`, which sets `DB_VERIFY` and walks
-everything.
+docs/RECOVERY.md is normative for the first and the third.
+`tests/integrity_tests.py` holds them to it.
 
-**This is a narrowing, and it must be adopted deliberately.**
+**The narrowing is deliberate, and it is only safe because the third of those
+now exists.** Inheritance was not allowed to land until it did.
 
 ### 3.1 The queue is currently an exception, and the exception is tested
 
@@ -125,21 +135,19 @@ Under proof inheritance those seven stop being caught **at commit time**,
 because queue `700010`'s directory is not touched by that transaction and is
 therefore inherited.
 
-There are only two honest positions:
+There is no option where the commit both skips the visit and catches the
+damage. The narrowing is accepted: the queue joins the policy the whole rest of
+the engine already follows, and those cases become assertions that the
+integrity check refuses the file.
 
-1. **Accept the narrowing.** The queue joins the policy the whole rest of the
-   engine already follows. Those seven cases move to asserting that
-   `cyboudb check` refuses the file, and the commit-time assertion is kept only
-   for damage to pages this transaction wrote. This is consistent, and it is
-   what makes the optimisation possible at all.
-2. **Keep the guarantee.** Then a commit must keep reading every retained
-   segment, and there is no incremental validation for queues — only for the
-   catalog and the objects that already inherit.
+That is only an honest trade because the integrity check now exists. It did
+not when this section was first written, and the wrong version of this
+paragraph would have quietly deleted a guarantee rather than moved it.
 
-There is no third option where the commit both skips the visit and catches the
-damage. The work in this document assumes (1). **It should not be started until
-that is agreed, because it is a change to what a commit promises, and the
-promise is currently written into a passing test.**
+A second thing that suite was doing wrong, found the same way: every case
+reused one queue id, so the moment a commit was allowed through, the id
+existed and every later case reported "refused" because of that rather than
+because of the damage. Fixed separately, before any of this.
 
 ---
 
@@ -336,10 +344,31 @@ not what `create` makes, and incremental validation is not planned for it.
 Happy-path tests prove nothing here. The suite must try to make the validator
 inherit a proof that is not true:
 
+Four corruption cases matter, and they are different from each other. The
+second is the one that proves the guarantee actually moved rather than
+vanished, and it did not exist before:
+
+```text
+A. damage a NEW segment, written by this ENQUEUE
+      commit MUST refuse
+
+B. damage an OLD segment of the SAME queue, then ENQUEUE into it
+      commit MAY accept
+      cyboudb check MUST report damage
+
+C. damage an OLD segment of an UNTOUCHED queue, commit something else
+      commit MAY accept
+      cyboudb check MUST report damage
+
+D. forge a directory edge or an allocation transition the change-set
+   does not explain
+      commit MUST refuse
+```
+
 | Attack | Must end as |
 | :--- | :--- |
 | Damage a page this transaction wrote | commit refused |
-| Damage a page an earlier generation wrote | commit accepts, `cyboudb check` refuses (§3.1) |
+| Damage a page an earlier generation wrote | commit accepts, `cyboudb check` reports damage |
 | A map entry changed with no matching transition | commit refused |
 | An illegal transition, e.g. `PAYLOAD -> FREE` | commit refused |
 | Retire a page still reachable through an inherited subtree | commit refused |

@@ -53,7 +53,20 @@
 %define DB_REUSABLE       128           ; retired pages the allocator may take
 %define DB_DIRTY_LO       136           ; pages this transaction wrote, [lo, hi)
 %define DB_DIRTY_HI       144           ; hi = 0 means it wrote none
-%define DB_VERIFY         152           ; 1 = check every page, not just the new
+; What this open is for. Three questions were tangled together until they were
+; given separate answers; see docs/RECOVERY.md.
+;
+;   recovery   a normal open finds the newest generation that validates and
+;              falls back to the one before it. Falling back is success.
+;   commit     proves what this transaction publishes.
+;   integrity  says whether the file is damaged, even when the damage is
+;              recoverable - which a recovering open, by construction, cannot.
+;
+; DB_VERIFY carries policy bits rather than a flag. Anything nonzero still
+; means "deep", so every existing `cmp DB_VERIFY, 0` reads the same.
+%define CybouDB_VERIFY_DEEP      1         ; prove every page, not only new ones
+%define CybouDB_VERIFY_INTEGRITY 2         ; report damage instead of recovering
+%define DB_VERIFY         152           ; policy bits, 0 for an ordinary open
 %define DB_TX_ACTIVE      160           ; qword: 1 if inside explicit transaction, 0 if autocommit
 %define DB_TX_ID          168           ; qword: monotonic transaction sequence counter
 ; Nonzero once this writer has validated the typed graph while the pages it
@@ -63,6 +76,11 @@
 ; durability, protects the same boundary without the quadratic term. Cleared
 ; wherever staged state is published or discarded.
 %define DB_VALIDATED      176           ; qword: graph checked in this transaction
+; Set when a superblock whose own checksum verifies turns out to publish a
+; graph that does not. That is not the residue of an interrupted publication -
+; a torn superblock fails its own checksum and never gets this far - so it is
+; damage to pages the engine had already proved, and recovery hides it.
+%define DB_DAMAGED        184           ; qword: a valid superblock, a bad graph
 
 ; --- the transaction change-set ---------------------------------------------
 ; What this transaction did to the allocation map, as (page, from, to) rather
@@ -75,11 +93,11 @@
 ; than it holds, DB_CS_OVERFLOW is set and stays set until the transaction
 ; ends: an incomplete log must never be treated as a complete one, and the
 ; only safe reading of it is the exhaustive walk the engine does today.
-%define DB_CS_LOG         184           ; qword: transition log, 0 = none yet
-%define DB_CS_COUNT       192           ; qword: transitions this transaction
-%define DB_CS_OVERFLOW    200           ; qword: 1 = the log is not complete
-%define DB_CS_AUDIT       208           ; qword: 1 = prove the log at commit
-%define CybouDB_DB_SIZE      216
+%define DB_CS_LOG         192           ; qword: transition log, 0 = none yet
+%define DB_CS_COUNT       200           ; qword: transitions this transaction
+%define DB_CS_OVERFLOW    208           ; qword: 1 = the log is not complete
+%define DB_CS_AUDIT       216           ; qword: 1 = prove the log at commit
+%define CybouDB_DB_SIZE      224
 
 ; Entries in the log: page id, then the two states packed into one qword so an
 ; entry is 16 bytes and the whole thing is a flat array with no allocator.

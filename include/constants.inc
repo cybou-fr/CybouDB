@@ -54,7 +54,13 @@
 %define CybouDB_E_BUSY       33            ; another writer owns the database
 %define CybouDB_E_CURSOR     34            ; no reader of that name on the stream
 %define CybouDB_E_RETAINED   35            ; a reader still needs what a trim would drop
-%define CybouDB_E_COUNT      36            ; size of the message table
+; A superblock that verifies published a graph that does not. The file is
+; still readable - an older generation is intact and an ordinary open recovers
+; to it - but pages this engine had already proved have been damaged since.
+; Only an open asking for CybouDB_VERIFY_INTEGRITY is told, because recovering
+; is the right answer to every other question.
+%define CybouDB_E_DAMAGED    36
+%define CybouDB_E_COUNT      37            ; size of the message table
 
 ; --- Why an operating system call failed -------------------------------------
 ;  The platform layer translates its native error - errno on Linux, the Win32

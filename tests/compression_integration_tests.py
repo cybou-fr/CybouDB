@@ -58,11 +58,16 @@ with tempfile.TemporaryDirectory() as temporary:
     b = bytearray(good)
     b[stream + 16] ^= 1  # torn stream, without repairing CRC
     path.write_bytes(b)
-    run(binary, "check", path)
+    # An ordinary open recovers to the generation before it and says nothing,
+    # which is what recovery is for. `check` is the integrity question and has
+    # to report the damage: the newest superblock's own checksum is intact, so
+    # this is not the residue of an interrupted publication - it is a page the
+    # engine had already proved, damaged since. docs/RECOVERY.md.
+    run(binary, "check", path, rc=2)
     read(path, 64, [1], [0])
     assert b"65" in run(binary, "query", path,
                           "SELECT count(*) FROM t0000000000000001")
-    check("damaged newest compressed leaf falls back to previous generation")
+    check("a damaged newest compressed leaf is reported, and recovered from")
     b = bytearray(good)
     b[latest(good) + 124] ^= 1
     path.write_bytes(b)

@@ -34,6 +34,7 @@ jobs:
           python3 tests/version_tests.py ./cyboudb
           python3 tests/compat_tests.py ./cyboudb
           python3 tests/root_roundtrip.py ./cyboudb
+          python3 tests/integrity_tests.py ./cyboudb
           python3 tests/cow_tests.py ./cyboudb ./build/cow_harness
           python3 tests/bitmap_tests.py ./cyboudb ./build/cow_harness
           python3 tests/catalog_tests.py ./cyboudb ./build/cow_harness
@@ -178,6 +179,7 @@ jobs:
           python tests/version_tests.py ./cyboudb.exe
           python tests/compat_tests.py ./cyboudb.exe
           python tests/root_roundtrip.py ./cyboudb.exe
+          python tests/integrity_tests.py ./cyboudb.exe
           python tests/cow_tests.py ./cyboudb.exe ./build/cow_harness.exe
           python tests/bitmap_tests.py ./cyboudb.exe ./build/cow_harness.exe
           python tests/catalog_tests.py ./cyboudb.exe ./build/cow_harness.exe

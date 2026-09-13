@@ -87,13 +87,53 @@ not answer "is this file the one I think it is", and it cannot:
 - a page damaged in a way that keeps its checksum consistent is caught only if
   it also breaks a structural invariant the graph walk checks.
 
+## Three questions, three answers
+
+These were one mechanism for a long time, and they are not one question:
+
+```text
+recovery    an ordinary open finds the newest generation that validates,
+            and falls back to the one before it when the newest does not.
+            Falling back is success.
+
+commit      proves that what this transaction is about to publish is a
+            well-formed graph. See docs/COMMIT_VALIDATION.md.
+
+integrity   says whether the file is damaged - including damage an
+            ordinary open recovers from, which by construction is the
+            damage recovery cannot report.
+```
+
+`cyboudb check` is the third. It used to be the first, which meant it answered
+"a valid state could be recovered from this file" while appearing to answer
+"this file is healthy". A damaged newest generation reported `Status: OK`
+because an older one was intact, which is precisely the case where a person
+needs to be told: the database keeps working, quietly on the older state.
+
 ## Inspecting a file
 
 ```sh
 cyboudb info  app.cdb     # header, chosen generation, page counts
-cyboudb check app.cdb     # validate the live generation
+cyboudb check app.cdb     # is this file damaged?
 ```
 
-`check` reports `Status: OK` when the selected generation validates, including
-the case where it had to fall back to the older copy — falling back is a
-successful recovery, not a warning.
+`check` opens with `CybouDB_VERIFY_DEEP | CybouDB_VERIFY_INTEGRITY`: every page
+is proved from scratch, and a superblock whose *own checksum verifies* while
+the graph it publishes does not is reported as damage, with a non-zero exit
+status.
+
+The distinction that makes this usable is between damage and residue:
+
+```text
+the superblock itself is torn or fails its checksum
+    -> the ordinary residue of an interrupted publication.
+       This is what the two copies are for. Status: OK.
+
+the superblock verifies, and the graph it published does not
+    -> pages the engine had already proved have been damaged since.
+       Status: damaged, and a non-zero exit.
+```
+
+Nothing about an ordinary open changed. It still recovers, still silently, and
+still reports success — that is the right answer to the question it is asked.
+`tests/integrity_tests.py` holds both halves to that.

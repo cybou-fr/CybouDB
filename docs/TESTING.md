@@ -119,6 +119,17 @@ Built with `--c-tests`:
   public header including a private one, or a missing exported symbol, fails in
   CI rather than for the first person who downloads the package.
 
+## Integrity, as distinct from recovery
+
+* `tests/integrity_tests.py` (7): a damaged newest generation. An ordinary
+  open must still work, on the generation before it, because that is what
+  recovery is for; `cyboudb check` must refuse the same file and say it is
+  damaged. Before `check` was made integrity-aware it reported `Status: OK`
+  here - it was answering "a valid state can be recovered" while looking like
+  it answered "this file is healthy". The suite also restores the damaged byte
+  and requires the answer to go back, so the damage is provably what changed
+  it. See [RECOVERY.md](RECOVERY.md).
+
 ## The change-set audit
 
 ```sh
