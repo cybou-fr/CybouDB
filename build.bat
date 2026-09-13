@@ -315,6 +315,8 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     if errorlevel 1 goto :fail
     cl.exe /O2 /W3 /nologo /Iinclude tests\stream_api_test.c /Febuild\stream_api_test.exe /Fobuild\stream_api_test.obj /link build\cyboudb.lib kernel32.lib
     if errorlevel 1 goto :fail
+    cl.exe /O2 /W3 /nologo /Iinclude tests\cross_primitive_test.c /Febuild\cross_primitive_test.exe /Fobuild\cross_primitive_test.obj /link build\cyboudb.lib kernel32.lib
+    if errorlevel 1 goto :fail
     endlocal
     exit /b 0
 )

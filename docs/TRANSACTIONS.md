@@ -92,6 +92,44 @@ Closing a database rolls back any active transaction. Uncommitted mutations are
 never published, including when the REPL or a piped script ends at EOF with a
 transaction open.
 
+## One transaction over every kind of object
+
+A table, an index, a queue and a stream are four things to a caller and one
+thing to the commit. They live in the same file, under the same allocation
+map, behind the same pair of superblocks, and the commit protocol above is
+indifferent to which of them a staged page belongs to.
+
+So this is atomic:
+
+```sql
+BEGIN;
+DEQUEUE FROM inbox;                     -- take the work
+INSERT INTO jobs VALUES (1, 'done');    -- record the result
+APPEND TO audit VALUES ('job 1 done');  -- and say so
+COMMIT;
+```
+
+Either all three happened or none did. A rollback puts the message back in the
+queue, removes the row, removes the index entry that row required, and leaves
+the stream where it was.
+
+This is the reason the engine exists. A service built on a database and a
+broker cannot do the above: the two are separate systems with separate commits,
+which is what the outbox pattern is a workaround for - write the message into
+the database as a row, commit, and have something else move it to the broker
+afterwards, accepting duplicates because the second step can fail after the
+first succeeded. Here there is no second step to fail.
+
+What it does **not** give you is a guarantee about work outside the file. A
+transaction that takes a message and then calls an external service is two
+systems again, and [QUEUE.md](QUEUE.md) says exactly which order buys which
+guarantee. What the transaction covers is the database, entirely.
+
+`tests/cross_primitive_test.c` is the assertion: a rollback that must undo a
+take, a row, an index entry and an append together; a commit that must keep
+all four and survive a reopen; and a statement that fails midway leaving
+nothing standing.
+
 ## Autocommit
 
 With no explicit transaction active, each mutating statement commits on its own

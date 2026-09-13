@@ -1193,6 +1193,33 @@ than eight cursors, reading from an arbitrary position, and fan-out into a
 queue. Each is a decision about policy or addressing that docs/STREAM.md
 argues belongs above the engine.
 
+## Phase 13 - One transaction over every kind of object
+
+The capability was already there - a table, an index, a queue and a stream are
+four things to a caller and one thing to the commit, because they share a file,
+an allocation map and a pair of superblocks. What was missing was the assertion
+and the sentence saying so.
+
+`tests/cross_primitive_test.c` is 37 checks. One transaction takes a message,
+writes the row it was for, maintains that row's index entry and appends to an
+audit stream; rolled back, the message is back in the queue and neither the row
+nor the record ever existed; committed, all four are there and survive a
+reopen; and a statement that fails midway leaves nothing standing.
+
+The test was falsified before it was trusted: turning that first `ROLLBACK`
+into a `COMMIT` fails the three assertions that are the point and three more
+that follow from them.
+
+`docs/TRANSACTIONS.md` now says what this buys, and what it does not. It does
+not extend to work outside the file - a transaction that takes a message and
+then calls an external service is two systems again, and QUEUE.md already says
+which order buys which guarantee. What it does replace is the outbox pattern,
+which exists only because a database and a broker have two commits.
+
+Also found: `work` is a reserved word - `BEGIN WORK` - so it is not available
+as an object name. Discovered by naming a queue that in the first draft of
+this test.
+
 What is decided:
 
 * a stream is not a queue with extra readers, and collapsing them would make
