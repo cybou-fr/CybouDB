@@ -1450,6 +1450,48 @@ this file rather than by the benchmark that started it.
 
 ---
 
+## Phase 19 - The performance model, stated properly
+
+The queue report said CybouDB is slow, which was true and incomplete. Measuring
+the batching axis gave the model instead of the headline:
+
+**An expensive durable commit that amortises well.** 1,120 us for one message
+in its own transaction; 20.75 us each at a hundred per transaction. 54x, and
+the most important thing to know when writing against this engine.
+
+`queue_bench` takes messages-per-transaction as an argument now, and the runner
+prints three tables rather than one, because latency, throughput under batching
+and scaling with retained depth are three questions that one number answers
+badly. What they say:
+
+* SQLite in WAL mode is ahead at every batch size, since its commit is an
+  append and one flush against two.
+* For `DEQUEUE` the gap narrows with batching - 0.17x at one per transaction,
+  0.70x at a hundred - and for `ENQUEUE` it does not.
+* Against SQLite's own default durability, CybouDB leads at small batches and
+  is level at a hundred.
+* The worker case loses everywhere, including to SQLite's default: two
+  mutations in one transaction is two objects to prove at commit.
+
+The depth scaling is now written in README and CHANGELOG as a **known
+performance limitation of the preview**, with the numbers, the cause and the
+two workarounds, rather than left for someone to discover. Correctness, crash
+safety and corruption detection are unaffected, which is what makes it
+releasable; it is measured and located, which is what makes it honest.
+
+README leads with what the engine is - Tables. Vectors. Queues. Streams. One
+transaction - and carries a table of what it is fast at *and what it is not*,
+including the three rows where DuckDB and SQLite win. A shape rather than a
+scoreboard, which is also the only version that survives a reader with a
+stopwatch.
+
+The rule the three prepared-plan bugs taught is written where it will be read:
+a section in ARCHITECTURE.md and a header comment in `include/sql.inc`, both
+naming `tests/prepared_rerun_test.c` as the release-critical suite that
+enforces it.
+
+---
+
 ## Known gaps outside the phases
 
 Small, real, and worth fixing when they are next touched:
