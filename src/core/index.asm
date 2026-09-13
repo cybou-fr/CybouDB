@@ -714,6 +714,23 @@ index_insert_node:
     mov rax, rdx
 .split_moved:
     mov [rbp - 144], rax                ; rows the right half took
+    ; And what the entry being placed brings with it. A leaf entry is one row.
+    ; An internal entry names a child, and brings everything under it - which
+    ; is what a node whose child has just split is being handed. Counting it
+    ; as one left the two halves wrong by the size of that child, and a tree
+    ; three levels deep read correctly and validated wrong.
+    mov qword [rbp - 160], 1
+    mov r11, [rbp - 40]
+    cmp dword [r11 + IDX_LEVEL], IDX_LEAF
+    je .placed_known
+    mov r11, [rbp - 8]
+    mov rax, [r11 + II_CHILD]
+    shl rax, CybouDB_PAGE_SHIFT
+    mov r8, [r11 + II_CTX]
+    add rax, [r8 + DB_BASE]
+    mov rax, [rax + IDX_SUBTREE]
+    mov [rbp - 160], rax
+.placed_known:
     mov r8, [rbp - 40]
     mov r9, [rbp - 72]
     mov rdx, [rbp - 128]
@@ -740,8 +757,10 @@ index_insert_node:
     mov rax, [rbp - 136]
     inc rax
     mov [r10 + IDX_COUNT], eax
-    ; The row went left: the right half keeps what it took and the left keeps
-    ; everything else, including the one being placed.
+    ; It went left: the right half keeps what it took and the left keeps
+    ; everything else, including the row that arrived. One row entered the
+    ; tree however large the entry carrying it was, so the two halves still
+    ; add up to what this node held plus one.
     mov rax, [rbp - 144]
     mov r11, [rbp - 72]
     mov [r11 + IDX_SUBTREE], rax
@@ -770,9 +789,11 @@ index_insert_node:
     mov rax, [rbp - 128]
     inc rax
     mov [r10 + IDX_COUNT], eax
-    ; The row went right, so the right half keeps what it took plus this one.
+    ; It went right, so the right half keeps what it took plus what the entry
+    ; brought with it, and the left keeps the rest of what this node held plus
+    ; the one row that entered the tree.
     mov rax, [rbp - 144]
-    inc rax
+    add rax, [rbp - 160]
     mov [r10 + IDX_SUBTREE], rax
     mov r11, [rbp - 40]
     mov rcx, [r11 + IDX_SUBTREE]

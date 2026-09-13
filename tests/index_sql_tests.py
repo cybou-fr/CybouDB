@@ -506,6 +506,44 @@ def main():
         check("and that file checks out too", r.returncode == 0 and
               "Status:          OK" in r.stdout, r.stdout)
 
+        # --- an UPDATE patches rather than rebuilds ---------------------------
+        # The rows do not move, so their entries are right except for the one
+        # column the statement wrote. The entries of the rows it touched come
+        # out before the write and go back after it, under the one key they
+        # all now carry - which has to answer exactly what rebuilding the tree
+        # from the table answered.
+        for key in (0, 3, 6):
+            sql = f"UPDATE t SET g = 3 WHERE g = {key};"
+            query(sql, many)
+            query(sql, many_plain)
+        same = True
+        detail = ""
+        for key in (0, 3, 6, 1):
+            sql = f"SELECT COUNT(*) FROM t WHERE g = {key};"
+            a = query(sql, many).stdout
+            b = query(sql, many_plain).stdout
+            if a != b:
+                same = False
+                detail = f"g={key}: {a!r} vs {b!r}"
+                break
+        check("an UPDATE of an indexed column answers as the scan does",
+              same, detail)
+        r = run("check", many)
+        check("leaving a file that checks out", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
+
+        # A unique index still refuses what it always refused, and refusing
+        # leaves nothing behind.
+        r = query("UPDATE t SET id = 5 WHERE id < 3;", lookup)
+        check("an UPDATE that would duplicate a unique key is refused",
+              r.returncode != 0, r.stdout)
+        a = query("SELECT id FROM t WHERE id = 5;", lookup).stdout
+        b = query("SELECT id FROM t WHERE id = 5;", plain2).stdout
+        check("and the rows are where they were", a == b, f"{a!r} vs {b!r}")
+        r = run("check", lookup)
+        check("in a file that checks out", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
+
         # --- ranges ----------------------------------------------------------
         # A range names several keys, and their rows are scattered through the
         # table rather than ascending, so the walk enters a group once per run

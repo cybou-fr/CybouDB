@@ -33,6 +33,7 @@ extern void *db_index_node_addr(void *ctx, uint64_t page);
 #define IDX_MAGIC_VALUE 0x49515341u
 #define IDX_LEVEL   32
 #define IDX_COUNT   36
+#define IDX_SUBTREE 40
 #define IDX_ENTRIES 64
 #define IDX_MAX_ENTRIES 167u
 #define IDX_ENTRY 24
@@ -221,6 +222,7 @@ static int64_t audit(void *ctx, uint64_t page, int level, int64_t *low,
             else if (key < *high) return -1;
             *high = key;
         }
+        if (u64(node, IDX_SUBTREE) != count) return -1;
         return count;
     }
     for (uint32_t i = 0; i < count; i++) {
@@ -236,6 +238,10 @@ static int64_t audit(void *ctx, uint64_t page, int level, int64_t *low,
         total += under;
         node = db_index_node_addr(ctx, page);
     }
+    /* Every node records how many entries live at or below it, and a commit
+       takes that number rather than walking the subtree. A writer that stops
+       adjusting it leaves a tree that reads correctly and validates wrong. */
+    if (u64(node, IDX_SUBTREE) != (uint64_t)total) return -1;
     return total;
 }
 
@@ -389,6 +395,12 @@ static void insert_suite(void *ctx) {
     insert_case(ctx, "descending", 3000, 2999, 1);
     insert_case(ctx, "scattered", 3000, 1009, 1);
     insert_case(ctx, "one full leaf plus one", IDX_MAX_ENTRIES + 1, 1, 1);
+    /* Deep enough, by insertion alone, that the root has had to split twice.
+       A split leaves both halves half full, so a tree grown this way reaches
+       three levels at about IDX_SPLIT_LEFT squared rather than at
+       IDX_MAX_ENTRIES squared - which is where a bulk-built one does, and is
+       why building three levels and inserting into them did not cover this. */
+    insert_case(ctx, "three levels by insertion", 20000, 1, 2);
     /* Inserting into a tree that is already three levels deep. Building it
        costs one page per 167 entries where inserting costs the height per
        entry, so this reaches the depth without paying for it. */

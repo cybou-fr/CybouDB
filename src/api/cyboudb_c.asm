@@ -522,6 +522,8 @@ cyboudb_step:
     je      .step_commit
     cmp     rcx, STMT_ROLLBACK
     je      .step_rollback
+    cmp     rcx, STMT_UPDATE
+    je      .step_drop                  ; the executor knows about indexes
     cmp     rcx, STMT_CREATE_INDEX
     je      .step_drop                  ; both run through the executor
     cmp     rcx, STMT_DROP_INDEX
@@ -667,8 +669,9 @@ cyboudb_step:
     cmp     dword [r12 + STMT_H_STATE], STMT_STATE_DONE
     je      .step_done_ret
 
-    ; Likewise: dropping a table takes its indexes with it, and only the
-    ; executor knows that.
+    ; Likewise: dropping a table takes its indexes with it, an UPDATE moves
+    ; the keys of every index over the column it writes, and only the
+    ; executor knows either.
     lea     ARG1, [rbp - 96]
     lea     ARG2, [r12 + STMT_H_SELECT]
     mov     ARG3, STMT_H_ARENA_BUF - STMT_H_SELECT
