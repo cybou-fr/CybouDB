@@ -359,7 +359,7 @@
 %define PLAN_UPDATE_IS_NULL 264         ; qword boolean
 %define PLAN_VECTOR_TOPK_EXPR 272       ; qword: bound vector distance expr
 %define PLAN_DELETE_ROWS    280         ; qword rows a DELETE removed
-%define BOUND_PLAN_SIZE     312
+%define BOUND_PLAN_SIZE     320
 %define PLAN_PROJ_RIGHT_BIT 0x80000000  ; u32 projection index belongs to RHS
 %define PLAN_FLAG_LIMIT     2           ; bit 1: LIMIT clause is present
 %define PLAN_FLAG_ORDER     4           ; bit 2: ORDER BY is present
@@ -375,6 +375,12 @@
 %define PLAN_INDEX_ID       288         ; the index that lookup uses
 %define PLAN_INDEX_LO       296         ; the lowest key it wants
 %define PLAN_INDEX_HI       304         ; and the highest
+; The column that index is over. A plan outlives the objects it named: an index
+; can be dropped, and its id can be handed to another one. So what opening a
+; cursor checks is not that the id is still there but that what it names is
+; still this table's index over this column - and when it is not, the plan
+; reads the table, because an access path that has gone is not an empty one.
+%define PLAN_INDEX_COL      312
 
 ; Projection descriptor passed to batch result sinks (aliases PLAN_DATA1..3).
 %define RESULT_PROJ_COUNT   0           ; qword: projection count, 1..64

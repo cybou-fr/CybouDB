@@ -163,13 +163,28 @@ sql_select_open:
     mov [r12 + SEL_LOOKUP_LO], rax
     mov rax, [r10 + PLAN_INDEX_HI]
     mov [r12 + SEL_LOOKUP_HI], rax
+    ; A plan outlives the objects it named. It is prepared once and stepped
+    ; again afterwards, and between two steps an index can be dropped and its
+    ; id handed to something else. So what is checked here is not that the id
+    ; resolves but that what it resolves to is still this table's index over
+    ; the column the predicate is about - and when it is not, the plan reads
+    ; the table. An access path that has gone is not an empty one, and
+    ; answering no rows because the tree went missing is a wrong answer rather
+    ; than a slow one.
     mov ARG1, [r12 + SEL_DB]
     mov ARG2, [r10 + PLAN_INDEX_ID]
     call db_catalog_page
     test rax, rax
-    jz .lookup_empty
+    jz .lookup_gone
     cmp dword [rax + CAT_TYPE], CAT_INDEX
-    jne .lookup_empty
+    jne .lookup_gone
+    mov r10, [r12 + SEL_PLAN]
+    mov rdx, [r10 + PLAN_TABLE_ID]
+    cmp [rax + IDX_TABLE], rdx
+    jne .lookup_gone                    ; an id another table's index now has
+    mov ecx, [rax + IDX_COLUMN]
+    cmp rcx, [r10 + PLAN_INDEX_COL]
+    jne .lookup_gone                    ; or another column's
     ; The root goes in a register no argument aliases: ARG1 is RCX on one of
     ; the two ABIs, and loading the context would take the root with it.
     mov r11, [rax + IDX_ROOT]
@@ -241,6 +256,11 @@ sql_select_open:
     mov qword [r12 + SEL_LOOKUP], 1     ; seek before the next batch
     mov qword [r12 + SEL_LOOKUP_ROW], -2
     mov qword [r12 + SEL_LOOKUP_MASK], 0
+    jmp .lookup_ready
+.lookup_gone:
+    ; Not counted as a lookup, because none happened: the plan asked for a tree
+    ; that is not there and read the table instead.
+    mov qword [r12 + SEL_LOOKUP], 0
     jmp .lookup_ready
 .lookup_empty:
     inc qword [rel index_lookups]

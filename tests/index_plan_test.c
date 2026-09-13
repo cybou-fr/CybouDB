@@ -151,6 +151,36 @@ int main(int argc, char **argv) {
     check("sends the query back to the scan",
           lookups_for("SELECT id FROM p WHERE id = 4") == 0);
 
+    /* A prepared plan outlives the index it chose. The roadmap already says a
+       statement bound before an index existed keeps scanning until it is
+       prepared again, which is slow and not wrong. The other direction is the
+       one that would be wrong: a plan holding PLAN_INDEX_ID for an index that
+       has since been dropped must read the table, not decide the table is
+       empty because the tree it wanted is gone. */
+    {
+        cyboudb_stmt *st = NULL;
+        int rows_before = 0, rows_after = 0;
+        check("an index to prepare against", cyboudb_exec(db,
+              "CREATE UNIQUE INDEX p_live ON p (id)") == CybouDB_OK);
+        check("a prepared statement that chose it",
+              cyboudb_prepare(db, "SELECT id FROM p WHERE id = 2", &st)
+              == CybouDB_OK && st != NULL);
+        while (st && cyboudb_step(st) == CybouDB_ROW) rows_before++;
+        check("which finds the row", rows_before == 1);
+        check("reset", st && cyboudb_reset(st) == CybouDB_OK);
+        check("the index goes away underneath it",
+              cyboudb_exec(db, "DROP INDEX p_live") == CybouDB_OK);
+        {
+            unsigned long long looked = index_lookups;
+            while (st && cyboudb_step(st) == CybouDB_ROW) rows_after++;
+            check("and the same statement still finds the row",
+                  rows_after == rows_before);
+            check("by reading the table, not by reaching for a tree that is gone",
+                  index_lookups == looked);
+        }
+        check("finalize", st && cyboudb_finalize(st) == CybouDB_OK);
+    }
+
     check("tidy up", cyboudb_exec(db, "DROP TABLE p") == CybouDB_OK);
     check("close", cyboudb_close(db) == CybouDB_OK);
 

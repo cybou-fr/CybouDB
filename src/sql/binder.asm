@@ -2760,6 +2760,8 @@ plan_index_eq:
     mov r10, [rbp - 16]
     mov rax, [rbp - 40]
     mov [r10 + PLAN_INDEX_ID], rax
+    mov rax, [r11 + BEXPR_COL_IDX]
+    mov [r10 + PLAN_INDEX_COL], rax
     mov rax, [rbp - 48]
     mov [r10 + PLAN_INDEX_LO], rax
     mov rax, [rbp - 56]
