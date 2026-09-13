@@ -67,7 +67,13 @@ del /q "%OUT%\smoke.cdb" >nul 2>&1
 
 echo [pack] %NAME%.zip
 powershell -NoProfile -Command "Compress-Archive -Path '%STAGE%' -DestinationPath '%OUT%\%NAME%.zip' -Force" || exit /b 1
-powershell -NoProfile -Command "$h=(Get-FileHash -Algorithm SHA256 '%OUT%\%NAME%.zip').Hash.ToLower(); Set-Content -Encoding ascii '%OUT%\%NAME%.zip.sha256' \"$h  %NAME%.zip\"" || exit /b 1
+rem The line ends with LF, not CRLF. `sha256sum -c` treats everything up to
+rem the newline as the file name, so a CR lands inside it and the check
+rem fails looking for a file whose name ends in a carriage return - which
+rem is what the first upload of the 0.5.0-preview.1 SHA256SUMS did. The
+rem sums were right; only verifying them was broken. WriteAllText also
+rem spares us the escaped quotes Set-Content needed.
+powershell -NoProfile -Command "$h=(Get-FileHash -Algorithm SHA256 '%OUT%\%NAME%.zip').Hash.ToLower(); [IO.File]::WriteAllText('%OUT%\%NAME%.zip.sha256', $h + '  %NAME%.zip' + [char]10)" || exit /b 1
 
 echo.
 echo built %OUT%\%NAME%.zip
