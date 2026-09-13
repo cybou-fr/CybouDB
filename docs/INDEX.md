@@ -191,8 +191,8 @@ visit did not. Each entry is produced once, so no row is returned twice.
 That is also why a range returns its rows in a different order than the scan
 would. A query that did not ask for an order is not owed one, and the cases
 where an unstated order becomes a different answer - `LIMIT`, `ORDER BY`,
-`COUNT(*)`, vector top-K - are the cases where the planner does not reach for
-an index at all.
+vector top-K - are the cases where the planner does not reach for an index at
+all. `COUNT(*)` is not one of them: it does not care what order it counts in.
 
 ### When the tree is not worth walking
 
@@ -215,8 +215,12 @@ answered, by counting the times a plan reached for a tree.
 A NULL has no key, so an index stores nothing for it. A predicate that can
 match NULL — `IS NULL`, or anything whose result for a NULL input is not FALSE
 — cannot be answered by the index, and the planner must fall back to a scan.
-This is why the index is an access path and not a row count: `COUNT(*)` may
-never be answered from the tree.
+This is why the index is an access path and not a row count. A `COUNT(*)` with
+an equality or a range over an indexed column does read through the tree, but
+it counts the rows the tree pointed at after the predicate and the dead-row
+mask have run over them - never a subtree size, and never `IDX_ROWS`. Those
+say how many entries the tree holds, which is not how many rows a query
+matches.
 
 ## What a row id means, and when it stops meaning it
 

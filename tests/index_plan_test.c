@@ -81,8 +81,10 @@ int main(int argc, char **argv) {
           lookups_for("SELECT id FROM p WHERE w = 2") == 0);
     check("so does an inequality",
           lookups_for("SELECT id FROM p WHERE id <> 2") == 0);
-    check("so does a COUNT(*), which the tree cannot answer",
-          lookups_for("SELECT COUNT(*) FROM p WHERE id = 3") == 0);
+    check("a COUNT(*) is looked up, because it does not care about order",
+          lookups_for("SELECT COUNT(*) FROM p WHERE id = 3") == 1);
+    check("and counts zero for a key that is absent",
+          lookups_for("SELECT COUNT(*) FROM p WHERE id = 99") == 1);
     /* ORDER BY is not asserted here: the pull cursor this ABI steps does not
        sort, so the statement fails before a plan choice could be observed.
        The planner refuses the index for it all the same, which the CLI

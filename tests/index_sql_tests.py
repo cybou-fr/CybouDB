@@ -598,6 +598,29 @@ def main():
         check("in a file that checks out", r.returncode == 0 and
               "Status:          OK" in r.stdout, r.stdout)
 
+        # --- COUNT(*) reads through one too ----------------------------------
+        # It was refused an index along with LIMIT, ORDER BY and vector top-K,
+        # which are refused because the order a lookup returns rows in becomes
+        # a different answer there. Counting does not care what order it counts
+        # in. What it does care about is still answering one row when the tree
+        # holds nothing at all.
+        same = True
+        detail = ""
+        for sql in ("SELECT COUNT(*) FROM t WHERE g = 0",
+                    "SELECT COUNT(*) FROM t WHERE g = 3",
+                    "SELECT COUNT(*) FROM t WHERE g = 99",
+                    "SELECT COUNT(*) FROM t WHERE g > 4",
+                    "SELECT COUNT(*) FROM t WHERE g < 0",
+                    "SELECT COUNT(*) FROM t"):
+            a = query(sql + ";", many).stdout
+            b = query(sql + ";", many_plain).stdout
+            if a != b:
+                same = False
+                detail = f"{sql}: {a!r} vs {b!r}"
+                break
+        check("a COUNT(*) through an index counts what the scan counts",
+              same, detail)
+
         # --- ranges ----------------------------------------------------------
         # A range names several keys, and their rows are scattered through the
         # table rather than ascending, so the walk enters a group once per run

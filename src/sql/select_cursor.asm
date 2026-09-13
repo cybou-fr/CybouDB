@@ -245,7 +245,11 @@ sql_select_open:
 .lookup_empty:
     inc qword [rel index_lookups]
     mov qword [r12 + SEL_LOOKUP], 0
-    mov qword [r12 + SEL_DONE], 1       ; the tree says there is nothing to read
+    ; The tree says there is nothing to read. Finishing the scan rather than
+    ; declaring the cursor done is what lets a COUNT(*) still answer zero:
+    ; the count is emitted where a scan runs out, not where a cursor stops.
+    mov rax, [r12 + SEL_SCAN + SCAN_ROWS]
+    mov [r12 + SEL_SCAN + SCAN_NEXT], rax
 .lookup_ready:
     xor eax, eax
 .open_exit:
@@ -343,12 +347,30 @@ sql_select_next:
     mov     r11, [r12 + SEL_DB]
     test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_TOMBSTONES
     jnz     .read_batch
+    ; And it counts rows a lookup never named, which is every row of the leaf
+    ; except the ones the walk pointed at.
+    cmp     qword [r12 + SEL_LOOKUP], 0
+    jne     .read_batch
     mov     rax, [r12 + SEL_LEAF_END]
     sub     rax, [r12 + SEL_SCAN + SCAN_NEXT]
     add     [r12 + SEL_COUNT], rax
 .skip_leaf:
     mov     rax, [r12 + SEL_LEAF_END]
     mov     [r12 + SEL_SCAN + SCAN_NEXT], rax
+    ; A lookup that landed in a leaf the zone map rejects has nothing to
+    ; deliver from it, and going on to the next leaf would apply this visit's
+    ; lane mask to a batch it does not describe. The walk is asked again, and
+    ; an entry inside the leaf just skipped is dropped rather than seeking
+    ; back into it. Reaching here at all means an entry naming a row whose key
+    ; is outside its leaf's zone, which is a stale entry - it costs a page
+    ; read, which is what an index is allowed to cost when it is wrong.
+    cmp     qword [r12 + SEL_LOOKUP], 0
+    je      .scan_loop
+    mov     qword [r12 + SEL_LOOKUP], 1
+    mov     rdx, [r12 + SEL_LOOKUP_ROW]
+    cmp     rdx, rax
+    jae     .scan_loop
+    mov     qword [r12 + SEL_LOOKUP_ROW], -2
     jmp     .scan_loop
 .projection_only:
     mov     rax, [r12 + SEL_PROJECTION]
@@ -434,8 +456,12 @@ sql_select_next:
     mov     qword [r12 + SEL_LOOKUP_ROW], -2
     jmp     .lookup_pull
 .lookup_spent:
-    mov     qword [r12 + SEL_DONE], 1
-    jmp     .done
+    ; The walk is finished, so the scan is. Through .scan_finished rather than
+    ; straight to done, because that is where a COUNT(*) hands back its row.
+    mov     rax, [r12 + SEL_SCAN + SCAN_ROWS]
+    mov     [r12 + SEL_SCAN + SCAN_NEXT], rax
+    mov     qword [r12 + SEL_LOOKUP], 0
+    jmp     .scan_finished
 
 .read_batch:
     ; A lookup reads the batch its rows are in and then asks the tree again,

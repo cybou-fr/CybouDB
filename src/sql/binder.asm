@@ -2397,13 +2397,15 @@ sql_bind:
     mov     qword [r10 + PLAN_DATA4], 0
 
 .select_done:
-    ; An ORDER BY, a LIMIT or a COUNT(*) all read the rows in a way this
-    ; lookup does not produce, so the index is only chosen for a plain SELECT
-    ; with a predicate.
+    ; A lookup returns the rows of a range in key order rather than in row
+    ; order. A query that did not ask for an order is not owed one, but an
+    ; ORDER BY, a LIMIT and a vector top-K each turn an unstated order into a
+    ; different answer, so those keep the scan. A COUNT(*) does not care what
+    ; order it counts in.
     mov     r10, [rbp - 48]
     mov     qword [r10 + PLAN_INDEX_ID], 0
     mov     rax, [r10 + PLAN_FLAGS]
-    test    rax, PLAN_FLAG_COUNT_STAR | PLAN_FLAG_LIMIT | PLAN_FLAG_ORDER | PLAN_FLAG_VECTOR_TOPK
+    test    rax, PLAN_FLAG_LIMIT | PLAN_FLAG_ORDER | PLAN_FLAG_VECTOR_TOPK
     jnz     .index_not_chosen
     cmp     qword [r10 + PLAN_JOIN_TYPE], 0
     jne     .index_not_chosen

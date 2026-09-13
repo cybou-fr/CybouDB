@@ -785,10 +785,14 @@ says where each thing stands:
   worth fixing and is not a wrong answer. Separately, the ABI's pull cursor
   cannot ORDER BY at all, which is older than any of this.
 
-Also open: TEXT keys, multi-column keys, and `COUNT(*)` - the planner refuses
-an index for it along with LIMIT, ORDER BY and vector top-K, because those are
-the shapes where the order a lookup returns rows in becomes a different answer.
-`COUNT(*)` is not one of them and is refused only because it shares the test.
+`COUNT(*)` reads through an index too. It had been refused one along with
+LIMIT, ORDER BY and vector top-K - those are refused because the order a lookup
+returns rows in becomes a different answer there, and counting does not care
+what order it counts in. Making it work needed the empty lookup to finish the
+scan rather than declare the cursor done, because a count is handed back where
+a scan runs out.
+
+Also open: TEXT keys and multi-column keys.
 
 ---
 
