@@ -159,12 +159,22 @@ extent chain, owned by the queue id, exactly as a TEXT cell is owned by its
 table - see [VARLEN.md](VARLEN.md). The queue does not need a second way to
 store bytes and does not invent one.
 
+Taking such a message retires the chain, and that has to happen at the take
+rather than when the segment goes: a segment is retired once and it carried
+sixty-two messages. A queue that is filled and drained forever would otherwise
+spend pages it never gave back.
+
 A slot whose position is outside `[head, tail)` is not read and is not
-required to be anything. Taking a message does not clear its slot: the slot
-is unreachable the moment `head` passes it, and clearing it would mean writing
-a page the take did not otherwise have to touch. What it does mean is that a
+required to be anything. Taking a message does not clear its slot: the slot is
+unreachable the moment `head` passes it, and clearing it would mean writing a
+page the take did not otherwise have to touch. What it does mean is that a
 retired segment page may carry payload bytes into the free list, which is the
 same thing a retired table leaf does.
+
+A take copies the bytes out before it moves the head, because the segment they
+are in may be retired by the same call. Handing back a pointer into a page
+that is about to leave the generation is how a zero-copy read stops being a
+read.
 
 ## What a commit proves
 

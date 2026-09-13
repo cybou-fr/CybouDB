@@ -874,8 +874,20 @@ rdx` handing the superblock pointer on as the page. The rule the index work
 arrived at - put call data in a register no argument aliases before touching
 the argument registers - is the fix, and it has now been the fix six times.
 
-Not done: a payload longer than a slot, which is the varlen extent chain the
-format already reserves a flag for. `DEQUEUE` through the C ABI, which is
+A payload longer than a slot is a varlen extent chain owned by the queue's id -
+the machinery a TEXT cell already needed, rather than a second way to store
+bytes. A take retires the chain, and it has to happen there rather than when
+the segment goes: a segment is retired once and it carried sixty-two messages,
+so a queue filled and drained forever would otherwise spend pages it never gave
+back. The test for that is a file too small to survive the leak - a hundred
+round trips of a two-page message through three hundred pages - because a
+high-water mark cannot show a page coming back and running out of them can.
+
+What limits a message now is the front end, not the queue: the command line
+refuses a statement past its own length, and the console past its line. Both
+are older than queues.
+
+Not done: `DEQUEUE` through the C ABI, which is
 refused rather than run: it answers with the message, and that ABI has no way
 to hand back a value that did not come out of a batch view, so running it would
 take a message off the queue and drop it. The CLI and the console can. Dropping

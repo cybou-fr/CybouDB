@@ -15,9 +15,9 @@ extern crc32c
 extern db_bitmap_candidate_payload, db_bitmap_is_fresh, db_bitmap_retire
 extern db_cow_alloc_page, db_cow_copy_page
 extern db_catalog_page, db_catalog_edit, db_catalog_seal
-extern db_var_validate_chain
+extern db_var_validate_chain, db_var_write_chain, db_var_read_chain
 global queue_page_valid, db_queue_seg_addr, queue_seg_seal
-global db_queue_push, db_queue_pop, db_queue_depth
+global db_queue_push, db_queue_pop, db_queue_peek, db_queue_depth
 
 section .data
 ; Segment pages this process looked at while validating. A queue that is
@@ -352,7 +352,7 @@ db_queue_depth:
 ;               [rbp-104]=segment address
 ; -----------------------------------------------------------------------------
 db_queue_push:
-    FRAME_BEGIN 128, 0
+    FRAME_BEGIN 192, 1
     mov [rbp - 8], ARG1
     mov [rbp - 16], ARG2
     mov [rbp - 24], ARG3
@@ -360,8 +360,9 @@ db_queue_push:
     mov r10, ARG1
     test qword [r10 + DB_FEATURES], CybouDB_FEATURE_QUEUE
     jz .p_state
-    cmp qword [rbp - 32], QMSG_INLINE_MAX
-    ja .p_value                     ; until an extent carries a message
+    mov rax, [rbp - 32]
+    shr rax, 32
+    jnz .p_value                    ; a length the slot's field cannot hold
 
     mov ARG1, [rbp - 8]
     mov ARG2, [rbp - 16]
@@ -459,6 +460,7 @@ db_queue_push:
     shl rax, 6                      ; QUEUE_SLOT_SIZE
     add rax, [rbp - 104]
     add rax, QSEG_SLOTS
+    mov [rbp - 112], rax            ; the slot
     mov r8, rax
     mov rcx, [rbp - 32]
     mov [r8 + QMSG_LENGTH], ecx
@@ -467,6 +469,8 @@ db_queue_push:
     mov dword [r8 + QMSG_RESERVED32], 0
     mov qword [r8 + QMSG_LEASE_UNTIL], 0
     mov qword [r8 + QMSG_LEASE_TOKEN], 0
+    cmp rcx, QMSG_INLINE_MAX
+    ja .p_extent
     mov r9, [rbp - 24]
     xor edx, edx
 .p_byte:
@@ -485,6 +489,34 @@ db_queue_push:
     mov byte [r8 + QMSG_PAYLOAD + rdx], 0
     inc rdx
     jmp .p_padded
+
+.p_extent:
+    ; Longer than a slot holds, so the bytes go where a TEXT cell's go: a
+    ; chain of extent pages owned by the queue's id. The slot keeps the length
+    ; and the first page, which is the same descriptor a PAX cell keeps.
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 24]
+    mov ARG3, [rbp - 32]
+    mov ARG4, [rbp - 16]
+    lea rax, [rbp - 128]
+    PASS_ARG5 rax
+    call db_var_write_chain
+    test eax, eax
+    jnz .p_done
+    mov r8, [rbp - 112]
+    mov dword [r8 + QMSG_FLAGS], QMSG_FLAG_EXTENT
+    mov rax, [rbp - 128 + VAR_CELL_ROOT]
+    mov [r8 + QMSG_EXTENT], rax
+    ; And the rest of the payload area is zero, as every tail here is: a slot
+    ; naming an extent keeps no bytes of its own.
+    mov edx, 8
+.p_extent_pad:
+    cmp rdx, QMSG_INLINE_MAX
+    jae .p_sealed
+    mov byte [r8 + QMSG_PAYLOAD + rdx], 0
+    inc rdx
+    jmp .p_extent_pad
+
 .p_sealed:
     mov ARG1, [rbp - 104]
     mov ARG2, [rbp - 8]
@@ -543,14 +575,18 @@ db_queue_push:
 ;               [rbp-64]=first segment, [rbp-72]=queue page, [rbp-80]=slot,
 ;               [rbp-88]=entry index, [rbp-96]=segment address,
 ;               [rbp-104]=length, [rbp-112]=entries retired,
-;               [rbp-120]=entries kept, [rbp-128]=the loop index
+;               [rbp-120]=entries kept, [rbp-128]=the loop index,
+;               [rbp-136]=the slot, [rbp-144]=extent descriptor,
+;               [rbp-152]=what the caller buffer holds
 ; -----------------------------------------------------------------------------
 db_queue_pop:
-    FRAME_BEGIN 160, 0
+    FRAME_BEGIN 224, 2
     mov [rbp - 8], ARG1
     mov [rbp - 16], ARG2
     mov [rbp - 24], ARG3
     mov [rbp - 32], ARG4
+    mov rax, IN_ARG5
+    mov [rbp - 152], rax            ; what the caller's buffer holds
     mov r10, ARG1
     test qword [r10 + DB_FEATURES], CybouDB_FEATURE_QUEUE
     jz .o_state
@@ -598,9 +634,14 @@ db_queue_pop:
     shl rdx, 6
     lea r8, [rax + QSEG_SLOTS + rdx]
     mov ecx, [r8 + QMSG_LENGTH]
+    mov [rbp - 104], rcx
+    mov [rbp - 136], r8             ; the slot, for the flags below
+    mov ecx, [r8 + QMSG_FLAGS]
+    test ecx, QMSG_FLAG_EXTENT
+    jnz .o_extent
+    mov rcx, [rbp - 104]
     cmp rcx, QMSG_INLINE_MAX
     ja .o_state                     ; a slot cannot hold that, so this is not one
-    mov [rbp - 104], rcx
     mov r9, [rbp - 24]
     xor edx, edx
 .o_byte:
@@ -610,6 +651,28 @@ db_queue_pop:
     mov [r9 + rdx], al
     inc rdx
     jmp .o_byte
+
+.o_extent:
+    ; The chain, validated before a byte of it is copied - which is what
+    ; db_var_read_chain is for, and why the queue does not read pages itself.
+    mov r8, [rbp - 136]
+    mov rax, [r8 + QMSG_EXTENT]
+    mov [rbp - 144 + VAR_CELL_ROOT], rax
+    mov rax, [rbp - 104]
+    mov [rbp - 144 + VAR_CELL_LENGTH], rax
+    mov r10, [rbp - 8]
+    mov rax, [rbp - 152]
+    PASS_ARG6 rax                   ; capacity: what the caller said it has
+    mov rax, [rbp - 24]
+    PASS_ARG5 rax
+    mov ARG4, [rbp - 16]
+    lea ARG3, [rbp - 144]
+    mov ARG2, [r10 + DB_SB_PTR]
+    mov ARG1, r10
+    call db_var_read_chain
+    test eax, eax
+    jnz .o_done
+
 .o_copied:
     mov r11, [rbp - 32]
     mov rax, [rbp - 104]
@@ -687,6 +750,18 @@ db_queue_pop:
     inc rax
     jmp .o_clear
 
+    ; The chain the message named is nobody's now. Retiring it here rather
+    ; than leaving it to the segment's retirement is the difference between a
+    ; queue that reclaims what it read and one that grows forever: a segment
+    ; is retired once, and it carried sixty-two messages.
+    mov r8, [rbp - 136]
+    mov ecx, [r8 + QMSG_FLAGS]
+    test ecx, QMSG_FLAG_EXTENT
+    jz .o_publish
+    mov ARG1, [rbp - 8]
+    mov ARG2, [r8 + QMSG_EXTENT]
+    call queue_retire_chain
+
 .o_publish:
     mov r10, [rbp - 72]
     mov rax, [rbp - 40]
@@ -708,5 +783,92 @@ db_queue_pop:
 .o_state:
     mov eax, CybouDB_E_STATE
 .o_done:
+    FRAME_END
+    ret
+
+; queue_retire_chain(ARG1 = ctx, ARG2 = first extent page): hand the pages
+; back. The walk is bounded by the chain it is given and stops at a page that
+; is not one, because a chain that has already been damaged is not a reason to
+; follow it further.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=page, [rbp-24]=address
+queue_retire_chain:
+    FRAME_BEGIN 32, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+.r_page:
+    cmp qword [rbp - 16], 0
+    je .r_done
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    call db_queue_seg_addr
+    mov [rbp - 24], rax
+    cmp dword [rax + VAR_MAGIC], VAR_MAGIC_VALUE
+    jne .r_done
+    mov r9, [rax + VAR_NEXT]
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov [rbp - 16], r9
+    call db_bitmap_retire
+    jmp .r_page
+.r_done:
+    xor eax, eax
+    FRAME_END
+    ret
+
+; db_queue_peek(ARG1 = ctx, ARG2 = queue id, ARG3 = out length) -> RAX: 0 when
+; a message is waiting, CybouDB_E_NOTFOUND when the queue is empty.
+;
+; How many bytes the next take needs, without taking it. A caller that has to
+; provide the buffer has to be told how big, and asking is cheaper than
+; guessing a maximum that a message longer than it would then be unable to
+; leave the queue through.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=id, [rbp-24]=out
+db_queue_peek:
+    FRAME_BEGIN 48, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_QUEUE
+    jz .k_state
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    call db_catalog_page
+    test rax, rax
+    jz .k_state
+    cmp dword [rax + CAT_TYPE], CAT_QUEUE
+    jne .k_state
+    mov rdx, [rax + Q_HEAD]
+    cmp rdx, [rax + Q_TAIL]
+    je .k_empty
+    mov rcx, [rax + Q_FIRST_SEG]
+    mov r11, rax
+    mov rax, rdx
+    xor edx, edx
+    mov r9, QUEUE_SEG_SLOTS
+    div r9
+    sub rax, rcx
+    mov r9, [r11 + Q_ENTRIES + rax * 8]
+    mov [rbp - 32], rdx             ; the slot inside the segment
+    mov ARG1, [rbp - 8]
+    mov ARG2, r9
+    call db_queue_seg_addr
+    mov rdx, [rbp - 32]
+    shl rdx, 6
+    lea r8, [rax + QSEG_SLOTS + rdx]
+    mov ecx, [r8 + QMSG_LENGTH]
+    mov r11, [rbp - 24]
+    mov [r11], rcx
+    xor eax, eax
+    FRAME_END
+    ret
+.k_empty:
+    mov eax, CybouDB_E_NOTFOUND
+    FRAME_END
+    ret
+.k_state:
+    mov eax, CybouDB_E_STATE
     FRAME_END
     ret

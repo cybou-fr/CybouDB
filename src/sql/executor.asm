@@ -52,7 +52,7 @@ default rel
 extern db_catalog_put, db_catalog_drop, db_catalog_truncate_data, db_pax_insert, db_pax_update_one, db_pax_capacity, db_commit, db_rollback
 extern db_pax_mark_dead, db_pax_dead_total
 extern db_catalog_put_index, db_catalog_set_index_root, db_index_of_table
-extern db_catalog_put_queue, db_queue_push, db_queue_pop
+extern db_catalog_put_queue, db_queue_push, db_queue_pop, db_queue_peek
 extern db_catalog_page
 extern db_index_retire_tree
 extern db_index_insert, db_index_insert_unique, db_index_delete
@@ -1247,14 +1247,32 @@ sql_execute_batch:
 .exec_dequeue:
     mov     r10, [rbp - 16]
     mov     qword [r10 + PLAN_DATA3], 0
+    ; How much room the message needs, before taking it. A queue holds bytes
+    ; and not a column, so there is no width to read off a schema - asking is
+    ; the only way a caller can size a buffer that a longer message would not
+    ; simply be unable to leave the queue through.
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    lea     ARG3, [rbp - 1840]
+    call    db_queue_peek
+    cmp     eax, CybouDB_E_NOTFOUND
+    je      .dequeue_empty
+    test    eax, eax
+    jnz     .storage_done
+    mov     ARG2, [rbp - 1840]
+    test    ARG2, ARG2
+    jnz     .dequeue_sized
+    mov     ARG2, 1                 ; a message of no bytes still needs an address
+.dequeue_sized:
     mov     ARG1, [rbp - 24]
-    mov     ARG2, QMSG_INLINE_MAX
     call    sql_arena_alloc
     test    rax, rax
     jz      .dequeue_oom
     mov     r10, [rbp - 16]
     mov     [r10 + PLAN_DATA1], rax
     mov     ARG3, rax
+    mov     rcx, [rbp - 1840]
+    PASS_ARG5 rcx
     mov     ARG1, [rbp - 8]
     mov     ARG2, [r10 + PLAN_TABLE_ID]
     lea     ARG4, [r10 + PLAN_DATA2]

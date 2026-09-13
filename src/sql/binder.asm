@@ -36,7 +36,7 @@ err_index_missing:   db "index not found in catalog", 0
 err_no_queue:        db "database was not created with queue support", 0
 err_queue_missing:   db "queue not found in catalog", 0
 err_queue_payload:   db "a queue message is TEXT or BLOB", 0
-err_queue_long:      db "message longer than a slot holds; extents are not implemented", 0
+err_queue_long:      db "message longer than four gigabytes", 0
 err_join_key_type: db "JOIN keys currently require INT32 or INT64", 0
 err_order_pending: db "ORDER BY execution is not implemented yet", 0
 err_varlen_pending: db "TEXT/BLOB storage extents are not implemented yet", 0
@@ -1937,8 +1937,9 @@ sql_bind:
     jne     .queue_bad_payload
 .enqueue_bytes:
     mov     rcx, [r9 + EXPR_LIT_LEN]
-    cmp     rcx, QMSG_INLINE_MAX
-    ja      .queue_too_long             ; until extents carry a message
+    mov     rax, rcx
+    shr     rax, 32
+    jnz     .queue_too_long             ; a length the slot cannot record
     mov     r10, [rbp - 48]
     mov     rdx, [rbp - 56]
     mov     [r10 + PLAN_TABLE_ID], rdx
