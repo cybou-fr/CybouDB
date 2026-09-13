@@ -12,7 +12,7 @@ neither, and recovery brings back a consistent pair rather than a message
 whose cause was rolled back.
 
 This document fixes the decisions before any of it is written. What is
-implemented against it is stated in [ROADMAP.md](../ROADMAP.md).
+implemented against it is stated in [docs/HISTORY.md](HISTORY.md).
 
 ## Scope of version 1
 

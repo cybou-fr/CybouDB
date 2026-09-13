@@ -9,7 +9,7 @@ reclaims what the bits leave behind; which of the two a statement uses is
 decided per table, and *Which strategy a DELETE picks* below says how.
 
 This document fixes the on-disk decisions. What is implemented against it is
-stated in [ROADMAP.md](../ROADMAP.md); this file describes the format, not the
+stated in [docs/HISTORY.md](HISTORY.md); this file describes the format, not the
 state of the code.
 
 ## Where the bits live

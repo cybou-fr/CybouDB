@@ -7,7 +7,7 @@ That difference is the whole of it, and it is worth being exact about because
 the two are otherwise so alike that collapsing them looks like a saving. It is
 not one, and this document says why before anything is written.
 
-What is implemented against it is stated in [ROADMAP.md](../ROADMAP.md).
+What is implemented against it is stated in [docs/HISTORY.md](HISTORY.md).
 
 ## Scope of version 1
 

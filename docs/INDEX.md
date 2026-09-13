@@ -6,7 +6,7 @@ index closes, and closing it is what stops "general-purpose database" from
 being a claim the storage layer cannot back.
 
 This document fixes the decisions before any of it is written. What is
-implemented against it is stated in [ROADMAP.md](../ROADMAP.md).
+implemented against it is stated in [docs/HISTORY.md](HISTORY.md).
 
 ## Scope of version 1
 

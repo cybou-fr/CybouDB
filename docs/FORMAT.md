@@ -223,11 +223,35 @@ things a change would have to break the version number to alter:
 
 ## Compatibility promise
 
-Within the 0.5.x series: a file written by any 0.5.x build opens in any later
-0.5.x build, and the format version stays 1. New capabilities arrive as new
-`flags_incompat` bits, which means a *newer* file may be refused by an *older*
-build — that refusal is the promise working, not a break of it.
+**Any future build of CybouDB that claims support for on-disk format v1 must
+read every file written by an earlier released format-v1 build.** Not only
+within 0.5.x, and not only up to 1.0: the promise is attached to the format
+version, not to the product version.
 
-No promise is made yet across the 0.5 → 0.6 boundary or up to 1.0. Stability of
-the format across major versions is a 1.0 commitment, and claiming it earlier
-would be claiming something that has not been earned.
+The promise runs one way. New capabilities arrive as new `flags_incompat` bits,
+so a *newer* file may be refused by an *older* build — that refusal is the
+promise working, not a break of it. A reader that meets a bit it does not know
+is required to refuse the file rather than guess at it.
+
+If a change ever cannot be made under this promise, the answer is not to break
+it quietly. The answer is format v2, announced on its own, with a migration
+path, and a v1 reader that keeps working:
+
+```text
+format v1
+   ↓
+never broken
+   ↓
+something v1 cannot express
+   ↓
+format v2 + migration
+```
+
+This is enforced rather than asserted. `tests/compat/<version>/` holds databases
+frozen by each released build; `tests/compat_tests.py` runs `cyboudb check` over
+each one, reads every cell back, and then writes to a copy, because a file you
+can only read is not compatible in any useful sense. The fixtures are never
+regenerated: rebuilt with the current engine they would prove only that it can
+read itself. A release that cannot read them does not ship.
+
+The first frozen set is `tests/compat/v0.5.0-preview.1/`.

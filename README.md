@@ -254,7 +254,10 @@ The suites and what each one covers are listed in
 * **[ARCHITECTURE.md](ARCHITECTURE.md)** — the design: layering, the on-disk
   format, the commit protocol and the allocator.
 * **[CHANGELOG.md](CHANGELOG.md)** — what is in each release.
-* **[ROADMAP.md](ROADMAP.md)** — the phases, and what is actually done.
+* **[ROADMAP.md](ROADMAP.md)** — the releases ahead and the guarantee each
+  one adds.
+* **[docs/HISTORY.md](docs/HISTORY.md)** — how the engine was built, phase by
+  phase, including the experiments that failed.
 * **[docs/FORMAT.md](docs/FORMAT.md)** — the on-disk format, version 1, and the
   compatibility promise that goes with it.
 * **[docs/TRANSACTIONS.md](docs/TRANSACTIONS.md)** — what a transaction is, the

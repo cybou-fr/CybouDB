@@ -20,12 +20,15 @@ Concretely: `INDEX` (8192), `QUEUE` (16384) and `STREAM` (32768) are bits that
 did not exist in every earlier build, so a database using them does not open in
 one that predates them. See
 [docs/FORMAT.md](docs/FORMAT.md#compatibility-promise), which is normative; this
-file only restates it.
+file only restates it. The promise is attached to the format version rather than
+the product version, so it does not lapse at 0.6 or at 1.0, and
+`tests/compat_tests.py` holds a release to it against databases frozen by every
+earlier one.
 
 A change to the format version itself would be announced on its own, with a
 migration path, and is not something a minor release does quietly.
 
-## [0.5.0-preview.1] - unreleased
+## [0.5.0-preview.1] - 2026-09-14
 
 The first release. What follows is what exists rather than what changed, since
 there is nothing before it to have changed from.
@@ -71,11 +74,13 @@ there is nothing before it to have changed from.
   `cyboudb_create` makes the canonical profile - everything `create-large` has
   plus the per-row tombstone reservation, which can only be made when the file
   is created and is what lets `DELETE` mark rows instead of rewriting the table.
-- **Command line**: `create`, `query`, `info`, `check`, `alloc`, `free`,
-  `version`. `cyboudb create` and `cyboudb_create` make the same canonical
-  profile. The creators for each stage the format grew through still exist for
-  the test suites - `create-legacy` and the rest - and are not in `--help`,
-  because choosing among them is choosing which features to do without.
+- **Command line**: `create`, `query`, `console`, `info`, `check`, `version` -
+  that is the whole user-facing surface. `cyboudb create` and `cyboudb_create`
+  make the same canonical profile. The creators for each stage the format grew
+  through still exist for the test suites - `create-legacy` and the rest - and
+  so do `alloc` and `free`, which are the pre-COW allocator's controls; none of
+  them are in `--help`, because choosing among them is choosing which features
+  to do without.
 - **Interactive console** with `.schema`, `.tables`, `.indexes`, `.queues`,
   `.streams` and piped-script support.
 
