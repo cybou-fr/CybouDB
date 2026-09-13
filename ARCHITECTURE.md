@@ -105,6 +105,41 @@ which would break that alignment.
 
 ---
 
+## One implementation of what a statement means
+
+A statement can arrive three ways: `cyboudb query` on the command line, the
+interactive console, and `cyboudb_prepare`/`cyboudb_step` in the C ABI. Each
+of those is a caller. None of them is allowed to be a second implementation.
+
+> **Parsing and binding may have several front ends. What a statement *does*
+> lives in exactly one place: `sql_execute_batch`.**
+
+This is a rule and not a preference, because breaking it has a signature: the
+engine keeps working, and works *differently* depending on who asked. Three
+times in this project a second copy of a statement's behaviour cost a bug that
+no test caught until something went looking:
+
+* an `INSERT` through the C ABI wrote rows and did not update the indexes over
+  them, because the ABI had its own insert path;
+* `DROP TABLE` through the same path left the table's indexes behind it;
+* `UPDATE` was missing from the ABI's dispatch entirely and failed with no
+  message, while the identical statement ran from the CLI.
+
+A fourth was the same shape one layer down: an index seek was written into the
+batch executor rather than into `sql_select_open`, so the pull cursor the ABI
+steps kept scanning while the CLI used the tree. The fix each time is the
+same - move the behaviour into the shared path rather than copy it - and each
+time it was cheaper than the search that found it.
+
+What a front end is allowed to own: turning text into an AST, binding names,
+and handing back rows. What it may never own: deciding what changes on disk.
+
+The rule matters most at the moment a subsystem is new, because that is when
+a caller-specific shortcut looks smallest. Queues and streams land through
+`sql_execute_batch` for that reason and no other.
+
+---
+
 ## Storage
 
 ### Memory-mapped, without an application page buffer
