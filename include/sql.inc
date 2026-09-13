@@ -66,6 +66,7 @@
 %define TOK_QUEUE           88
 %define TOK_ENQUEUE         89
 %define TOK_DEQUEUE         90
+%define TOK_STREAM          91
 
 ; Types
 %define TOK_TYPE_INT32      30
@@ -133,6 +134,8 @@
 %define STMT_DROP_QUEUE     13
 %define STMT_ENQUEUE        14
 %define STMT_DEQUEUE        15
+%define STMT_CREATE_STREAM  16
+%define STMT_DROP_STREAM    17
 
 ; --- AST Statement header and statement-specific payload --------------------
 %define AST_STMT_TYPE       0           ; qword: STMT_*

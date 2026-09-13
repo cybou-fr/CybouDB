@@ -1014,8 +1014,29 @@ two that are genuinely two, which is the control that says the first two
 failed for the reason claimed rather than because any cursor at all is
 refused.
 
-Still to come: `CREATE STREAM` and `DROP STREAM`, `APPEND` and cursors,
-`READ`, `TRIM`, the C ABI.
+**Done: `CREATE STREAM` and `DROP STREAM`.** Both reach the engine through
+`sql_execute_batch`, and the create binds to the same body a `CREATE QUEUE`
+does - the page image is a zeroed page with a name at the offset both use, so
+what differs is the feature bit, the statement it answers to, and which shape
+check the catalog publishes it through.
+
+`DROP STREAM` retires the segments before the entry that names them, through
+the same walk `DROP QUEUE` uses: the two directories sit at different offsets
+and everything else about the walk is identical, so it takes the offset as an
+argument rather than a copy. A stream has no segments until something appends;
+this is written now rather than left to be remembered then.
+
+The console lists them with `.streams`, which reports each stream's depth and
+how many readers stand in it - and `.queues`, which was missing from `.help`,
+is now in it.
+
+`tests/stream_sql_tests.py` is 38 checks. The ones that earn their place are
+the type boundary: a stream and a queue have the same header, so a resolver
+going by shape rather than by type would let each drop the other and look
+right doing it. `DROP STREAM` on a queue, `DROP QUEUE` on a stream, and
+`ENQUEUE`/`DEQUEUE` against a stream are all refused by name.
+
+Still to come: `APPEND` and cursors, `READ`, `TRIM`, the C ABI.
 
 What is decided:
 

@@ -69,6 +69,7 @@ kw_unique:          db "unique", 0
 kw_queue:           db "queue", 0
 kw_enqueue:         db "enqueue", 0
 kw_dequeue:         db "dequeue", 0
+kw_stream:          db "stream", 0
 
     align 8
 kw_table_entries:
@@ -126,6 +127,7 @@ kw_table_entries:
     dq kw_queue,    5, TOK_QUEUE
     dq kw_enqueue,  7, TOK_ENQUEUE
     dq kw_dequeue,  7, TOK_DEQUEUE
+    dq kw_stream,   6, TOK_STREAM
     dq 0,          0, 0                 ; terminator
 
 section .text

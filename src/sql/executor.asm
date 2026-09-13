@@ -54,6 +54,7 @@ extern db_pax_mark_dead, db_pax_dead_total
 extern db_catalog_put_index, db_catalog_set_index_root, db_index_of_table
 extern db_catalog_put_queue, db_queue_push, db_queue_pop, db_queue_peek
 extern db_queue_retire_all
+extern db_catalog_put_stream, db_stream_retire_all
 extern db_catalog_page
 extern db_index_retire_tree
 extern db_index_insert, db_index_insert_unique, db_index_delete
@@ -584,6 +585,10 @@ sql_execute_batch:
     je      .exec_create_queue
     cmp     rax, STMT_DROP_QUEUE
     je      .exec_drop_queue
+    cmp     rax, STMT_CREATE_STREAM
+    je      .exec_create_stream
+    cmp     rax, STMT_DROP_STREAM
+    je      .exec_drop_stream
     cmp     rax, STMT_ENQUEUE
     je      .exec_enqueue
     cmp     rax, STMT_DEQUEUE
@@ -1230,6 +1235,33 @@ sql_execute_batch:
     mov     ARG2, [r10 + PLAN_TABLE_ID]
     mov     ARG3, [r10 + PLAN_DATA1]
     call    db_catalog_put_queue
+    jmp     .storage_done
+
+; The same page image, and a different shape check over it: what makes the
+; zeroed page with a name in it a stream rather than a queue is which entry
+; point the catalog publishes it through.
+.exec_create_stream:
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    mov     ARG3, [r10 + PLAN_DATA1]
+    call    db_catalog_put_stream
+    jmp     .storage_done
+
+; As with a queue, the pages it is holding go before the entry that names
+; them. A stream has none until something appends, and this is written for
+; when it does rather than left to be remembered then.
+.exec_drop_stream:
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    call    db_stream_retire_all
+    test    eax, eax
+    jnz     .storage_done
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    call    db_catalog_drop
     jmp     .storage_done
 
 .exec_enqueue:

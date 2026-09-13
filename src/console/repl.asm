@@ -54,6 +54,8 @@ str_help_text:          db "Available meta-commands:", 10
                         db "  .schema [TABLE] Show CREATE TABLE statement(s)", 10
                         db "  .tables         List all tables", 10
                         db "  .indexes [TABLE] List indexes, or one table's", 10
+                        db "  .queues         List queues and what they hold", 10
+                        db "  .streams        List streams and their readers", 10
                         db "  .quit           Exit the console", 10
                         db "  .exit           Exit the console", 10, 0
 
@@ -66,6 +68,8 @@ str_meta_schema:        db ".schema", 0
 str_meta_indexes:       db ".indexes", 0
 str_meta_queues:        db ".queues", 0
 str_queue_holding:      db " holding ", 0
+str_meta_streams:       db ".streams", 0
+str_stream_readers:     db ", read by ", 0
 str_idx_unique:         db "unique ", 0
 str_idx_on:             db " on ", 0
 str_idx_lparen:         db " (", 0
@@ -759,6 +763,15 @@ repl_handle_meta:
     test    rax, rax
     jnz     .meta_queues
 
+    ; 9. Check .streams
+    mov     ARG1, [rbp - 16]
+    mov     ARG2, [rbp - 32]
+    lea     ARG3, [str_meta_streams]
+    mov     ARG4, 8
+    call    str_eq_exact
+    test    rax, rax
+    jnz     .meta_streams
+
     ; Unknown command
     PUTS    str_err_unknown_meta
     mov     r10, [rbp - 16]
@@ -811,6 +824,13 @@ repl_handle_meta:
     ; table, so there is nothing to narrow it by.
     mov     ARG1, [rbp - 8]
     call    repl_meta_queues
+    xor     eax, eax
+    FRAME_END
+    ret
+
+.meta_streams:
+    mov     ARG1, [rbp - 8]
+    call    repl_meta_streams
     xor     eax, eax
     FRAME_END
     ret
@@ -984,11 +1004,25 @@ repl_meta_tables:
 ;               [rbp-56]=queue page, [rbp-64]=rbx
 ; -----------------------------------------------------------------------------
 repl_meta_queues:
+    mov     r11d, CAT_QUEUE
+    jmp     repl_meta_objects
+repl_meta_streams:
+    mov     r11d, CAT_STREAM
+repl_meta_objects:
     FRAME_BEGIN 80, 0
+    mov     [rbp - 72], r11             ; which of the two this listing is
     mov     [rbp - 8], ARG1
     mov     [rbp - 64], rbx
+    ; Both need the bit that defines a segment; a stream needs its own as well,
+    ; and asking for streams in a file that has none should list nothing
+    ; rather than list its queues.
     test    qword [ARG1 + DB_FEATURES], CybouDB_FEATURE_QUEUE
     jz      .q_done
+    cmp     r11d, CAT_STREAM
+    jne     .q_featured
+    test    qword [ARG1 + DB_FEATURES], CybouDB_FEATURE_STREAM
+    jz      .q_done
+.q_featured:
     mov     rax, [ARG1 + DB_ROOT]
     test    rax, rax
     jz      .q_done
@@ -1014,16 +1048,25 @@ repl_meta_queues:
     shl     rax, CybouDB_PAGE_SHIFT
     mov     r8, [rbp - 8]
     add     rax, [r8 + DB_BASE]
-    cmp     dword [rax + CAT_TYPE], CAT_QUEUE
+    mov     ecx, [rax + CAT_TYPE]
+    cmp     rcx, [rbp - 72]
     jne     .q_next
     mov     [rbp - 56], rax
-    lea     ARG1, [rax + Q_NAME]
+    lea     ARG1, [rax + Q_NAME]        ; S_NAME is the same offset
     call    puts_asciiz
     PUTS    str_queue_holding
     mov     rax, [rbp - 56]
-    mov     ARG1, [rax + Q_TAIL]
+    mov     ARG1, [rax + Q_TAIL]        ; as are S_END and S_FIRST
     sub     ARG1, [rax + Q_HEAD]
     call    put_u64
+    ; What a stream has and a queue does not: the readers standing in it.
+    cmp     qword [rbp - 72], CAT_STREAM
+    jne     .q_counted
+    PUTS    str_stream_readers
+    mov     rax, [rbp - 56]
+    mov     ARG1, [rax + S_CURSORS]
+    call    put_u64
+.q_counted:
     PUTS    str_repl_nl
 .q_next:
     inc     rbx

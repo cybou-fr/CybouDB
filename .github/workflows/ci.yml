@@ -44,6 +44,7 @@ jobs:
           python3 tests/vector_sql_tests.py ./cyboudb
           python3 tests/index_sql_tests.py ./cyboudb
           python3 tests/queue_sql_tests.py ./cyboudb
+          python3 tests/stream_sql_tests.py ./cyboudb
           python3 tests/transaction_tests.py ./cyboudb
           python3 tests/delete_tests.py ./cyboudb
           python3 tests/tombstone_tests.py ./cyboudb
@@ -157,6 +158,7 @@ jobs:
           python tests/vector_sql_tests.py ./cyboudb.exe
           python tests/index_sql_tests.py ./cyboudb.exe
           python tests/queue_sql_tests.py ./cyboudb.exe
+          python tests/stream_sql_tests.py ./cyboudb.exe
           python tests/transaction_tests.py ./cyboudb.exe
           python tests/delete_tests.py ./cyboudb.exe
           python tests/tombstone_tests.py ./cyboudb.exe

@@ -34,7 +34,10 @@ err_no_index:        db "database was not created with index support", 0
 err_index_type:      db "an index needs an INT32 or INT64 column", 0
 err_index_missing:   db "index not found in catalog", 0
 err_no_queue:        db "database was not created with queue support", 0
-err_queue_missing:   db "queue not found in catalog", 0
+err_queue_missing:   db "queue not found in catalog", 0
+err_no_stream:       db "database was not created with stream support", 0
+err_stream_missing:  db "stream not found in catalog", 0
+
 err_queue_payload:   db "a queue message is TEXT or BLOB", 0
 err_queue_long:      db "message longer than four gigabytes", 0
 err_join_key_type: db "JOIN keys currently require INT32 or INT64", 0
@@ -93,6 +96,9 @@ catalog_find_index:
     jmp     catalog_find_common
 catalog_find_queue:
     mov     r11d, CAT_QUEUE
+    jmp     catalog_find_common
+catalog_find_stream:
+    mov     r11d, CAT_STREAM
     jmp     catalog_find_common
 catalog_find_table:
     mov     r11d, CAT_SCHEMA
@@ -986,6 +992,10 @@ sql_bind:
     je      .bind_enqueue
     cmp     rax, STMT_DEQUEUE
     je      .bind_dequeue
+    cmp     rax, STMT_CREATE_STREAM
+    je      .bind_create_stream
+    cmp     rax, STMT_DROP_STREAM
+    je      .bind_drop_stream
 
     mov     eax, SQL_ERR_SYNTAX
     jmp     .binder_exit
@@ -1800,11 +1810,26 @@ sql_bind:
 ; check and the page image. It takes its id the way a table and an index do,
 ; because the three share a directory and an id space.
 .bind_create_queue:
-    mov     r10, [rbp - 48]
-    mov     qword [r10 + PLAN_TYPE], STMT_CREATE_QUEUE
     mov     r11, [rbp - 8]
     test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_QUEUE
     jz      .queue_unsupported
+    mov     eax, STMT_CREATE_QUEUE
+    jmp     .bind_create_object
+
+; A stream is created the same way and out of the same bytes: a zeroed page
+; with a name in it, at the offset a queue puts one, taking its id from the
+; sequence all five kinds share. What differs is the feature bit, the statement
+; it answers to, and which shape check the catalog applies - and not one of
+; those is in the body below.
+.bind_create_stream:
+    mov     r11, [rbp - 8]
+    test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_STREAM
+    jz      .stream_unsupported
+    mov     eax, STMT_CREATE_STREAM
+
+.bind_create_object:
+    mov     r10, [rbp - 48]
+    mov     [r10 + PLAN_TYPE], rax
 
     mov     r10, [rbp - 16]
     mov     rcx, [r10 + STMT_NAME_LEN]
@@ -1878,6 +1903,31 @@ sql_bind:
     mov     [r10 + PLAN_DATA1], rax
     mov     r11, [rbp - 8]
     mov     [r10 + PLAN_CTX], r11
+    xor     eax, eax
+    jmp     .binder_exit
+
+; --- BIND DROP STREAM --------------------------------------------------------
+.bind_drop_stream:
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + PLAN_TYPE], STMT_DROP_STREAM
+    mov     r11, [rbp - 8]
+    test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_STREAM
+    jz      .stream_unsupported
+
+    mov     r10, [rbp - 16]
+    mov     rcx, [r10 + DROP_TABLE_NAME_LEN]
+    cmp     rcx, 31
+    ja      .bad_tbl_len
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + DROP_TABLE_NAME_PTR]
+    mov     ARG3, [r10 + DROP_TABLE_NAME_LEN]
+    lea     ARG4, [rbp - 56]
+    call    catalog_find_stream
+    test    rax, rax
+    jz      .stream_not_found
+    mov     r10, [rbp - 48]
+    mov     rdx, [rbp - 56]
+    mov     [r10 + PLAN_TABLE_ID], rdx
     xor     eax, eax
     jmp     .binder_exit
 
@@ -2823,6 +2873,22 @@ sql_bind:
     mov     ARG2, SQL_ERR_TABLE_NOT_FOUND
     xor     ARG3, ARG3
     lea     ARG4, [err_queue_missing]
+    call    set_binder_error
+    mov     eax, SQL_ERR_TABLE_NOT_FOUND
+    jmp     .binder_exit
+.stream_unsupported:
+    mov     ARG1, [rbp - 40]
+    mov     ARG2, SQL_ERR_TYPE_MISMATCH
+    xor     ARG3, ARG3
+    lea     ARG4, [err_no_stream]
+    call    set_binder_error
+    mov     eax, SQL_ERR_TYPE_MISMATCH
+    jmp     .binder_exit
+.stream_not_found:
+    mov     ARG1, [rbp - 40]
+    mov     ARG2, SQL_ERR_TABLE_NOT_FOUND
+    xor     ARG3, ARG3
+    lea     ARG4, [err_stream_missing]
     call    set_binder_error
     mov     eax, SQL_ERR_TABLE_NOT_FOUND
     jmp     .binder_exit

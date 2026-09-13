@@ -19,6 +19,7 @@ extern db_var_validate_chain, db_var_write_chain, db_var_read_chain
 global queue_page_valid, db_queue_seg_addr, queue_seg_seal, db_queue_segments_valid
 global db_queue_push, db_queue_pop, db_queue_peek, db_queue_depth
 global db_queue_retire_all
+global db_stream_retire_all
 
 section .data
 ; Segment pages this process looked at while validating. A queue that is
@@ -955,10 +956,24 @@ db_queue_peek:
 ;               [rbp-64]=position, [rbp-72]=entry index
 ; -----------------------------------------------------------------------------
 db_queue_retire_all:
-    FRAME_BEGIN 96, 0
+    mov r10d, CAT_QUEUE
+    mov r11d, Q_ENTRIES
+    jmp queue_retire_common
+; A stream's records sit in the same segments, named by a directory at a
+; different offset, so what differs between retiring one and retiring a queue
+; is two numbers. The walk is one walk for the reason the validation is.
+db_stream_retire_all:
+    mov r10d, CAT_STREAM
+    mov r11d, S_ENTRIES
+queue_retire_common:
+    FRAME_BEGIN 112, 0
+    mov [rbp - 88], r11             ; where this object's directory starts
+    mov [rbp - 96], r10             ; and what kind of page it must be
     mov [rbp - 8], ARG1
     mov [rbp - 16], ARG2
     mov r10, ARG1
+    ; The queue bit, for a stream too: a stream's records live in a queue's
+    ; segments, and the bit that defines them is the one that must be set.
     test qword [r10 + DB_FEATURES], CybouDB_FEATURE_QUEUE
     jz .a_ok
     mov ARG1, [rbp - 8]
@@ -966,12 +981,13 @@ db_queue_retire_all:
     call db_catalog_page
     test rax, rax
     jz .a_ok
-    cmp dword [rax + CAT_TYPE], CAT_QUEUE
+    mov ecx, [rax + CAT_TYPE]
+    cmp rcx, [rbp - 96]
     jne .a_ok
     mov [rbp - 24], rax
-    mov rdx, [rax + Q_HEAD]
+    mov rdx, [rax + Q_HEAD]         ; S_FIRST is the same offset
     mov [rbp - 32], rdx
-    mov rdx, [rax + Q_TAIL]
+    mov rdx, [rax + Q_TAIL]         ; as is S_END
     mov [rbp - 40], rdx
     mov ecx, [rax + Q_SEGMENTS]
     mov [rbp - 48], rcx
@@ -992,7 +1008,8 @@ db_queue_retire_all:
     mov [rbp - 80], rdx             ; before an argument register takes it
     sub rax, [rbp - 56]
     mov r11, [rbp - 24]
-    mov r9, [r11 + Q_ENTRIES + rax * 8]
+    add r11, [rbp - 88]
+    mov r9, [r11 + rax * 8]
     mov ARG1, [rbp - 8]
     mov ARG2, r9
     call db_queue_seg_addr
@@ -1017,7 +1034,8 @@ db_queue_retire_all:
     cmp rax, [rbp - 48]
     jae .a_ok
     mov r11, [rbp - 24]
-    mov r9, [r11 + Q_ENTRIES + rax * 8]
+    add r11, [rbp - 88]
+    mov r9, [r11 + rax * 8]
     mov ARG1, [rbp - 8]
     mov ARG2, r9
     call db_bitmap_retire

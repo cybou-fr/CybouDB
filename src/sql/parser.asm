@@ -1725,6 +1725,8 @@ sql_parse:
     je      .parse_create_index
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_QUEUE
     je      .parse_create_queue
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_STREAM
+    je      .parse_create_stream
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_TABLE
     jne     .bad_syntax
 
@@ -2178,6 +2180,8 @@ sql_parse:
     je      .parse_drop_index
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_QUEUE
     je      .parse_drop_queue
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_STREAM
+    je      .parse_drop_stream
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_TABLE
     jne     .bad_syntax
 
@@ -2377,6 +2381,44 @@ sql_parse:
     mov     r10, [rbp - 32]
     mov     r10, [r10]
     mov     qword [r10 + AST_STMT_TYPE], STMT_DROP_QUEUE
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_table_name
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + DROP_TABLE_NAME_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + DROP_TABLE_NAME_LEN], rax
+    jmp     .check_eof
+
+; --- CREATE STREAM name ------------------------------------------------------
+; Like a queue: no columns, nothing after the name, and the name slot a
+; CREATE TABLE uses, because all of them share one namespace.
+.parse_create_stream:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_CREATE_STREAM
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_table_name
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + STMT_NAME_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + STMT_NAME_LEN], rax
+    jmp     .check_eof
+
+; --- DROP STREAM name --------------------------------------------------------
+.parse_drop_stream:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_DROP_STREAM
     lea     ARG1, [rbp - 160]
     lea     ARG2, [rbp - 192]
     call    sql_tok_next
