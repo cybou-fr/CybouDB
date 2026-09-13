@@ -51,7 +51,9 @@ with tempfile.TemporaryDirectory() as temporary:
     for total in (6, 20000, 40000):
         run(binary, "create-large", path, total, "--force")
         b = path.read_bytes()
-        assert u64(b, 16) == 0x3E | 64 | 128 | 256 | 1024 | 2048 | 8192
+        # COW, catalog, PAX, PAX_MULTI, MAP_SPAN, runs, tree, zone maps,
+        # varlen, vectors, INDEX and QUEUE - what create-large emits.
+        assert u64(b, 16) == 0x3E | 64 | 128 | 256 | 1024 | 2048 | 8192 | 16384
         st, alloc, k = states(b, total)
         assert k == leaves(total) and alloc == 3 + 2 * k
         assert st[:alloc] == [2] * alloc and st[alloc:] == [0] * (total - alloc)

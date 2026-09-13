@@ -13,11 +13,6 @@
 ; on columns.
 %define CAT_QUEUE 4
 
-; The feature bit is reserved here and is NOT yet in the set database.asm
-; accepts at open. Until this build can read a queue page, a file carrying the
-; bit has to be refused as a file whose features are unknown - which is the
-; clean refusal the bit exists for. Accepting it and then failing on the page
-; type would refuse the same file for a worse reason.
 
 %define Q_SEGMENTS 36                    ; aliases CAT_COUNT: entries below
 %define Q_HEAD 40                        ; the oldest position still held

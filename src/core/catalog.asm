@@ -11,9 +11,11 @@ extern db_bitmap_deep
 extern db_cow_alloc_page, db_cow_copy_page, db_cow_set_root
 extern db_pax_validate, db_pax_check_new
 extern index_page_valid
+extern queue_page_valid
 extern db_zone_validate
 global db_catalog_validate, db_catalog_put, db_catalog_get, db_catalog_drop
 global db_catalog_put_index, db_catalog_set_index_root, db_catalog_page
+global db_catalog_put_queue
 global db_catalog_set_data, db_catalog_set_data_stats, db_catalog_replace_data
 global db_catalog_replace_data_stats
 global db_catalog_truncate_data
@@ -232,6 +234,15 @@ page_valid:
     cmp rax, [r11 + SB_GENERATION]
     ja .bad
     mov r10, [rbp - 8]
+    ; A queue page keeps its head and its tail in the reserved span, and
+    ; answers for them where its segments are validated. It is checked before
+    ; the PAX gate below because a queue needs no row storage to be a queue.
+    cmp dword [r8 + CAT_TYPE], CAT_QUEUE
+    jne .not_queue
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_QUEUE
+    jz .bad
+    jmp .reserved_done
+.not_queue:
     test qword [r10 + DB_FEATURES], CybouDB_FEATURE_PAX
     jz .reserved_all
     ; An index page keeps its root, column, flags and entry count in the same
@@ -339,6 +350,8 @@ db_catalog_validate:
     mov r10, [rbp - 56]
     cmp dword [r10 + CAT_TYPE], CAT_INDEX
     je .index_entry
+    cmp dword [r10 + CAT_TYPE], CAT_QUEUE
+    je .queue_entry
     cmp dword [r10 + CAT_TYPE], CAT_SCHEMA
     jne .bad
     mov ARG1, r10
@@ -364,6 +377,14 @@ db_catalog_validate:
     mov ARG2, [rbp - 16]
     mov ARG3, [rbp - 56]
     call index_page_valid
+    test eax, eax
+    jz .bad
+    jmp .named
+.queue_entry:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 56]
+    call queue_page_valid
     test eax, eax
     jz .bad
 .named:
@@ -541,6 +562,13 @@ db_catalog_put:
 ; directory and publishing the new root is work worth having once.
 db_catalog_put_index:
     mov r11d, CAT_INDEX
+    jmp catalog_put_common
+; db_catalog_put_queue(ctx, queue id, page image): and for the fourth kind. A
+; queue arrives empty - head, tail, segments and the directory all zero - so
+; what the shape check is really saying is that nothing has been written into
+; the page a caller is asking the catalog to publish.
+db_catalog_put_queue:
+    mov r11d, CAT_QUEUE
 catalog_put_common:
     FRAME_BEGIN 96, 0
     mov [rbp - 96], r11
@@ -558,6 +586,8 @@ catalog_put_common:
     je .generation
     test ARG2, ARG2
     jz .schema
+    cmp qword [rbp - 96], CAT_QUEUE
+    je .shape_queue
     cmp qword [rbp - 96], CAT_INDEX
     je .shape_index
     mov ARG1, [rbp - 24]
@@ -585,6 +615,22 @@ catalog_put_common:
     jne .schema
     cmp byte [r11 + IDX_NAME], 0
     je .schema
+    jmp .shape_ok
+.shape_queue:
+    mov r10, [rbp - 8]
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_QUEUE
+    jz .state
+    mov r11, [rbp - 24]
+    cmp byte [r11 + Q_NAME], 0
+    je .schema
+    cmp dword [r11 + Q_SEGMENTS], 0
+    jne .schema
+    cmp qword [r11 + Q_HEAD], 0
+    jne .schema
+    cmp qword [r11 + Q_TAIL], 0
+    jne .schema
+    cmp qword [r11 + Q_FIRST_SEG], 0
+    jne .schema
 .shape_ok:
     mov ARG1, [rbp - 8]
     call current_valid

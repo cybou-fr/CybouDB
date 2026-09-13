@@ -813,12 +813,26 @@ green before the next begins, for the same reason the phases above were.
 
 ## Phase 11 - Queues
 
-The decisions are fixed in [docs/QUEUE.md](docs/QUEUE.md). Nothing implements
-them yet, and `CybouDB_FEATURE_QUEUE` is reserved rather than accepted: until
-this build can read a queue page, a file carrying the bit is refused at open
-as a file whose features are unknown, which is the clean refusal the bit
-exists for. Accepting it and then failing on the page type would refuse the
-same file for a worse reason.
+The decisions are fixed in [docs/QUEUE.md](docs/QUEUE.md).
+
+Done: the catalog page that defines a queue, and what a commit proves about
+it. `CybouDB_FEATURE_QUEUE` is now accepted at open, because this build can
+read a queue page; `create-large` and `create-tombstones` emit it. A queue is a
+fourth directory type, sharing the namespace with tables and indexes - a table
+may not take a queue's name, and the same directory walk answers both.
+
+Writing the refusals first found a gap in the validator that nothing else
+would have: a commit re-checks a page's checksum only when this transaction
+wrote it, which is what stops a commit costing the size of the database. So a
+field no validator looks at is a field nothing refuses. A directory entry
+sitting past the segment count was exactly that until `tests/queue_page_test.c`
+asked for it, and the tail is now required to be zero the way every other tail
+in this format is.
+
+Not done: `CREATE QUEUE` and `DROP QUEUE`, then `ENQUEUE` and `DEQUEUE`, then
+the C ABI. Nothing writes a segment page yet, so the segment walk and the
+deep per-message pass are written and unexercised - which is worth saying
+rather than letting a passing suite imply otherwise.
 
 What is decided:
 

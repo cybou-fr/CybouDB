@@ -164,17 +164,32 @@ same thing a retired table leaf does.
 Validation runs where every other page type's does, at every commit and at
 every open, and refuses the generation rather than the statement:
 
-- `head <= tail`, and both fit the segments the directory names;
+- `head <= tail`;
 - the directory names exactly the segments spanning `[head, tail)` - no
-  segment entirely below `head`, none above `tail`, none missing in between;
+  segment entirely below `head`, none above `tail`, none missing in between,
+  which follows from the positions rather than being recorded twice;
+- everything past the last entry is zero, as every tail in this format is;
 - each segment page carries the queue's own id as its owner, the magic, the
   version and a correct CRC;
 - each segment's recorded first position is `first_segment_index + i` times
-  the slot count;
-- a payload marked as an extent names a chain the varlen validator accepts.
+  the slot count. Two entries naming one page would need that page to start at
+  two positions, so the entries are distinct without being compared.
 
 The cost of that walk is the segments a queue is holding, not the messages it
 has carried. A drained queue validates in one page.
+
+Under `DB_VERIFY`, which `cyboudb check` sets, it also walks every message the
+queue holds: the shape of its slot, and the extent chain a long payload names.
+That is a per-message cost and does not belong on the commit path, for the
+reason the index recomputes subtree sizes only there. A segment's own checksum
+already covers its slots; what a checksum cannot say is whether a page id
+inside one leads anywhere.
+
+The tail check earns its place for a reason worth stating: a commit re-checks
+a page's checksum only when this transaction wrote it, which is what stops a
+commit costing the size of the database. So a field no validator looks at is a
+field nothing refuses, and a directory entry sitting past the count is exactly
+that until something asks.
 
 ## Delivery
 
