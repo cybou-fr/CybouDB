@@ -348,6 +348,60 @@ def main():
         check("with a file that checks out", r.returncode == 0 and
               "Status:          OK" in r.stdout, r.stdout)
 
+        # --- and a marking DELETE of many rows at once ------------------------
+        # One row proves the entries come out. What a statement actually does
+        # is mark a set of them spread over many groups, and the entries come
+        # out before the marking rather than after: the keys are read from the
+        # table, and a row that has been marked is one a scan may skip. This is
+        # the same two tables with the same rows, one indexed and one not.
+        swept = str(Path(tmp) / "swept.cdb")
+        swept_plain = str(Path(tmp) / "swept_plain.cdb")
+        for path in (swept, swept_plain):
+            run("create-tombstones", path, "60000", "--force")
+            query("CREATE TABLE t (id INT64 NOT NULL, g INT64);", path)
+            script = []
+            for base in range(0, 4000, 250):
+                values = ", ".join(f"({i}, {i % 9})" for i in range(base, base + 250))
+                script.append(f"INSERT INTO t VALUES {values};")
+            subprocess.run([str(cyboudb), "console", path],
+                           input=chr(10).join(script) + chr(10),
+                           capture_output=True,
+                           text=True, encoding="utf-8", errors="replace")
+        r = query("CREATE UNIQUE INDEX s_id ON t (id);", swept)
+        check("a unique index over four thousand rows", r.returncode == 0,
+              r.stdout)
+        r = query("CREATE INDEX s_g ON t (g);", swept)
+        check("and a non-unique one beside it", r.returncode == 0, r.stdout)
+
+        for path in (swept, swept_plain):
+            query("DELETE FROM t WHERE g = 4;", path)
+        same = True
+        detail = ""
+        for sql in ("SELECT COUNT(*) FROM t",
+                    "SELECT COUNT(*) FROM t WHERE g = 4",
+                    "SELECT COUNT(*) FROM t WHERE g = 5",
+                    "SELECT id FROM t WHERE id = 4",
+                    "SELECT id FROM t WHERE id = 13"):
+            a = query(sql + ";", swept).stdout
+            b = query(sql + ";", swept_plain).stdout
+            if a != b:
+                same = False
+                detail = f"{sql}: {a!r} vs {b!r}"
+                break
+        check("a marking DELETE of many rows answers as the scan does",
+              same, detail)
+        r = run("check", swept)
+        check("leaving a file that checks out", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
+
+        # The keys it freed are free in a unique index too.
+        r = query("INSERT INTO t VALUES (4, 9), (13, 9);", swept)
+        check("and the keys it freed can be used again", r.returncode == 0,
+              r.stdout)
+        r = run("check", swept)
+        check("with the file still checking out", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
+
         # --- a file arrives from a disk, not from this build's binder ---------
         # CREATE INDEX proves the table exists, is a table, has that column and
         # that the column is a type this version orders. Every one of those is

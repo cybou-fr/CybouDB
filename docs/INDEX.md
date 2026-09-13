@@ -235,8 +235,10 @@ exactly as long as the table's rows do not move, and
   as far as anything above the storage layer is concerned, and the index has
   to agree. An entry that outlived its row would have a unique index refusing
   a key the table no longer holds: delete a row and the key it carried could
-  never be used again. So a marking DELETE takes the entries with it, and an
-  index names live rows only.
+  never be used again. So a marking DELETE takes the entries with it, one
+  index at a time and one group of rows at a time, before it marks - the key
+  is read out of the table, and a row that has been marked is one a scan may
+  skip.
 * **A compacting rewrite moves every surviving row**, and so invalidates every
   entry in every index of that table. The index is rebuilt from the new graph
   as part of the same transaction, and the rebuild is published with it.

@@ -655,7 +655,7 @@ has the numbers:
   database in a file three times larger flushes in the same time. So the lever
   is the next entry, which is what put 570 MB through the allocator in the
   first place, and not anything on the insert path.
-* **An UPDATE patches the indexes it changes; a DELETE still rebuilds them.**
+* **An UPDATE and a marking DELETE patch the indexes they change.**
   The rows do not move, so their entries stay right except for the one column
   the statement writes. The entries of the rows it touched come out before the
   write - while the table can still say what keys they carried - and go back
@@ -669,10 +669,16 @@ has the numbers:
   of the write, and because a unique index doing both a row at a time would
   refuse the first row to take a key that a later row is about to give up.
 
-  A marking DELETE could be patched the same way and is not yet: it removes
-  entries rather than moving them, so it needs the first pass and not the
-  second. A compacting DELETE has to rebuild - every surviving row moved, and
-  an entry names a row by position.
+  A marking DELETE is the same thing without the second pass: the rows stay
+  where they are and their entries simply go, so an index goes on describing
+  live rows and a unique index stops refusing a key the table no longer holds.
+  It happens before the marking rather than after, because the keys are read
+  out of the table and a row that has been marked is one a scan may skip. A
+  DELETE of one row of fifty thousand went from 92.9 ms to 1.50 ms, against
+  1.25 ms without an index.
+
+  A compacting DELETE still rebuilds, and has to: every surviving row moved,
+  and an entry names a row by position.
 
   Doing this put the first caller on `db_index_delete` outside its own test,
   and found two defects that had nothing to do with the index: a splitting

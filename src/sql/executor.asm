@@ -42,6 +42,13 @@ default rel
 %define IXP_MODE_REMOVE 0
 %define IXP_MODE_INSERT 1
 
+; Where sql_execute_batch keeps one of those, and the schema page id it reads
+; on the way to filling it in. Below the DELETE scratch rather than inside it:
+; a DELETE patches indexes too, and the two regions are live at once.
+%define IXP_DESC_OFF    (DELETE_SCRATCH_BASE + 80)
+%define IXP_PAGE_OFF    (DELETE_SCRATCH_BASE + 88)
+%define EXEC_FRAME_SIZE (DELETE_SCRATCH_BASE + 128)
+
 extern db_catalog_put, db_catalog_drop, db_catalog_truncate_data, db_pax_insert, db_pax_update_one, db_pax_capacity, db_commit, db_rollback
 extern db_pax_mark_dead, db_pax_dead_total
 extern db_catalog_put_index, db_catalog_set_index_root, db_index_of_table
@@ -542,7 +549,7 @@ eval_predicate_encoded:
 ;  nonzero answer means the sink itself failed and the statement fails with it.
 ; -----------------------------------------------------------------------------
 sql_execute_batch:
-    FRAME_BEGIN DELETE_SCRATCH_BASE, 1
+    FRAME_BEGIN EXEC_FRAME_SIZE, 1
     mov     [rbp - 8], ARG1
     mov     [rbp - 16], ARG2
     mov     [rbp - 24], ARG3
@@ -829,6 +836,33 @@ sql_execute_batch:
     test    rax, rax
     jz      .delete_rewrite             ; nothing to group by
     mov     [rbp - 88], rax             ; physical rows per leaf
+
+    ; An index describes live rows, so the entries of the rows about to stop
+    ; being live come out of it. Before the marking rather than after: the
+    ; keys are read from the table, and a row that has been marked is one a
+    ; scan is entitled to skip. Every index, because a DELETE removes whole
+    ; rows rather than one column of them.
+    mov     r10, [rbp - 8]
+    mov     [rbp - IXP_DESC_OFF + IXP_CTX], r10
+    mov     rax, [rbp - 1744]
+    mov     [rbp - IXP_DESC_OFF + IXP_SCHEMA], rax
+    mov     r11, [rbp - 16]
+    mov     rax, [r11 + PLAN_TABLE_ID]
+    mov     [rbp - IXP_DESC_OFF + IXP_TABLE], rax
+    mov     rax, [rbp - 24]
+    mov     [rbp - IXP_DESC_OFF + IXP_ARENA], rax
+    mov     rax, [rbp - 64]
+    mov     [rbp - IXP_DESC_OFF + IXP_SPANS], rax
+    mov     rax, [rbp - 72]
+    mov     [rbp - IXP_DESC_OFF + IXP_SPAN_COUNT], rax
+    mov     qword [rbp - IXP_DESC_OFF + IXP_COLUMN], -1
+    mov     qword [rbp - IXP_DESC_OFF + IXP_KEY], 0
+    mov     qword [rbp - IXP_DESC_OFF + IXP_MODE], IXP_MODE_REMOVE
+    lea     ARG1, [rbp - IXP_DESC_OFF]
+    call    sql_index_patch
+    test    eax, eax
+    jnz     .storage_done
+
     mov     qword [rbp - 96], 0         ; spans applied
 .delete_mark_apply:
     mov     rax, [rbp - 96]
@@ -871,39 +905,10 @@ sql_execute_batch:
     add     [rbp - 96], rax
     jmp     .delete_mark_apply
 .delete_mark_done:
-    ; The rows did not move, so the entries still name the right rows - but
-    ; they name rows nobody can see any more, and a unique index would go on
-    ; refusing a key the table no longer holds. An index describes live rows.
-    ;
-    ; Rebuilding costs a scan of the table where deleting the entries by hand
-    ; would cost the rows removed. What makes the cheap version harder is that
-    ; this statement knows which rows matched but not what keys they carried,
-    ; and pass one threw the values away. Measuring that is the next thing,
-    ; not guessing at it.
-    ; The schema this statement started from is a generation behind: marking
-    ; republished the leaves, and a scan through the old one would not see a
-    ; single tombstone.
-    mov     ARG1, [rbp - 8]
-    mov     r10, [rbp - 16]
-    mov     ARG2, [r10 + PLAN_TABLE_ID]
-    lea     ARG3, [rbp - 1744]
-    call    db_catalog_get
-    test    eax, eax
-    jnz     .storage_done
-    mov     r10, [rbp - 8]
-    mov     rax, [rbp - 1744]
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [r10 + DB_BASE]
-    mov     ARG3, rax
-    mov     ARG1, r10
-    mov     r11, [rbp - 16]
-    mov     ARG2, [r11 + PLAN_TABLE_ID]
-    mov     ARG4, [rbp - 24]
-    mov     rax, -1
-    PASS_ARG5 rax
-    call    sql_index_rebuild_all
-    test    eax, eax
-    jnz     .storage_done
+    ; The entries came out before the marking, so there is nothing left to do
+    ; here. Rebuilding the tree from the table was what stood here, and it
+    ; cost the table: a DELETE of one row of fifty thousand took 101.9 ms
+    ; where the same statement on the same table without an index took 7.2 ms.
     xor     eax, eax
     jmp     .exec_exit
 
@@ -1382,31 +1387,31 @@ sql_execute_batch:
     mov ARG1, [rbp - 8]
     mov r10, [rbp - 16]
     mov ARG2, [r10 + PLAN_TABLE_ID]
-    lea ARG3, [rbp - 2408]
+    lea ARG3, [rbp - IXP_PAGE_OFF]
     call db_catalog_get
     test eax, eax
     jnz .storage_done
     mov r10, [rbp - 8]
-    mov [rbp - 2400 + IXP_CTX], r10
-    mov rax, [rbp - 2408]
+    mov [rbp - IXP_DESC_OFF + IXP_CTX], r10
+    mov rax, [rbp - IXP_PAGE_OFF]
     shl rax, CybouDB_PAGE_SHIFT
     add rax, [r10 + DB_BASE]
-    mov [rbp - 2400 + IXP_SCHEMA], rax
+    mov [rbp - IXP_DESC_OFF + IXP_SCHEMA], rax
     mov r11, [rbp - 16]
     mov rax, [r11 + PLAN_TABLE_ID]
-    mov [rbp - 2400 + IXP_TABLE], rax
+    mov [rbp - IXP_DESC_OFF + IXP_TABLE], rax
     mov rax, [rbp - 24]
-    mov [rbp - 2400 + IXP_ARENA], rax
+    mov [rbp - IXP_DESC_OFF + IXP_ARENA], rax
     mov rax, [rbp - 168]
-    mov [rbp - 2400 + IXP_SPANS], rax
+    mov [rbp - IXP_DESC_OFF + IXP_SPANS], rax
     mov rax, [rbp - 176]
-    mov [rbp - 2400 + IXP_SPAN_COUNT], rax
+    mov [rbp - IXP_DESC_OFF + IXP_SPAN_COUNT], rax
     mov rax, [r11 + PLAN_UPDATE_COL_IDX]
-    mov [rbp - 2400 + IXP_COLUMN], rax
+    mov [rbp - IXP_DESC_OFF + IXP_COLUMN], rax
     mov rax, [r11 + PLAN_UPDATE_VALUE]
-    mov [rbp - 2400 + IXP_KEY], rax
-    mov qword [rbp - 2400 + IXP_MODE], IXP_MODE_REMOVE
-    lea ARG1, [rbp - 2400]
+    mov [rbp - IXP_DESC_OFF + IXP_KEY], rax
+    mov qword [rbp - IXP_DESC_OFF + IXP_MODE], IXP_MODE_REMOVE
+    lea ARG1, [rbp - IXP_DESC_OFF]
     call sql_index_patch
     test eax, eax
     jnz .storage_done
@@ -1475,17 +1480,17 @@ sql_execute_batch:
     ; write republished the leaves.
     mov ARG1, [rbp - 8]
     mov ARG2, [r10 + PLAN_TABLE_ID]
-    lea ARG3, [rbp - 2408]
+    lea ARG3, [rbp - IXP_PAGE_OFF]
     call db_catalog_get
     test eax, eax
     jnz .storage_done
     mov r10, [rbp - 8]
-    mov rax, [rbp - 2408]
+    mov rax, [rbp - IXP_PAGE_OFF]
     shl rax, CybouDB_PAGE_SHIFT
     add rax, [r10 + DB_BASE]
-    mov [rbp - 2400 + IXP_SCHEMA], rax
-    mov qword [rbp - 2400 + IXP_MODE], IXP_MODE_INSERT
-    lea ARG1, [rbp - 2400]
+    mov [rbp - IXP_DESC_OFF + IXP_SCHEMA], rax
+    mov qword [rbp - IXP_DESC_OFF + IXP_MODE], IXP_MODE_INSERT
+    lea ARG1, [rbp - IXP_DESC_OFF]
     call sql_index_patch
     test eax, eax
     jnz .storage_done
