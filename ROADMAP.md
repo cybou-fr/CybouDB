@@ -1163,7 +1163,35 @@ crosses a segment boundary and a trim to the end; and two hundred
 append-and-trim rounds of a two-page record run through a 300-page file that
 could hold neither the chains nor the segments if either were kept.
 
-Still to come: the C ABI, and then Stream is done.
+**Done: the C ABI, and with it Phase 12.** Every stream statement reaches the
+engine through `sql_execute_batch`, so the C caller needed only to say which
+of them hand something back. A `READ` answers in the vocabulary a `DEQUEUE`
+established - `ROW` with the record, `DONE` when the reader has seen
+everything - and `cyboudb_message` gives the bytes, because a record is not a
+row and there is no column to present it as. Stepping a caught-up statement
+again asks again, since something may have been appended.
+
+The test found a bug the command line could not have. `.exec_read` wrote the
+record it hands back over `PLAN_DATA1`, which was also where the binder had
+put the reader's name - harmless when a statement is executed once, which is
+all the CLI ever does, and wrong on the second step of a prepared one: the
+name it looked up was the previous record. The reader now has a slot of its
+own, `PLAN_READER_PTR`, and so do `CREATE CURSOR` and `DROP CURSOR`.
+
+`tests/stream_api_test.c` is 30 checks: two prepared readers on one stream,
+each given every record; a record too long for the caller's buffer refused
+rather than truncated; a trim refused while a reader is behind and accepted
+after it is dropped.
+
+**Phase 12 is complete.** A stream is a fifth catalog type with named durable
+readers, `APPEND`, `READ`, `TRIM`, and `CREATE`/`DROP` for both the stream and
+its cursors, through the command line, the console and the C ABI - one
+implementation of what each statement means.
+
+Not done, and named rather than implied: retention by age or by size, more
+than eight cursors, reading from an arbitrary position, and fan-out into a
+queue. Each is a decision about policy or addressing that docs/STREAM.md
+argues belongs above the engine.
 
 What is decided:
 

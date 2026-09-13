@@ -393,7 +393,7 @@
 %define PLAN_UPDATE_IS_NULL 264         ; qword boolean
 %define PLAN_VECTOR_TOPK_EXPR 272       ; qword: bound vector distance expr
 %define PLAN_DELETE_ROWS    280         ; qword rows a DELETE removed
-%define BOUND_PLAN_SIZE     320
+%define BOUND_PLAN_SIZE     336
 %define PLAN_PROJ_RIGHT_BIT 0x80000000  ; u32 projection index belongs to RHS
 %define PLAN_FLAG_LIMIT     2           ; bit 1: LIMIT clause is present
 %define PLAN_FLAG_ORDER     4           ; bit 2: ORDER BY is present
@@ -415,6 +415,12 @@
 ; still this table's index over this column - and when it is not, the plan
 ; reads the table, because an access path that has gone is not an empty one.
 %define PLAN_INDEX_COL      312
+; The reader a cursor statement names. It has a slot of its own rather than
+; sharing PLAN_DATA1 with the record a READ hands back, because a prepared
+; statement is stepped more than once: the first step would otherwise write
+; the record over the name and the second would look up whatever that was.
+%define PLAN_READER_PTR     320
+%define PLAN_READER_LEN     328
 
 ; Projection descriptor passed to batch result sinks (aliases PLAN_DATA1..3).
 %define RESULT_PROJ_COUNT   0           ; qword: projection count, 1..64

@@ -536,6 +536,23 @@ cyboudb_step:
     je      .step_drop                  ; nothing to hand back
     cmp     rcx, STMT_DEQUEUE
     je      .step_dequeue
+    ; The fifth kind. Everything that changes a stream runs through the
+    ; executor like everything else; only a READ has something to hand back,
+    ; and it hands it back the way a DEQUEUE does.
+    cmp     rcx, STMT_CREATE_STREAM
+    je      .step_drop
+    cmp     rcx, STMT_DROP_STREAM
+    je      .step_drop
+    cmp     rcx, STMT_APPEND
+    je      .step_drop
+    cmp     rcx, STMT_CREATE_CURSOR
+    je      .step_drop
+    cmp     rcx, STMT_DROP_CURSOR
+    je      .step_drop
+    cmp     rcx, STMT_TRIM
+    je      .step_drop
+    cmp     rcx, STMT_READ
+    je      .step_dequeue
 
     mov     eax, CybouDB_C_ERROR
     jmp     .step_exit
@@ -1488,10 +1505,11 @@ cyboudb_column_bool:
 ; =============================================================================
 ; cyboudb_message(stmt, out, capacity, out_length) -> int
 ; =============================================================================
-;  The message the last step of a DEQUEUE took. It is not a column and does
-;  not pretend to be one: a queue holds bytes with no schema to say how to
-;  read them, so a caller that wants them asks for them rather than being
-;  handed a synthetic row to read them out of.
+;  The message the last step of a DEQUEUE took, or the record the last step of
+;  a READ was given. It is not a column and does not pretend to be one: a queue
+;  and a stream hold bytes with no schema to say how to read them, so a caller
+;  that wants them asks for them rather than being handed a synthetic row to
+;  read them out of.
 ;
 ;  The bytes live in the statement's own arena and stay valid until the next
 ;  step or the finalize.
@@ -1512,8 +1530,12 @@ cyboudb_message:
     mov     r10, [ARG1 + STMT_H_PLAN]
     test    r10, r10
     jz      .msg_misuse
-    cmp     qword [r10 + PLAN_TYPE], STMT_DEQUEUE
+    mov     rcx, [r10 + PLAN_TYPE]
+    cmp     rcx, STMT_DEQUEUE
+    je      .msg_typed
+    cmp     rcx, STMT_READ
     jne     .msg_misuse
+.msg_typed:
     cmp     qword [r10 + PLAN_DATA3], 0
     je      .msg_misuse                 ; the last step took nothing
     mov     rdx, [r10 + PLAN_DATA2]

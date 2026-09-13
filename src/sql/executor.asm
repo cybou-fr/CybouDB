@@ -1305,8 +1305,8 @@ sql_execute_batch:
     PASS_ARG6 r11                   ; which cursor it turned out to be
     lea     r11, [rbp - 1840]
     PASS_ARG5 r11                   ; how much room the record needs
-    mov     ARG4, [r10 + PLAN_DATA2]
-    mov     ARG3, [r10 + PLAN_DATA1]
+    mov     ARG4, [r10 + PLAN_READER_LEN]
+    mov     ARG3, [r10 + PLAN_READER_PTR]
     mov     ARG2, [r10 + PLAN_TABLE_ID]
     mov     ARG1, [rbp - 8]
     call    db_stream_peek
@@ -1363,8 +1363,8 @@ sql_execute_batch:
     mov     ARG1, [rbp - 8]
     mov     r10, [rbp - 16]
     mov     ARG2, [r10 + PLAN_TABLE_ID]
-    mov     ARG3, [r10 + PLAN_DATA1]
-    mov     ARG4, [r10 + PLAN_DATA2]
+    mov     ARG3, [r10 + PLAN_READER_PTR]
+    mov     ARG4, [r10 + PLAN_READER_LEN]
     call    db_stream_cursor_add
     jmp     .storage_done
 
@@ -1372,8 +1372,8 @@ sql_execute_batch:
     mov     ARG1, [rbp - 8]
     mov     r10, [rbp - 16]
     mov     ARG2, [r10 + PLAN_TABLE_ID]
-    mov     ARG3, [r10 + PLAN_DATA1]
-    mov     ARG4, [r10 + PLAN_DATA2]
+    mov     ARG3, [r10 + PLAN_READER_PTR]
+    mov     ARG4, [r10 + PLAN_READER_LEN]
     call    db_stream_cursor_drop
     jmp     .storage_done
 

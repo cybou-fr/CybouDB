@@ -1990,9 +1990,9 @@ sql_bind:
     mov     [r10 + PLAN_TABLE_ID], rdx
     mov     r11, [rbp - 16]
     mov     rax, [r11 + CURSOR_NAME_PTR]
-    mov     [r10 + PLAN_DATA1], rax
+    mov     [r10 + PLAN_READER_PTR], rax
     mov     rax, [r11 + CURSOR_NAME_LEN]
-    mov     [r10 + PLAN_DATA2], rax
+    mov     [r10 + PLAN_READER_LEN], rax
     mov     r11, [rbp - 8]
     mov     [r10 + PLAN_CTX], r11
     xor     eax, eax
