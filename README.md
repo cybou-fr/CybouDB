@@ -1,35 +1,156 @@
 # CybouDB
 
-### Tables. Vectors. Queues. Streams. One transaction.
+### One embedded database for data, vectors, work and events.
 
-**CybouDB** is an embedded database engine written in x86-64 assembly, with a
-portable on-disk format, copy-on-write transactions and columnar execution. It
-has no libc, no CRT and no third-party dependency: on Linux it talks to the
-kernel directly, and on Windows it uses kernel32 and nothing else.
-
-Rows, secondary indexes, embeddings, queued work and an event log live in one
-file under one transaction model:
+**CybouDB** is an embedded database for modern applications. Relational tables,
+secondary indexes, exact vector search, durable queues and replayable streams
+live in one `.cdb` file and share one transaction engine.
 
 ```sql
 BEGIN;
-DEQUEUE FROM inbox;                     -- take the work
-INSERT INTO jobs VALUES (1, 'done');    -- record the result
-APPEND TO audit VALUES ('job 1 done');  -- and say so
+DEQUEUE FROM inbox;                            -- take the work
+INSERT INTO results VALUES (42, 'completed');  -- record the result
+APPEND TO audit VALUES ('job 42 completed');   -- and say so
 COMMIT;
 ```
 
-Either all of that happened or none of it did - including the index entry the
-row required, and across a crash as well as a rollback. There is one storage
-engine underneath rather than a database beside a vector store beside a broker.
+Either the whole state transition commits or none of it does — including across
+a crash, and including the index entry the row required. A job cannot vanish
+without a result; a result cannot appear without its audit event.
 
-So **no outbox is needed between primitives that live inside the same `.cdb`
-transaction**. An external system is separate again, and nothing here changes
-that: a transaction that takes a message and then calls another service is two
-systems, and [docs/QUEUE.md](docs/QUEUE.md) says which order buys which
-guarantee. See [docs/TRANSACTIONS.md](docs/TRANSACTIONS.md) for the whole of
-what a commit covers.
+That matters when an application would otherwise combine a database, a vector
+store, a work queue and an event log, each with its own persistence and its own
+commit boundary. Here there is one storage engine underneath, so **no outbox is
+needed between primitives that live in the same `.cdb` transaction.**
 
-## What it is fast at, and what it is not
+CybouDB is implemented from scratch in x86-64 assembly. On Linux it talks to the
+kernel through raw system calls; on Windows it uses kernel32. There is no libc,
+no CRT and no third-party runtime.
+
+Current release **[`v0.5.0-preview.1`](https://github.com/cybou-fr/CybouDB/releases/tag/v0.5.0-preview.1)** · Linux x86-64 · Windows x64 · Apache-2.0
+
+**Preview software. Not production-ready.**
+
+---
+
+## Why CybouDB
+
+```text
+an embedded app today:            CybouDB:
+
+  SQLite                            tables + vectors + queues + streams
+  + a vector store                                 ↓
+  + a job queue                              one transaction
+  + an event log                                   ↓
+        ↓                                        .cdb
+  several systems,
+  several commit boundaries,
+  and an outbox to glue them
+```
+
+An external system is separate again, and nothing here changes that: a
+transaction that takes a message and then calls another service is still two
+systems. [docs/QUEUE.md](docs/QUEUE.md) says which order buys which guarantee,
+and [docs/TRANSACTIONS.md](docs/TRANSACTIONS.md) covers what a commit does and
+does not include.
+
+---
+
+## Quick start
+
+```sh
+cyboudb create demo.cdb 4000   # 4000 pages = 16 MiB
+cyboudb query  demo.cdb "CREATE TABLE users (id INT32 NOT NULL, score FLOAT32, active BOOL)"
+cyboudb query  demo.cdb "INSERT INTO users VALUES (1, 98.5, true), (2, null, false)"
+cyboudb query  demo.cdb "SELECT id, score FROM users WHERE active = true AND score > 0.0"
+```
+
+```text
+id | score
+-------- | --------
+1 | 98.50
+(1 row)
+```
+
+`cyboudb create` makes one profile — tables, secondary indexes, TEXT/BLOB,
+vectors, per-row tombstones, queues and streams — and never overwrites an
+existing file without `--force`. Mutating statements autocommit; `SELECT` opens
+read-only.
+
+`cyboudb demo.cdb` opens an interactive console with multiline queries and
+meta-commands (`.tables`, `.schema`, `.indexes`, `.queues`, `.streams`,
+`.info`, `.help`). A script piped in on stdin runs the same way and exits
+nonzero if any statement failed. `cyboudb info` prints validated metadata and
+`cyboudb check` reads every page of every generation.
+
+### Embedding
+
+```c
+#include "cyboudb.h"
+
+cyboudb_db *db;  cyboudb_stmt *st;
+char buf[256];   uint64_t len;
+
+cyboudb_create("app.cdb", 512, &db);
+cyboudb_exec(db, "CREATE TABLE results (id INT64, note TEXT)");
+cyboudb_exec(db, "CREATE QUEUE inbox");
+
+cyboudb_exec(db, "BEGIN");
+cyboudb_exec(db, "ENQUEUE INTO inbox VALUES ('job')");
+cyboudb_exec(db, "INSERT INTO results VALUES (42, 'completed')");
+cyboudb_exec(db, "COMMIT");
+
+cyboudb_prepare(db, "SELECT note FROM results WHERE id = 42", &st);
+while (cyboudb_step(st) == CybouDB_ROW)
+    cyboudb_column_bytes(st, 0, buf, sizeof buf, &len);
+cyboudb_finalize(st);                 /* before close, or close returns BUSY */
+cyboudb_close(db);
+```
+
+Build the library with `sh build.sh --lib` or `build.bat --lib`; the public
+declarations and the full contract are in
+[include/cyboudb.h](include/cyboudb.h). `cyboudb_step_batch` with
+`cyboudb_batch_column` gives borrowed typed columns for bulk reads. Two worked
+examples are built and run by CI: [`examples/worker.c`](examples/worker.c), a
+worker loop with no broker under it, and
+[`examples/vector_search.c`](examples/vector_search.c), filtered exact search
+through the standalone vector runtime.
+
+---
+
+## Capabilities
+
+| | |
+| :--- | :--- |
+| **Relational** | `CREATE`/`DROP TABLE`, multi-row `INSERT`, `UPDATE`, `DELETE`, `SELECT` with projection, 3VL predicates, `ORDER BY`, `LIMIT`/`OFFSET`, `INNER`/`LEFT JOIN` on integer equi-keys. `INT32`, `INT64`, `FLOAT32`, `BOOL`, `TEXT`, `BLOB` |
+| **Indexes** | Copy-on-write B+tree on INT32/INT64 columns, unique or not, maintained by every statement that changes the table and used for equality and range lookups |
+| **Vector** | `VECTOR(FLOAT32, n)` columns with exact top-K through `ORDER BY <distance> LIMIT k`, scalar and AVX2. No ANN index |
+| **Queue** | `CREATE`/`DROP QUEUE`, `ENQUEUE`, `DEQUEUE`. A transactional FIFO in the same file, payloads of any length, pages reclaimed as messages are taken |
+| **Stream** | `CREATE`/`DROP STREAM`, `APPEND`, `READ`, `TRIM`, and up to eight named durable cursors per stream. A trim refuses to pass the slowest reader |
+| **Transactions** | `BEGIN`/`COMMIT`/`ROLLBACK` across all of the above at once, over copy-on-write staging, with two checksummed superblocks and generation-based recovery. One writer; readers pinned against reclamation |
+| **C API** | `libcyboudb.a` / `cyboudb.lib` and one public header, with prepared statements, borrowed batch views and no runtime dependency |
+| **Platforms** | Linux x86-64 (raw syscalls) and Windows x64 (kernel32). A file written on one is read by the other, and CI proves it on both |
+
+Format details — PAX layout, span maps, catalog limits, tombstone strategies,
+the varlen chain — are in [docs/](#documentation) rather than here.
+
+---
+
+## Where it fits, and where it does not
+
+**A good fit today:** local-first and desktop applications, developer tools,
+edge and embedded deployments, automation and background workers, and AI
+applications that want embeddings beside the rows they describe rather than in
+a second system.
+
+**Not the right fit today:** a server database, any multi-writer workload, a
+large concurrent service, ANN-heavy vector search over millions of vectors, an
+encrypted database, or ARM64. CybouDB is a library and a command line, not a
+daemon, and an advisory lock keeps the second writer out.
+
+---
+
+## Performance without benchmark theatre
 
 CybouDB is not built to win every isolated primitive benchmark, and it does not.
 Its advantage is transactional composition; the performance profile that comes
@@ -39,493 +160,120 @@ with that is uneven, and both halves are measured and published.
 | :--- | :--- | ---: |
 | Columnar scan and filter | SQLite | **34.6x faster** |
 | Reading projected columns | DuckDB, 1 thread | **4.5x faster** |
-| Reading projected columns | DuckDB, 8 threads | **4.3x faster** |
-| Filtering | DuckDB, 8 threads | 0.55x - DuckDB ahead |
-| One durable message, one commit | SQLite WAL | 0.27x - SQLite ahead |
-| 100 messages per transaction | SQLite WAL | 0.18x - SQLite ahead |
-| File size on compressible data | DuckDB | 8.3x larger |
+| Filtering | DuckDB, 8 threads | 0.55x — DuckDB ahead |
+| One durable message, one commit | SQLite WAL | 0.27x — SQLite ahead |
+| 100 messages per transaction | SQLite WAL | 0.18x — SQLite ahead |
 
-Read that as a shape rather than a scoreboard. Analytical scans over columnar
-storage are where hand-written AVX2 kernels earn their keep. A single durable
-queue commit is where CybouDB is slowest, because it flushes twice - the data
-pages, then the publication - where SQLite's WAL appends and flushes once, and
-because it has no WAL at all. **Batching changes that cost profile completely:
-one message per transaction is 1,120 us, a hundred per transaction is 20.75 us
-each.** There is also a known scaling limitation: commit validation currently
-grows with the number of retained queue and stream segments.
+Read that as a shape, not a scoreboard. Analytical scans over columnar storage
+are where hand-written AVX2 kernels earn their keep. A single durable queue
+commit is where CybouDB is slowest: it flushes twice — the data pages, then the
+publication — where SQLite's WAL appends and flushes once, and CybouDB has no
+WAL at all. **Batching changes that cost completely: one message per transaction
+is 1,120 us, a hundred per transaction is 20.75 us each.**
 
 Full numbers, method and the failed experiments:
-[engines](benchmarks/results/2026-09-13-engines-10m.md) and
+[engines](benchmarks/results/2026-09-13-engines-10m.md) ·
 [queue](benchmarks/results/2026-09-13-queue.md).
-
-The project also explores how far a compact engine can be pushed when its
-storage layout and execution model are designed directly around modern CPU and
-operating-system primitives: memory-mapped I/O, fixed-size pages,
-cache-conscious data layouts, SIMD predicate evaluation and minimal runtime
-dependencies.
-
-> **Project status: pre-release (0.5.0-preview.1).** The on-disk format, the
-> transaction semantics and the recovery behaviour are frozen as version 1 and
-> written down in [docs/FORMAT.md](docs/FORMAT.md),
-> [docs/TRANSACTIONS.md](docs/TRANSACTIONS.md) and
-> [docs/RECOVERY.md](docs/RECOVERY.md). SQL, the columnar executor, exact vector
-> search, tombstoned DELETE with compaction, secondary B+tree indexes, durable
-> queues and append-only streams are implemented and tested on Linux and
-> Windows.
->
-> What is not there, stated rather than implied: no ARM64 backend, no WAL, no
-> second writer, no encryption, no ANN index, no lease semantics on the queue,
-> and no daemon - CybouDB is a library and a command line, not a server. A plan
-> uses an index for an equality or a range over an indexed column and for
-> nothing else.
->
-> **Known performance limitation:** commit validation currently scales with the
-> number of retained queue and stream segments, so a deep queue makes each
-> commit more expensive - 812 us a message at depth 500 against 1,193 us at
-> depth 2,000. Correctness, crash safety and corruption detection are
-> unaffected; the workarounds are batching and keeping retained depth bounded
-> with `DEQUEUE` or `TRIM`. It is measured, the cause is located, and fixing it
-> properly is the first engine work after this preview.
->
-> **CybouDB is not production-ready**, and a preview is a thing to read and try
-> rather than a thing to run a business on.
 
 ---
 
-## What works today
+## Status and limitations
 
-| Area | State |
-| --- | --- |
-| On-disk format v1, checksummed and validated | working |
-| Memory-mapped storage, 4 KiB logical pages | working |
-| Page allocator with a free list | working |
-| Two-superblock metadata publication | working; a commit is one checksummed publication and the highest valid generation wins. The exception is a **legacy** file made by plain `create`, which has no COW bit: its page mutations happen in place and are not crash-safe. Every other creator, and everything the library makes, stages and publishes |
-| Persisted COW mode and allocation map | working; every database `create` makes |
-| Typed catalog and COW root-path updates | working; up to 251 objects in one namespace - tables, indexes, queues and streams share it - and 64 columns per table |
-| PAX columnar table storage | working; whole 64-row groups, typed columns, NULL masks |
-| Multi-page PAX tables | working; two-level directory tree (up to 28M rows per table), cross-page batches |
-| Paired multi-page allocation map | working; 63 GiB ceiling, page reclamation |
-| SQL engine: parser, binder, executor | working; pure x86-64 scalar and batch execution |
-| SQL statements | working; `CREATE TABLE`, `DROP TABLE`, `INSERT INTO` (multi-row), fixed-width flat-PAX `UPDATE ... SET literal WHERE`, `DELETE FROM ... [WHERE]`, `SELECT ... WHERE`, stable single-key `ORDER BY`, `LIMIT [OFFSET]`, correctness-first `INNER JOIN`/`LEFT JOIN` on qualified INT32/INT64 equi-keys, `BEGIN`/`COMMIT`/`ROLLBACK`, `CREATE [UNIQUE] INDEX` / `DROP INDEX`, `CREATE QUEUE` / `DROP QUEUE` / `ENQUEUE` / `DEQUEUE`, `CREATE STREAM` / `DROP STREAM` / `APPEND` / `READ` / `TRIM`, `CREATE CURSOR` / `DROP CURSOR` |
-| Secondary indexes | working; copy-on-write B+tree on INT32/INT64 columns, unique or not, maintained by every statement that changes a table. A plan uses one for any single comparison against an indexed column, and an UPDATE or a marking DELETE patches the entries of the rows it touched rather than rebuilding the tree: see [docs/INDEX.md](docs/INDEX.md) |
-| DELETE strategy | working; truncation, per-row tombstones, or a compacting rewrite, chosen per statement from what the table already holds. No explicit `VACUUM` |
-| SQL types and semantics | working for `INT32`, `INT64`, `FLOAT32`, `BOOL`, and persistent `TEXT`/`BLOB` |
-| CLI: `query` | working; executes statements, autocommits mutations, tabular output |
-| CLI: `create`, `query`, `console`, `info`, `check`, `version` | working; `create` and `cyboudb_create` make the same canonical profile |
-| Open proportional to the change, not the file | working; `cyboudb check` still reads everything |
-| Linux x86-64, raw syscalls, no libc | working |
-| Windows x64, kernel32 only | working |
-| Storage, fault-injection, and SQL test suites | working; 18,000+ automated checks on Linux and Windows, every one of them run by CI on both |
-| CI on Linux and Windows | working; every push builds and runs the whole suite on both, and the two jobs run the same tests |
-| Interactive console (REPL) | working; interactive terminal (`ReadConsoleW` / stdin), piped scripts, multiline queries, meta-commands (Phase 4) |
-| Public C library ABI (`cyboudb.h`, `libcyboudb.a`, `cyboudb.lib`) | working; borrowed typed batch views, prepared statement caching (Phase 5) |
-| Hardware acceleration & SIMD | working; SSE4.2 hardware CRC-32C, BMI2 primitives (pext/pdep/bzhi), AVX2 256-bit scan kernels, CPUID detection (Phase 6) |
-| ARM64 execution backend | not started (Phase 7) |
-| Vector engine | working; `VECTOR(FLOAT32, n)` columns, persistent extents, exact top-K through `ORDER BY <distance> LIMIT k` in both directions, scalar and AVX2. No ANN index |
-| Multi-statement transactions | working; `BEGIN`/`COMMIT`/`ROLLBACK` over COW staging, one writer, readers pinned against reclamation |
-| Durable queues | working; `CREATE QUEUE` / `DROP QUEUE`, `ENQUEUE`, `DEQUEUE`. A transactional FIFO in the same file, payloads of any length through the varlen chain, pages reclaimed as messages are taken. Lease semantics (`CLAIM`/`ACK`) are reserved in the format, not implemented: see [docs/QUEUE.md](docs/QUEUE.md) |
-| Append-only streams | working; `CREATE STREAM` / `DROP STREAM`, `APPEND`, up to eight named durable cursors per stream (`CREATE CURSOR` / `DROP CURSOR`), `READ FROM s AS reader`, and `TRIM STREAM s BEFORE p`, which refuses to pass the slowest reader: see [docs/STREAM.md](docs/STREAM.md) |
-| One transaction over all of them | working; a table, its index, a queue and a stream share a file, an allocation map and a commit, so a take, a row and an append are atomic together. `tests/cross_primitive_test.c` |
-| WAL, multi-writer concurrency | not started; the format defends against neither, and an advisory lock prevents the second writer |
-| Encryption | not started (Phase 10) |
+The on-disk format, the transaction semantics and the recovery behaviour are
+frozen as version 1 and written down in [docs/FORMAT.md](docs/FORMAT.md),
+[docs/TRANSACTIONS.md](docs/TRANSACTIONS.md) and
+[docs/RECOVERY.md](docs/RECOVERY.md). A newer build reads what an earlier
+released build wrote, and `tests/compat_tests.py` holds databases frozen by
+each release to keep that sentence true.
 
-A database file written on one supported platform is read by the other; this
-is checked as part of development, not assumed.
+Stated rather than implied: no ARM64 backend, no WAL, no second writer, no
+encryption, no ANN index, no lease semantics on the queue, and no daemon. A
+plan uses an index for an equality or a range over an indexed column and for
+nothing else. Compression exists for CONST/FOR runs inside fixed-size slots but
+does not yet reduce the file size on disk.
+
+**Known performance limitation:** commit validation currently scales with the
+number of retained queue and stream segments, so a deep queue makes each commit
+more expensive — 812 us a message at depth 500 against 1,193 us at depth 2,000.
+Correctness, crash safety and corruption detection are unaffected; the
+workarounds are batching and keeping retained depth bounded with `DEQUEUE` or
+`TRIM`. It is measured, the cause is located, and fixing it properly is the
+first engine work after this preview.
+
+**CybouDB is not production-ready**, and a preview is a thing to read and try
+rather than a thing to run a business on.
 
 ---
 
 ## Build
 
-Nothing but an assembler and a linker is required. There is no libc, no CRT and
-no third-party dependency.
-
-**Linux**
+Nothing but an assembler and a linker is required.
 
 ```sh
 sudo apt install nasm binutils     # or dnf / pacman / apk
 sh build.sh                        # builds cyboudb
-sh build.sh --core-tests           # builds build/cow_harness
-sh build.sh --sql-tests            # builds build/sql_harness
-sh build.sh --hardware-tests       # builds build/hardware_harness
+sh build.sh --lib                  # builds build/libcyboudb.a
 ```
-
-**Windows**
 
 ```cmd
 build.bat                          rem builds cyboudb.exe
-build.bat --core-tests             rem builds build\cow_harness.exe
-build.bat --sql-tests              rem builds build\sql_harness.exe
-build.bat --hardware-tests         rem builds build\hardware_harness.exe
+build.bat --lib                    rem builds build\cyboudb.lib
 ```
 
-`build.bat` locates NASM and a linker on its own - GoLink if it is present,
-otherwise the MSVC toolchain through `vswhere` - so no Developer Command
-Prompt is needed. Install NASM with `winget install NASM.NASM`.
+`build.bat` locates NASM and a linker on its own — GoLink if present, otherwise
+the MSVC toolchain through `vswhere` — so no Developer Command Prompt is
+needed. Install NASM with `winget install NASM.NASM`. Release archives are built
+by `tools/package.sh` and `tools/package.bat`.
 
 ---
 
-## Use
-
-### SQL Queries
-
-CybouDB queries RAW PAX columns directly from mapped storage. Encoded columns
-use temporary decoded batches. [Compression V1](docs/COMPRESSION.md) supports
-CONST/FOR inside fixed-size slots; it does not reduce the logical file size.
+## Testing
 
 ```sh
-# Create a database (4000 pages = 16 MiB). One profile: tables, secondary
-# indexes, TEXT/BLOB, vectors, per-row tombstones, queues and streams.
-cyboudb create demo.cdb 4000
-
-# Define a table
-cyboudb query demo.cdb "CREATE TABLE users (id INT32 NOT NULL, score FLOAT32, active BOOL)"
-
-# Insert rows (multi-row batches up to 256 rows)
-cyboudb query demo.cdb "INSERT INTO users VALUES (1, 98.5, true), (2, null, false), (3, -12.25, true)"
-
-# Query with projection and filtering (3VL logic, comparison operators, IS NULL)
-cyboudb query demo.cdb "SELECT id, score FROM users WHERE active = true AND score > 0.0"
+sh tests/run_tests.sh              # the binary against healthy and damaged files
 ```
 
-Fixed-width scans can expose borrowed zero-copy views; variable-width values are
-validated and copied into caller-owned buffers. The versioned on-disk contract
-is in [docs/VARLEN.md](docs/VARLEN.md).
+Over 18,000 automated checks run on Linux and Windows, and CI runs every one of
+them on both on every push. Most of the storage suite is about what happens to a
+**broken** database — a bad checksum, a foreign file, a destroyed superblock
+copy, a truncated file — because that is where a storage engine is actually
+judged. Beyond it: fault injection on COW pages and syncs, exhaustive predicate
+kernels checked scalar against AVX2, a hardware CRC oracle, crash tests that put
+a committed file's publication back and demand the old state entire, an
+out-of-tree application compiled against only the published package, and a lint
+that reads every `.asm` file for arguments passed in the wrong register on one
+ABI but not the other.
 
-Output:
-
-```text
-id | score
--------- | --------
-1 | 98.50
-(1 row)
-```
-
-Mutating statements (`CREATE TABLE`, `INSERT INTO`, `UPDATE`, `DELETE`) automatically commit changes
-to disk upon success. `SELECT` statements open the database in read-only mode,
-evaluating predicates using Three-Valued Logic (3VL) and pruning unreferenced
-columns during columnar batch scans.
-
-Literals are converted to binary32 exactly, by integer arithmetic with
-round-to-nearest-even, independently of the caller's MXCSR. Values are stored
-as IEEE-754 binary32 bits, signed zeros and NaN payloads included, but the
-comparison rules are CybouDB's own: a comparison against NaN is FALSE for all six
-operators, `!=` included, rather than unordered. See [docs/SQL.md](docs/SQL.md) for the full
-syntax, type system, conversion and comparison semantics, and the
-implementation limits.
-
-### Interactive Console (REPL) & Scripts
-
-CybouDB includes an interactive console (REPL) for exploratory queries and SQL script execution:
-
-```sh
-# Start interactive console
-cyboudb demo.cdb
-# or explicitly:
-cyboudb console demo.cdb
-```
-
-Within the console, queries can span multiple lines until terminated with a semicolon (`;`). Meta-commands provide catalog and database inspection:
-
-```text
-cyboudb> .help
-Available meta-commands:
-  .help           Show this help message
-  .info           Show database metadata
-  .schema [TABLE] Show CREATE TABLE statement(s)
-  .tables         List all tables
-  .indexes [TABLE] List indexes, or one table's
-  .queues         List queues and what they hold
-  .streams        List streams and their readers
-  .quit           Exit the console
-  .exit           Exit the console
-
-cyboudb> .tables
-users
-
-cyboudb> .schema users
-CREATE TABLE users (
-  id  INT32 NOT NULL,
-  score  FLOAT32,
-  active  BOOL
-);
-
-cyboudb> SELECT id, score
-  ...> FROM users
-  ...> WHERE active = true;
-id | score
--------- | --------
-1 | 98.50
-(1 row)
-
-cyboudb> .quit
-```
-
-Non-interactive scripts can also be piped directly into CybouDB:
-
-```sh
-cat script.sql | cyboudb demo.cdb
-```
-
-Piped scripts continue after SQL errors but return a nonzero exit status if
-any SQL statement failed, including a trailing statement at EOF. Interactive
-sessions continue after SQL errors without changing their normal exit status.
-
-Stream input allows 4095 bytes per physical line (excluding LF or CRLF) and
-262143 bytes per accumulated statement (including inserted newlines). Input
-overflow stops the session with an error before the truncated input executes;
-earlier autocommitted statements remain committed. The Windows interactive
-console also rejects incomplete `ReadConsoleW` chunks (its input buffer holds
-1023 UTF-16 code units). Split longer console input across lines.
-
-### Embedding through the C API
-
-Build the static library with `sh build.sh --lib` or `build.bat --lib`; the
-public declarations are in [include/cyboudb.h](include/cyboudb.h).
-
-`cyboudb_create(path, pages, &db)` makes a database file and opens it
-read-write, so a program that links the library does not need the command line
-to get one. It makes the same profile `cyboudb create` does - tables, indexes,
-TEXT/BLOB, vectors, per-row tombstones, queues and streams; compression is the
-one capability left out, because it does not yet make a file smaller on disk -
-and it refuses to replace a file that is already there.
-
-Two examples, both built and run by CI:
-
-* `examples/worker.c` - a worker loop with no broker under it: a job is taken
-  off a queue, its result written to a table and a line appended to an audit
-  stream, all in one transaction. `sh build.sh --worker-example &&
-  ./build/worker_example` (Windows: `build.bat --worker-example` then
-  `build\worker_example.exe`).
-* `examples/vector_search.c` - filtered exact search through the standalone
-  vector runtime, which needs no open database handle at all. `sh build.sh
-  --vector-example && ./build/vector_search_example` (Windows: `build.bat
-  --vector-example` then `build\vector_search_example.exe`).
-Use `cyboudb_prepare` and `cyboudb_step` for row access, or `cyboudb_step_batch` followed
-by `cyboudb_batch_column(stmt, batch, result_col)` for borrowed typed access in SELECT
-order. The accessor preserves reordered and duplicate projections; direct
-`batch->columns` indices refer to physical schema slots. COUNT(*) produces one
-INT64 aggregate row in either stepping mode.
-
-`cyboudb_exec(db, sql)` executes exactly one statement and discards its results.
-The earlier four-argument callback form has been removed before ABI freeze;
-replace calls ending in `NULL, NULL` with the two-argument form, and use
-prepare/step to consume rows. Multiple statements are rejected before execution.
-
-Prepared statement storage starts small and grows during parse/bind; returned
-handles and metadata do not move. The C API supports the documented maximum
-INSERT of 256 rows by 64 columns. Allocation failure returns `CybouDB_NOMEM` and
-leaves no statement handle. `--c-tests` enables allocation fault injection;
-use `--lib` to build a library without test hooks.
-
-Finalize every statement before closing its connection: `cyboudb_close` returns
-`CybouDB_BUSY` while any statement remains alive, including exhausted statements.
-Result names and types are captured at prepare time; returned name pointers
-remain valid until finalize. Batch pointers expire on the next step, reset,
-finalize or mutation on the connection. Serialize access to a connection and
-its statements. The ABI remains experimental; see the remaining
-[hardening work](docs/HARDENING.md).
-
-### Inspecting a database
-
-```sh
-cyboudb create demo.cdb 512     # a database of 512 pages (2 MiB)
-cyboudb info   demo.cdb         # metadata, validated before it is printed
-cyboudb check  demo.cdb         # every page of every generation
-```
-
-`alloc` and `free` also exist and the test suites drive them, but they are the
-pre-COW allocator's controls and are not listed in `--help`: on the database
-`create` makes, `free` answers *operation not allowed for this storage mode*,
-because a copy-on-write file returns pages through retirement rather than a
-free list.
-
-```text
-$ cyboudb info demo.cdb
-CybouDB Database Info
-------------------
-  Magic:           CybouDB
-  Format Version:  1
-  Page Size:       4096 bytes
-  Total Pages:     256
-  Allocated Pages: 7
-  Free List Root:  5
-  Generation:      3
-  Superblock:      page 1
-  File Size:       1048576 bytes
-  Status:          OK
-```
-
-### The other creators
-
-`cyboudb create` makes one profile, and it is the one to use. The engine also
-carries a creator for each stage the format grew through - `create-legacy`,
-`create-cow`, `create-catalog`, `create-pax`, `create-pax-multi`, `create-large`,
-`create-tombstones`, `create-compressed`. They exist so the test suites can
-build a file at each capability level and prove that a reader refuses what it
-does not understand. They are not in `--help`, they are not a menu, and a user
-choosing among them is choosing which features to do without. What each one
-enables is in [docs/FORMAT.md](docs/FORMAT.md).
-
-Creating a database never overwrites an existing file; `--force` is required
-for that.
-
----
-
-## Test
-
-### Storage and CLI Tests
-
-```sh
-sh tests/run_tests.sh
-```
-
-Runs the built binary against healthy and deliberately damaged databases and
-checks both the exit code and the output. The same script runs on Linux and,
-through Git Bash, on Windows. It needs `python3` for `tests/corrupt.py`, which
-produces damaged files.
-
-Most of the suite is about what happens to a **broken** database: a bad
-checksum, a foreign file, an unsupported version, a destroyed superblock copy,
-a truncated file, a corrupt free list. Two cases assert the opposite - that the
-format survives losing one superblock copy, and that the newer generation wins.
-
-### Core and Fault-Injection Tests
-
-Built with `--core-tests` (`build/cow_harness`):
-
-* `tests/cow_tests.py`: COW page copies, pre-commit writeback, torn superblocks,
-  and injected sync errors.
-* `tests/bitmap_tests.py`: Two-bit allocation map validation and recovery.
-* `tests/catalog_tests.py`: Typed catalog root-path updates and schema validation.
-* `tests/zone_validation_tests.py`: Zone graph corruption, generation recovery and exhaustive statistics recomputation.
-* `tests/zone_sql_tests.py`: SQL zone ON/OFF parity, FLOAT32 and 3VL semantics, and per-leaf pruning counters.
-* `tests/pax_tests.py`: Single-page PAX layout, NULL masks, and boundary limits.
-* `tests/pax_multi_tests.py`: Multi-page directory traversal, two-level trees, and cross-page batches.
-* `tests/concurrency_tests.py`: Single-writer exclusion, read-only coexistence, and reader-pinned reclamation.
-* `tests/span_tests.py`: Paired span maps, 63 GiB scaling, and page recycling.
-* `tests/sql_numeric_tests.py`: IEEE 754 floats, signed zeros, subnormals,
-  infinities, and 3VL NaN predicate evaluation.
-* `tests/varlen_tests.py`: TEXT/BLOB extent round-trips, corruption rejection,
-  CRC and chain topology validation, canonical descriptors, and unchanged
-  output buffers on failed reads.
-* `tests/varlen_fragmentation_tests.py`: non-contiguous extent allocation after
-  alternating retired-page holes.
-
-Build the varlen drivers with `sh build.sh --varlen-tests` and
-`sh build.sh --varlen-fragmentation-tests` (or the corresponding
-`build.bat` targets on Windows).
-
-### SQL and Kernel Test Suites
-
-Built with `--sql-tests` (`build/sql_harness`) and `--kernel-tests` (`build/kernel_harness`):
-
-* `tests/sql_tests.py`: 242 end-to-end SQL integration and boundary tests
-  covering `CREATE TABLE`, `INSERT INTO`, `SELECT`, expressions, precedence,
-  constraints, and rollbacks.
-* `tests/sql_api_tests.py`: 193 contract tests verifying error domains, source
-  locations, MXCSR preservation, prepared plan fast-path contracts and fallbacks,
-  and float literal conversions against an independent rational oracle.
-* `tests/sql_pruning_tests.py`: 36 tests verifying required-column pruning and physical layout access.
-* `tests/sql_sink_tests.py`: 69 tests covering scalar and batch row delivery.
-* `tests/kernel_tests.py`: 13,181 exhaustive predicate kernel tests across all
-  comparison operators, types, and NULL permutations, run once per dispatch
-  mode so the AVX2 and scalar paths are checked against each other.
-
-### Hardware Optimization Tests
-
-Built with `--hardware-tests` (`build/hardware_harness`):
-
-* `tests/hardware_tests.py`: 3,670 oracle test cases verifying hardware SSE4.2 CRC-32C against reference scalar CRC-32C across buffer sizes (0..8180 bytes) and byte alignments, plus BMI2 `pext`, `pdep`, `bzhi`, and NULL mask compaction routines with bit-for-bit scalar fallbacks.
-
-### Queue, Stream and Cross-Primitive Tests
-
-Built with `--c-tests`:
-
-* `tests/queue_sql_tests.py` (65) and `tests/queue_page_test.c` (75): the queue
-  page and its validation at both depths, the shared namespace, segment
-  boundaries, and four hundred round trips of a two-page message through a file
-  too small to survive a leak.
-* `tests/stream_sql_tests.py` (103) and `tests/stream_page_test.c` (63): the
-  stream page and its cursors, the type boundary against queues, `APPEND`,
-  `READ`, `TRIM`, and the cursor table read back off the disk.
-* `tests/queue_api_test.c` (23) and `tests/stream_api_test.c` (30): a message
-  and a record through the C ABI, including a buffer too small being refused
-  rather than filled.
-* `tests/cross_primitive_test.c` (48): one transaction over a table, its index,
-  a queue and a stream - committed, rolled back, and failing in the middle.
-* `tests/cross_primitive_crash_tests.py` (17): the same transaction, crashed.
-  A committed file has its publication put back while every staged page stays
-  on the disk - what a machine that lost power between the data sync and the
-  publication is left holding - and a reader must find the old state entire.
-  Also a torn newest superblock, one that never reached the platter, and the
-  mirror case where the *older* copy is the damaged one and the committed
-  transaction has to survive. The invariant is that every outcome is wholly
-  old or wholly new: never a message taken with no row to show for it.
-
-### Compatibility and packaging
-
-* `tests/compat_tests.py` (29): databases frozen by each released build, under
-  `tests/compat/<version>/`, gzipped and base64-encoded because the repository
-  holds text. Each is checked with `cyboudb check`, read back cell by cell -
-  rows that survived a `DELETE`, a TEXT value, a vector still searchable, the
-  message still waiting on a queue, the record a stream cursor has not reached
-  - and then written to on a copy, because a database you can only read is not
-  compatible in any useful sense. The fixtures are never regenerated: rebuilt
-  with the current engine they would only prove it can read itself.
-* `tests/package_consumer.c`: an application compiled in a directory holding
-  only what a release ships - `cyboudb.h` and the static library - so that a
-  public header including a private one, or a missing exported symbol, fails in
-  CI rather than for the first person who downloads the package.
-
-### Argument register lint
-
-* `tests/abi_arg_lint.py`: reads every `.asm` file for the one mistake this
-  project keeps making - an argument register read after something else has
-  taken it, in either direction. ARG1..ARG6 are different machine registers on
-  Win64 and System V, so the bug reads correctly on one platform and passes the
-  wrong value on the other. Seven such bugs were found by failing tests before
-  the lint existed; it has caught six since, two of them already in the tree and
-  live on Windows.
-
-All test suites run in CI on both Linux and Windows.
+The suites and what each one covers are listed in
+[docs/TESTING.md](docs/TESTING.md).
 
 ---
 
 ## Documentation
 
-* **[ARCHITECTURE.md](ARCHITECTURE.md)** - the design: layering, the on-disk
-  format, the commit protocol, the allocator, and how one format is meant to
-  serve several hardware-native execution engines.
-* **[CHANGELOG.md](CHANGELOG.md)** - what is in each release, and the rule
-  that the on-disk format version is not the product version.
-* **[ROADMAP.md](ROADMAP.md)** - the phases, and what is actually done.
-* **[docs/FORMAT.md](docs/FORMAT.md)** - the on-disk format, version 1, and the
+* **[ARCHITECTURE.md](ARCHITECTURE.md)** — the design: layering, the on-disk
+  format, the commit protocol and the allocator.
+* **[CHANGELOG.md](CHANGELOG.md)** — what is in each release.
+* **[ROADMAP.md](ROADMAP.md)** — the phases, and what is actually done.
+* **[docs/FORMAT.md](docs/FORMAT.md)** — the on-disk format, version 1, and the
   compatibility promise that goes with it.
-* **[docs/TRANSACTIONS.md](docs/TRANSACTIONS.md)** - what a transaction is, the
+* **[docs/TRANSACTIONS.md](docs/TRANSACTIONS.md)** — what a transaction is, the
   commit protocol, and what a failed commit leaves behind.
-* **[docs/RECOVERY.md](docs/RECOVERY.md)** - how opening a database selects a
+* **[docs/RECOVERY.md](docs/RECOVERY.md)** — how opening a database selects a
   generation, and what survives a crash.
-* **[docs/SQL.md](docs/SQL.md)** - SQL dialect, statement syntax, 3VL logic,
-  error domains, and limits.
-* **[docs/CATALOG.md](docs/CATALOG.md)** - typed catalog specification and schema pages.
-* **[docs/COW.md](docs/COW.md)** - copy-on-write design and allocation map.
-* **[docs/PAX.md](docs/PAX.md)** - PAX layout and single-page row storage.
-* **[docs/PAX_MULTI.md](docs/PAX_MULTI.md)** - multi-page table directory format.
-* **[docs/SPAN_MAP.md](docs/SPAN_MAP.md)** - paired multi-page allocation map and recycling.
-* **[docs/INDEX.md](docs/INDEX.md)** - secondary B+tree indexes: the page
-  layout, what a row id means, and when an index is rebuilt.
-* **[docs/QUEUE.md](docs/QUEUE.md)** - durable FIFO queues: the page layout,
-  why a message is addressed by position rather than threaded on pointers,
-  what `DEQUEUE` does and does not promise, and what is reserved for leases.
-  `CREATE QUEUE`, `DROP QUEUE`, `ENQUEUE` and `DEQUEUE` work from the command
-  line, the console and the C ABI, with a longer payload carried by the same
-  extent chain a TEXT cell uses. Leases are not implemented; the format
-  reserves what they need.
-* **[docs/STREAM.md](docs/STREAM.md)** - append-only streams: why a stream is
-  not a queue with extra readers, why it is nonetheless stored in a queue's
-  segments, and what a trim may not pass. `CREATE STREAM`, `APPEND`,
-  `CREATE CURSOR`, `READ` and `TRIM` work from the command line, the console
-  and the C ABI.
+* **[docs/SQL.md](docs/SQL.md)** — dialect, syntax, 3VL logic, error domains
+  and limits.
+* **[docs/INDEX.md](docs/INDEX.md)** — secondary B+tree indexes.
+* **[docs/QUEUE.md](docs/QUEUE.md)** — durable FIFO queues, what `DEQUEUE` does
+  and does not promise, and what is reserved for leases.
+* **[docs/STREAM.md](docs/STREAM.md)** — append-only streams, why a stream is
+  not a queue with extra readers, and what a trim may not pass.
+* **[docs/VARLEN.md](docs/VARLEN.md)** — the TEXT/BLOB extent chain.
+* **[docs/TESTING.md](docs/TESTING.md)** — every test suite and what it proves.
+* Storage internals: [COW](docs/COW.md) · [CATALOG](docs/CATALOG.md) ·
+  [PAX](docs/PAX.md) · [PAX_MULTI](docs/PAX_MULTI.md) ·
+  [SPAN_MAP](docs/SPAN_MAP.md) · [COMPRESSION](docs/COMPRESSION.md) ·
+  [HARDENING](docs/HARDENING.md).
 
 ---
 
