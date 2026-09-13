@@ -996,6 +996,8 @@ sql_bind:
     je      .bind_create_stream
     cmp     rax, STMT_DROP_STREAM
     je      .bind_drop_stream
+    cmp     rax, STMT_APPEND
+    je      .bind_append
 
     mov     eax, SQL_ERR_SYNTAX
     jmp     .binder_exit
@@ -1980,6 +1982,30 @@ sql_bind:
     call    catalog_find_queue
     test    rax, rax
     jz      .queue_not_found
+    jmp     .bind_payload
+
+; The same payload, resolved through the other half of the type boundary: a
+; name that turns out to be a queue is not a stream, and APPEND says so rather
+; than writing a record into it.
+.bind_append:
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + PLAN_TYPE], STMT_APPEND
+    mov     r11, [rbp - 8]
+    test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_STREAM
+    jz      .stream_unsupported
+    mov     r10, [rbp - 16]
+    mov     rcx, [r10 + QUEUE_NAME_LEN]
+    cmp     rcx, 31
+    ja      .bad_tbl_len
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + QUEUE_NAME_PTR]
+    mov     ARG3, [r10 + QUEUE_NAME_LEN]
+    lea     ARG4, [rbp - 56]
+    call    catalog_find_stream
+    test    rax, rax
+    jz      .stream_not_found
+
+.bind_payload:
 
     mov     r10, [rbp - 16]
     mov     r9, [r10 + QUEUE_VALUE_EXPR]

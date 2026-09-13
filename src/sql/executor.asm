@@ -54,7 +54,7 @@ extern db_pax_mark_dead, db_pax_dead_total
 extern db_catalog_put_index, db_catalog_set_index_root, db_index_of_table
 extern db_catalog_put_queue, db_queue_push, db_queue_pop, db_queue_peek
 extern db_queue_retire_all
-extern db_catalog_put_stream, db_stream_retire_all
+extern db_catalog_put_stream, db_stream_retire_all, db_stream_append
 extern db_catalog_page
 extern db_index_retire_tree
 extern db_index_insert, db_index_insert_unique, db_index_delete
@@ -589,6 +589,8 @@ sql_execute_batch:
     je      .exec_create_stream
     cmp     rax, STMT_DROP_STREAM
     je      .exec_drop_stream
+    cmp     rax, STMT_APPEND
+    je      .exec_append
     cmp     rax, STMT_ENQUEUE
     je      .exec_enqueue
     cmp     rax, STMT_DEQUEUE
@@ -1271,6 +1273,15 @@ sql_execute_batch:
     mov     ARG3, [r10 + PLAN_DATA1]
     mov     ARG4, [r10 + PLAN_DATA2]
     call    db_queue_push
+    jmp     .storage_done
+
+.exec_append:
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    mov     ARG3, [r10 + PLAN_DATA1]
+    mov     ARG4, [r10 + PLAN_DATA2]
+    call    db_stream_append
     jmp     .storage_done
 
 ; The message comes back through the plan, because a DEQUEUE answers with one

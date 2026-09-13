@@ -1696,6 +1696,8 @@ sql_parse:
     je      .parse_rollback
     cmp     rax, TOK_ENQUEUE
     je      .parse_enqueue
+    cmp     rax, TOK_APPEND
+    je      .parse_append
     cmp     rax, TOK_DEQUEUE
     je      .parse_dequeue
 
@@ -2280,8 +2282,11 @@ sql_parse:
     jmp     .check_eof
 
 ; --- ENQUEUE INTO name VALUES (literal) --------------------------------------
-; One message, and only a literal: a queue takes bytes, not an expression over
-; rows it has no columns for.
+; --- APPEND TO name VALUES (literal) -----------------------------------------
+; One message or one record, and in both cases only a literal: neither a queue
+; nor a stream has columns for an expression to be over. The two differ in the
+; preposition and in what the name must turn out to name, so the parse is one
+; parse and the binder is where they part.
 .parse_enqueue:
     mov     r10, [rbp - 32]
     mov     r10, [r10]
@@ -2291,6 +2296,17 @@ sql_parse:
     call    sql_tok_next
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_INTO
     jne     .bad_syntax
+    jmp     .parse_payload_target
+.parse_append:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_APPEND
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_TO
+    jne     .bad_syntax
+.parse_payload_target:
     lea     ARG1, [rbp - 160]
     lea     ARG2, [rbp - 192]
     call    sql_tok_next

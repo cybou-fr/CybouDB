@@ -225,6 +225,85 @@ def main():
         check("is there in a new process", "kept holding 0, read by 0" in out,
               out)
 
+        # --- APPEND ----------------------------------------------------------
+        query("CREATE STREAM log;")
+        r = query("APPEND TO log VALUES ('first');")
+        check("a record is appended", r.returncode == 0 and
+              "Record appended" in r.stdout, r.stdout)
+        check("and the stream says it holds one",
+              "log holding 1, read by 0" in console(".streams\n.quit\n",
+                                                    db).stdout)
+
+        r = query("APPEND TO q VALUES ('x');")
+        check("APPEND will not write into a queue", r.returncode != 0,
+              r.stdout)
+        r = query("APPEND TO t VALUES ('x');")
+        check("nor into a table", r.returncode != 0, r.stdout)
+        r = query("APPEND TO nosuch VALUES ('x');")
+        check("nor into a name nothing holds", r.returncode != 0, r.stdout)
+        r = query("APPEND TO log VALUES (7);")
+        check("and a record is bytes, not a number", r.returncode != 0,
+              r.stdout)
+
+        # Past the 62 slots a segment holds, which is where the arithmetic
+        # that decides the segment and the slot is first asked a question it
+        # cannot answer wrong quietly.
+        script = "".join(f"APPEND TO log VALUES ('record {i}');\n"
+                         for i in range(2, 74)) + ".quit\n"
+        r = console(script, db)
+        check("seventy-two more, across the segment boundary",
+              r.stdout.count("Record appended") == 72, r.stdout)
+        page = stream_page(db, "log")
+        blob = open(db, "rb").read()
+        end = struct.unpack_from("<Q", blob, page + S_END)[0]
+        segs = struct.unpack_from("<I", blob, page + S_SEGMENTS)[0]
+        check("leave a stream of seventy-three in two segments",
+              end == 73 and segs == 2, f"end={end} segments={segs}")
+        check("with the reserved field a queue keeps its claim cursor in "
+              "still zero",
+              struct.unpack_from("<Q", blob, page + 56)[0] == 0)
+        r = run("check", db)
+        check("and a file the deep check accepts", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
+
+        # A payload longer than a slot goes into an extent chain, which is the
+        # varlen code a TEXT cell uses and the same thing to validate.
+        # 200 bytes rather than 4000: the command line caps a statement's
+        # length, and anything past the 32 a slot holds takes the same path.
+        r = query("APPEND TO log VALUES ('" + "x" * 200 + "');")
+        check("a record longer than a slot is appended", r.returncode == 0,
+              r.stdout)
+        r = run("check", db)
+        check("and its chain checks out", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
+
+        # --- and dropping one gives the pages back ---------------------------
+        # Without the retire, a stream that is made and dropped forever would
+        # spend segments and never give one back. The assertion is a file too
+        # small to survive that.
+        tight = str(Path(tmp) / "tight.cdb")
+        run("create-large", tight, "300", "--force")
+        body = "d" * 4000
+        script = ("CREATE STREAM s;\n"
+                  f"APPEND TO s VALUES ('{body}');\n"
+                  "DROP STREAM s;\n") * 50 + ".quit\n"
+        r = console(script, tight)
+        check("fifty make-and-drop rounds through a file too small to leak",
+              r.stdout.count("Stream dropped") == 50, r.stdout)
+        r = run("check", tight)
+        check("leaving a file that checks out", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
+
+        # --- a rollback takes the records with it ----------------------------
+        before = [l for l in console(".streams\n.quit\n", db).stdout
+                  .splitlines() if l.startswith("log ")]
+        r = console("BEGIN;\nAPPEND TO log VALUES ('undone');\nROLLBACK;\n"
+                    ".streams\n.quit\n", db)
+        after = [l for l in r.stdout.splitlines() if l.startswith("log ")]
+        check("a rolled back APPEND leaves the stream where it was",
+              before and after and before[0] == after[0],
+              f"{before} -> {after}")
+
         # --- a database without the feature says so --------------------------
         plain = str(Path(tmp) / "plain.cdb")
         run("create-pax", plain, "256", "--force")

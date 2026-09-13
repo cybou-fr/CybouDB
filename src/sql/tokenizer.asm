@@ -70,6 +70,8 @@ kw_queue:           db "queue", 0
 kw_enqueue:         db "enqueue", 0
 kw_dequeue:         db "dequeue", 0
 kw_stream:          db "stream", 0
+kw_append:          db "append", 0
+kw_to:              db "to", 0
 
     align 8
 kw_table_entries:
@@ -128,6 +130,8 @@ kw_table_entries:
     dq kw_enqueue,  7, TOK_ENQUEUE
     dq kw_dequeue,  7, TOK_DEQUEUE
     dq kw_stream,   6, TOK_STREAM
+    dq kw_append,   6, TOK_APPEND
+    dq kw_to,       2, TOK_TO
     dq 0,          0, 0                 ; terminator
 
 section .text

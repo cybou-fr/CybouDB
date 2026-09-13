@@ -19,6 +19,7 @@ extern db_var_validate_chain, db_var_write_chain, db_var_read_chain
 global queue_page_valid, db_queue_seg_addr, queue_seg_seal, db_queue_segments_valid
 global db_queue_push, db_queue_pop, db_queue_peek, db_queue_depth
 global db_queue_retire_all
+global db_stream_append
 global db_stream_retire_all
 
 section .data
@@ -417,11 +418,34 @@ db_queue_depth:
 ;               [rbp-104]=segment address
 ; -----------------------------------------------------------------------------
 db_queue_push:
+    mov r10d, CAT_QUEUE
+    jmp queue_push_common
+; A record at the end of a stream is the same write: the position decides the
+; segment and the slot, the payload goes in or into a chain, and nothing that
+; is already there is touched. What differs is which page type it will accept,
+; where that type's directory starts, how many entries it has room for, and
+; that a stream has no claim cursor to carry forward - four numbers, against a
+; second copy of every boundary case above.
+db_stream_append:
+    mov r10d, CAT_STREAM
+queue_push_common:
     FRAME_BEGIN 192, 1
+    ; Only the type is carried in, and in R10, because every other register
+    ; that could carry it is one of the four arguments under one of the two
+    ; conventions. The two numbers that follow from it are derived here, after
+    ; the arguments are somewhere safe.
+    mov [rbp - 144], r10            ; the page type this one writes
     mov [rbp - 8], ARG1
     mov [rbp - 16], ARG2
     mov [rbp - 24], ARG3
     mov [rbp - 32], ARG4
+    mov qword [rbp - 152], Q_ENTRIES
+    mov qword [rbp - 160], Q_MAX_SEGMENTS
+    cmp qword [rbp - 144], CAT_STREAM
+    jne .p_shaped
+    mov qword [rbp - 152], S_ENTRIES
+    mov qword [rbp - 160], S_MAX_SEGMENTS
+.p_shaped:
     mov r10, ARG1
     test qword [r10 + DB_FEATURES], CybouDB_FEATURE_QUEUE
     jz .p_state
@@ -434,9 +458,10 @@ db_queue_push:
     call db_catalog_page
     test rax, rax
     jz .p_state
-    cmp dword [rax + CAT_TYPE], CAT_QUEUE
+    mov ecx, [rax + CAT_TYPE]
+    cmp rcx, [rbp - 144]
     jne .p_state
-    mov rdx, [rax + Q_HEAD]
+    mov rdx, [rax + Q_HEAD]         ; S_FIRST is the same offset
     mov [rbp - 40], rdx
     mov rdx, [rax + Q_TAIL]
     mov [rbp - 48], rdx
@@ -459,7 +484,7 @@ db_queue_push:
     mov [rbp - 88], rax             ; the directory entry it wants
     cmp rax, [rbp - 56]
     jb .p_edit
-    cmp rax, Q_MAX_SEGMENTS
+    cmp rax, [rbp - 160]
     jae .p_full                     ; the backlog this format can hold
 
 .p_edit:
@@ -495,25 +520,28 @@ db_queue_push:
     imul rax, QUEUE_SEG_SLOTS
     mov [r10 + QSEG_FIRST], rax
     mov r11, [rbp - 72]
+    add r11, [rbp - 152]
     mov rax, [rbp - 88]
     mov rdx, [rbp - 96]
-    mov [r11 + Q_ENTRIES + rax * 8], rdx
+    mov [r11 + rax * 8], rdx
     inc qword [rbp - 56]
     jmp .p_slot
 
 .p_have_segment:
     mov r11, [rbp - 72]
+    add r11, [rbp - 152]
     mov rax, [rbp - 88]
-    mov ARG2, [r11 + Q_ENTRIES + rax * 8]
+    mov ARG2, [r11 + rax * 8]
     mov ARG1, [rbp - 8]
     lea ARG3, [rbp - 96]
     call queue_copy_seg
     test eax, eax
     jnz .p_done
     mov r11, [rbp - 72]
+    add r11, [rbp - 152]
     mov rax, [rbp - 88]
     mov rdx, [rbp - 96]
-    mov [r11 + Q_ENTRIES + rax * 8], rdx
+    mov [r11 + rax * 8], rdx
     mov ARG1, [rbp - 8]
     mov ARG2, [rbp - 96]
     call db_queue_seg_addr
@@ -587,12 +615,18 @@ db_queue_push:
     mov ARG2, [rbp - 8]
     call queue_seg_seal
 
-    ; And the queue says what it now holds. stamp cleared the reserved span,
+    ; And the object says what it now holds. stamp cleared the reserved span,
     ; which is where head, tail and the claim cursor live.
     mov r10, [rbp - 72]
     mov rax, [rbp - 40]
     mov [r10 + Q_HEAD], rax
+    ; The claim cursor follows the head, and only a queue has one: at that
+    ; offset a stream keeps a reserved field that must stay zero, which stamp
+    ; has just made it.
+    cmp qword [rbp - 144], CAT_QUEUE
+    jne .p_positioned
     mov [r10 + Q_CLAIM], rax
+.p_positioned:
     mov rax, [rbp - 48]
     inc rax
     mov [r10 + Q_TAIL], rax

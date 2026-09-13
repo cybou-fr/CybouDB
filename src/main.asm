@@ -195,6 +195,7 @@ msg_sql_queue_created: db "Queue created.", 10, 0
 msg_sql_queue_dropped: db "Queue dropped.", 10, 0
 msg_sql_stream_created: db "Stream created.", 10, 0
 msg_sql_stream_dropped: db "Stream dropped.", 10, 0
+msg_sql_appended:       db "Record appended.", 10, 0
 msg_sql_enqueued:      db "ENQUEUE 1", 10, 0
 msg_sql_queue_empty:   db "(empty)", 10, 0
 msg_sql_done:          db "OK.", 10, 0
@@ -1149,6 +1150,8 @@ cyboudb_exec_query:
     je      .stream_created
     cmp     qword [r10 + PLAN_TYPE], STMT_DROP_STREAM
     je      .stream_dropped
+    cmp     qword [r10 + PLAN_TYPE], STMT_APPEND
+    je      .appended
     cmp     qword [r10 + PLAN_TYPE], STMT_ENQUEUE
     je      .enqueued
     cmp     qword [r10 + PLAN_TYPE], STMT_DEQUEUE
@@ -1239,6 +1242,10 @@ cyboudb_exec_query:
 
 .stream_dropped:
     PUTS    msg_sql_stream_dropped
+    jmp     .exec_success
+
+.appended:
+    PUTS    msg_sql_appended
     jmp     .exec_success
 
 .mutation_unnamed:

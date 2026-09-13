@@ -1036,7 +1036,36 @@ going by shape rather than by type would let each drop the other and look
 right doing it. `DROP STREAM` on a queue, `DROP QUEUE` on a stream, and
 `ENQUEUE`/`DEQUEUE` against a stream are all refused by name.
 
-Still to come: `APPEND` and cursors, `READ`, `TRIM`, the C ABI.
+**Done: `APPEND`.** A record at the end of a stream is the write a message
+at the tail of a queue is, so it is that routine: the position decides the
+segment and the slot, a payload past 32 bytes goes into the varlen chain a
+TEXT cell uses, and nothing already written is touched. Four things differ -
+the page type it accepts, where that type's directory starts, how many entries
+it has room for, and that a stream has no claim cursor to carry forward - and
+they are four numbers rather than a second copy of every boundary case.
+
+That sharing is also where this turn's bug was. The entry points carried their
+differences in R10, R11 and R9 - and R9 is `ARG4` on Windows, so the length
+argument was destroyed before it was saved. It reads correctly on Linux. The
+fix is the rule this project already had: only R10 and R11, which no argument
+aliases, and derive the rest after the arguments are somewhere safe.
+
+`tests/abi_arg_lint.py` now looks for that direction too - an argument read
+out of a register that scratch has been put into since it arrived - and it
+catches the bug when it is put back. Making it quiet on the existing code took
+three narrowings, each of which is a fact about the codebase: state resets at a
+routine's own label as well as at `call` and `ret`; it is carried along a `jmp`
+into the shared body an entry point falls into; an ARG the run has already set
+is not an incoming argument any more; and a comment that names a register is a
+comment. Six of the seven first reports were the lint reading the comments that
+explain why the code below is careful.
+
+`tests/stream_sql_tests.py` is 53 checks now. Seventy-three records cross the
+62-slot segment boundary into a second segment, a 200-byte record takes the
+extent path, fifty make-and-drop rounds run through a 300-page file that could
+not survive a leak, and a rolled back `APPEND` leaves the stream where it was.
+
+Still to come: cursors, `READ`, `TRIM`, the C ABI.
 
 What is decided:
 
