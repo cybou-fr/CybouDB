@@ -266,8 +266,15 @@ int main(int argc, char **argv) {
                 memcpy(saved, target + damage[i].off, (size_t)damage[i].width);
                 memcpy(target + damage[i].off, &damage[i].value,
                        (size_t)damage[i].width);
+                /* A fresh id for every case. Sharing one made the suite
+                 * order-dependent in the worst way: the moment a case let a
+                 * commit through, the queue existed, and every case after it
+                 * was "refused" because the id was taken rather than because
+                 * the damage was seen - a pass that proves nothing, and one
+                 * that hides exactly the regression this suite is for. */
                 queue_image(image, "probe2");
-                refused = db_catalog_put_queue(ctx, 700011, image) != 0 ||
+                refused = db_catalog_put_queue(ctx, 700011 + (uint64_t)i,
+                                               image) != 0 ||
                           db_commit(ctx) != CybouDB_OK;
                 db_rollback(ctx);
                 memcpy(target + damage[i].off, saved, (size_t)damage[i].width);
