@@ -47,6 +47,13 @@ default rel
 ; a DELETE patches indexes too, and the two regions are live at once.
 %define IXP_DESC_OFF    (DELETE_SCRATCH_BASE + 80)
 %define IXP_PAGE_OFF    (DELETE_SCRATCH_BASE + 88)
+; Where this execution found the schema. PLAN_SCHEMA_PAGE is an address the
+; binder cached, and copy-on-write moves the page it names on every commit, so
+; a prepared statement run a second time would read a page that has since been
+; retired. The select cursor already guards its own use of that cache against
+; the generation; the mutation paths re-resolve instead, which is what
+; .exec_insert has always done.
+%define UPD_SCHEMA_OFF  (DELETE_SCRATCH_BASE + 96)
 %define EXEC_FRAME_SIZE (DELETE_SCRATCH_BASE + 128)
 
 extern db_catalog_put, db_catalog_drop, db_catalog_truncate_data, db_pax_insert, db_pax_update_one, db_pax_capacity, db_commit, db_rollback
@@ -1463,6 +1470,31 @@ sql_execute_batch:
     call    db_catalog_put
     jmp     .storage_done
 .exec_insert:
+    ; The bound batch is restored from the copy the binder took before anything
+    ; touches it. Materialising a TEXT, BLOB or VECTOR cell writes that cell's
+    ; extent root over the pointer to its literal bytes, so a prepared INSERT
+    ; stepped a second time would otherwise read a page id as an address. The
+    ; plan is what prepare produced and has to stay that way; execution works
+    ; on values it restored for itself.
+    mov     r10, [rbp - 16]
+    mov     r11, [r10 + PLAN_INSERT_PRISTINE]
+    test    r11, r11
+    jz      .insert_values_ready
+    mov     rcx, [r10 + PLAN_INSERT_CELLS]
+    test    rcx, rcx
+    jz      .insert_values_ready
+    mov     rax, [r10 + PLAN_DATA1]
+    mov     rax, [rax + BATCH_VALUES]
+    test    rax, rax
+    jz      .insert_values_ready
+.insert_restore:
+    dec     rcx
+    mov     rdx, [r11 + rcx * 8]
+    mov     [rax + rcx * 8], rdx
+    test    rcx, rcx
+    jnz     .insert_restore
+.insert_values_ready:
+
     ; Where the appended rows will sit, read before the append moves it.
     ; Through db_catalog_page rather than db_catalog_get: the second validates
     ; the whole staged graph, which is a walk proportional to the table, and
@@ -1496,8 +1528,28 @@ sql_execute_batch:
     call    sql_index_insert_batch
     jmp     .storage_done
 .exec_update:
-    mov r10, [rbp - 16]
-    mov r11, [r10 + PLAN_SCHEMA_PAGE]
+    ; An UPDATE reports how many rows it changed by leaving the count in
+    ; PLAN_DATA1, which is where a SELECT plan keeps its projection count - so
+    ; the scan this statement opens next time would read that count and follow
+    ; PLAN_DATA2 as an array of projections that an UPDATE never had. The plan
+    ; starts every execution the way the binder left it.
+    mov     r10, [rbp - 16]
+    mov     qword [r10 + PLAN_DATA1], 0
+    mov     qword [r10 + PLAN_DATA2], 0
+    mov     qword [r10 + PLAN_DATA3], 0
+
+    ; The schema as it is now, not as it was when this plan was bound.
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    call    db_catalog_page
+    test    rax, rax
+    jnz     .update_schema_found
+    mov     eax, CybouDB_E_NOTFOUND
+    jmp     .storage_done
+.update_schema_found:
+    mov [rbp - UPD_SCHEMA_OFF], rax
+    mov r11, rax
     mov eax, [r11 + CAT_TABLE_ROWS]
     add rax, 63
     shr rax, 6
@@ -1610,8 +1662,7 @@ sql_execute_batch:
 
 .update_prep_done:
     mov ARG1, [rbp - 8]
-    mov r10, [rbp - 16]
-    mov ARG2, [r10 + PLAN_SCHEMA_PAGE]
+    mov ARG2, [rbp - UPD_SCHEMA_OFF]
     call db_pax_capacity
     mov [rbp - 216], rax            ; physical rows per leaf
 

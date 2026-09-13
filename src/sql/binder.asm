@@ -1460,10 +1460,30 @@ sql_bind:
     cmp     rbx, [rbp - 80]
     jb      .ins_row
 
+    ; The copy execution restores from. Materialising a TEXT, BLOB or VECTOR
+    ; cell writes its extent root over the pointer to the literal bytes, so
+    ; without this a second step of the same prepared statement would read a
+    ; page id as an address. Taken here, after every cell is filled, and never
+    ; written to again.
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, r14
+    shl     ARG2, 3
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+    mov     [rbp - 224], rax
+    mov     rdi, rax
+    mov     rsi, [rbp - 88]
+    mov     rcx, r14
+    rep movsq
+
     ; Insert plan ready
     mov     r10, [rbp - 48]
     mov     rax, [rbp - 104]
     mov     [r10 + PLAN_DATA1], rax     ; batch_ptr
+    mov     rax, [rbp - 224]
+    mov     [r10 + PLAN_INSERT_PRISTINE], rax
+    mov     [r10 + PLAN_INSERT_CELLS], r14
 
     xor     eax, eax
     jmp     .binder_exit

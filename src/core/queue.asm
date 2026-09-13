@@ -191,6 +191,22 @@ db_queue_segments_valid:
     imul rax, QUEUE_SEG_SLOTS
     cmp [r10 + QSEG_FIRST], rax
     jne .bad
+    ; Every segment's checksum, every commit, including ones an older
+    ; generation sealed.
+    ;
+    ; Gating this on db_bitmap_deep - fresh generation or DB_VERIFY, the rule
+    ; the catalog, index, PAX, varlen and zone map code all follow - was tried
+    ; and reverted. It bought nothing: 746, 848 and 1092 us a message at depths
+    ; of 500, 1,000 and 2,000, against 764, 830 and 1092 before. The counters
+    ; said why - segments visited per commit were 4.5, 8.6 and 16.6 while the
+    ; catalog stayed at 2.0, so the cost is the visit and not the sum. And it
+    ; had a price: `queue_page_test` damages a byte of a slot in a segment an
+    ; earlier generation wrote and requires the commit to refuse, which a
+    ; skipped checksum does not. Paying a real weakening of what a commit
+    ; catches for no measured speed is not a trade.
+    ;
+    ; The depth is a directory the commit re-proves entry by entry. Making that
+    ; incremental is the fix, and it is in ROADMAP.md for after the preview.
     mov ARG1, r10
     mov ARG2, QSEG_CRC
     call crc32c

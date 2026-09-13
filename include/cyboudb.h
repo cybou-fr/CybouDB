@@ -20,9 +20,15 @@ extern "C" {
 #endif
 
 /* --- Version --------------------------------------------------------------
- * The product version, which is not the on-disk format version. A file
- * written by any build of format version 1 is readable by any other; this
- * says which build is doing the asking.
+ * The product version, which is not the on-disk format version. This says
+ * which build is doing the asking.
+ *
+ * Compatibility runs one way. A newer release supporting format v1 is expected
+ * to read files produced by earlier released format-v1 builds. An older binary
+ * is NOT guaranteed to open a file that uses feature bits introduced by a newer
+ * release: an unrecognised incompatible feature bit obliges a reader to refuse
+ * the file rather than guess at it, and that refusal is the format working as
+ * designed. See docs/FORMAT.md, which is normative.
  */
 #define CybouDB_VERSION         "0.5.0-preview.1"
 #define CybouDB_VERSION_MAJOR   0

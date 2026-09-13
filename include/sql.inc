@@ -393,7 +393,7 @@
 %define PLAN_UPDATE_IS_NULL 264         ; qword boolean
 %define PLAN_VECTOR_TOPK_EXPR 272       ; qword: bound vector distance expr
 %define PLAN_DELETE_ROWS    280         ; qword rows a DELETE removed
-%define BOUND_PLAN_SIZE     336
+%define BOUND_PLAN_SIZE     352
 %define PLAN_PROJ_RIGHT_BIT 0x80000000  ; u32 projection index belongs to RHS
 %define PLAN_FLAG_LIMIT     2           ; bit 1: LIMIT clause is present
 %define PLAN_FLAG_ORDER     4           ; bit 2: ORDER BY is present
@@ -421,6 +421,16 @@
 ; the record over the name and the second would look up whatever that was.
 %define PLAN_READER_PTR     320
 %define PLAN_READER_LEN     328
+; A bound INSERT batch carries pointers to the literal bytes of its TEXT, BLOB
+; and VECTOR cells. Materialising them writes each cell's extent root over that
+; pointer, which is fine once and fatal twice: a prepared statement stepped
+; again would read a page id as an address. The plan therefore keeps an
+; untouched copy of the whole values array and the execution restores from it,
+; so that what prepare produced stays what prepare produced.
+;
+; PLAN_INSERT_CELLS is the number of qwords in it, not bytes.
+%define PLAN_INSERT_PRISTINE 336
+%define PLAN_INSERT_CELLS    344
 
 ; Projection descriptor passed to batch result sinks (aliases PLAN_DATA1..3).
 %define RESULT_PROJ_COUNT   0           ; qword: projection count, 1..64

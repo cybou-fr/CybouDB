@@ -1385,24 +1385,68 @@ Two causes, and only the first is a fair price:
 
 2. **Commit cost grows with queue depth, and this is a defect.** Per-message
    enqueue cost went 764 us, 830 us, 1092 us at depths of 500, 1,000 and 2,000,
-   while SQLite stayed flat at about 320 us. Step 1 of the commit proves the
-   staged graph by walking what the generation reaches, so a deeper queue is a
-   bigger walk: O(depth) per commit, O(depth^2) to fill a queue. The validation
-   is worth keeping - it is what refuses to publish an incoherent file - but it
-   has to become proportional to the change, the way `db_catalog_page` already
-   made INSERT proportional. **This is the first thing to fix after the
-   preview**, and it applies to every object, not only queues.
+   while SQLite stayed flat at about 320 us.
 
-Found while building the harness, and a release blocker rather than a roadmap
-item: **re-stepping a prepared INSERT that carries a TEXT or BLOB literal
-crashes.** `prepare("INSERT INTO t VALUES (1, 'x')")`, step, `cyboudb_reset`,
-step - segfault in `db_var_write_chain`, reached from
-`db_var_materialize_batch`. An INT-only INSERT re-steps correctly, so the
-materialisation of a varlen value is rewriting the bound batch in place and the
-second execution reads an extent descriptor as a pointer. No test re-steps a
-prepared INSERT after executing one, which is why this survived; SQLite supports
-exactly that and the C API exposes `reset`, so it has to work or refuse, not
-crash.
+   The cheap fix was tried: ask `db_bitmap_deep` before re-summing a segment,
+   which is the policy the catalog, index, PAX, varlen and zone map code all
+   follow. **It changed nothing measurable** - 746, 848, 1092 us against 764,
+   830, 1092 - and `queue_page_test` then charged for it: that suite damages a
+   byte of a slot in a segment an older generation wrote and requires the commit
+   to refuse, which a skipped checksum does not. Real weakening of what a commit
+   catches, for no measured speed. Reverted, with the measurement written into
+   the comment so the next person to have the idea finds it.
+   Asking the counters instead of the clock said why. Segments visited per
+   commit: 4.5, 8.6, 16.6 at those three depths, against a flat 2.0 catalog
+   pages. The cost is the visit, not the checksum - page id, allocation-map
+   membership, magic, version, owner, start position, about thirty scattered
+   page touches per message in an 800 MB file.
+
+   Gating those on generation too would not be sound:
+   `db_bitmap_candidate_payload` asks whether the page is still payload in
+   *this* candidate map, and the map changes every commit. What is needed is a
+   commit that knows a directory's entries have not changed since it last
+   proved them, which is real incremental validation and a change to the
+   invariant that keeps an incoherent file from being published. **First work
+   after the preview**, and it applies to every object, not only queues.
+
+## Phase 18 - A prepared plan is immutable
+
+`cyboudb_reset` exists so a statement can be run again, and the header says so.
+That makes the bound plan something execution reads and must not change. It
+changed it in three different ways, and the queue benchmark walked into the
+first by accident.
+
+**One: a varlen cell's pointer became its extent root.** An INSERT carrying a
+TEXT, BLOB or VECTOR literal keeps a pointer to the literal's bytes in its
+batch; materialising the cell wrote that cell's extent root over the pointer.
+Correct exactly once. The second execution read a page id as an address and
+died inside `db_var_write_chain`. The binder now keeps an untouched copy of the
+whole values array and execution restores from it - the fix the class needed
+rather than a special case for reset.
+
+**Two: a cached schema page outlived the page.** `PLAN_SCHEMA_PAGE` is an
+address the binder cached, and copy-on-write moves that page whenever the
+catalog is written. `.exec_update` trusted it. This one did not crash: it read
+the row count the table had at *prepare* time, sized its scratch from that, and
+**silently updated 154 of the 205 rows it matched while reporting success**. A
+wrong answer that says DONE is worse than a segfault, and it took a constructed
+case to see it at all - the first version of the test passed with the bug still
+in. `.exec_update` now re-resolves through `db_catalog_page` the way
+`.exec_insert` always has.
+
+**Three: an output field was someone else's input.** An UPDATE reports rows
+changed by leaving the count in `PLAN_DATA1`, which is where a SELECT plan keeps
+its projection count - so the scan the next execution opened read that count and
+followed `PLAN_DATA2` as an array of projections the plan never had. The plan
+now starts every execution as the binder left it.
+
+`tests/prepared_rerun_test.c` is 43 checks, and it is deliberately about the
+class rather than the crash: every mutating statement that can be prepared is
+executed, reset and executed again - INT, TEXT, BLOB, VECTOR, NULL, empty,
+multi-row, in a transaction, after a rollback, plus ENQUEUE, APPEND, READ,
+DEQUEUE, UPDATE and DELETE - and what is checked is that the rows written the
+second time are the rows written the first. Two of the three bugs were found by
+this file rather than by the benchmark that started it.
 
 ---
 
