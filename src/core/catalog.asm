@@ -15,7 +15,7 @@ extern queue_page_valid
 extern db_zone_validate
 global db_catalog_validate, db_catalog_put, db_catalog_get, db_catalog_drop
 global db_catalog_put_index, db_catalog_set_index_root, db_catalog_page
-global db_catalog_put_queue
+global db_catalog_put_queue, db_catalog_edit, db_catalog_seal
 global db_catalog_set_data, db_catalog_set_data_stats, db_catalog_replace_data
 global db_catalog_replace_data_stats
 global db_catalog_truncate_data
@@ -1223,6 +1223,132 @@ catalog_publish_data:
 ;  Local slots: [rbp-8]=ctx, [rbp-16]=index id, [rbp-24]=root, [rbp-32]=entries,
 ;               [rbp-40]=index page id, [rbp-48]=old directory,
 ;               [rbp-56]=new index page, [rbp-64]=new directory, [rbp-72]=address
+; -----------------------------------------------------------------------------
+;  db_catalog_edit(ctx, id, out_address) -> RAX: result
+;
+;  Copy the page a directory entry names, publish the copy in that entry, and
+;  hand back somewhere to write. What a caller does with it is the caller's;
+;  what the catalog owns is that the new page is the one the generation will
+;  reach, and db_catalog_seal is how the caller says it is finished.
+;
+;  The directory is repointed before the contents are final, which is safe
+;  because nothing reads a staged graph until the commit validates it, and the
+;  seal happens first. A statement that fails in between is rolled back whole.
+;
+;  stamp clears the reserved span, so a caller keeping anything there - a
+;  queue keeps its head and its tail - writes it back afterwards. It was going
+;  to anyway; that is what it asked to edit the page for.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=id, [rbp-24]=out, [rbp-32]=old page id,
+;               [rbp-40]=old root, [rbp-48]=new page id, [rbp-56]=new root id,
+;               [rbp-64]=address
+; -----------------------------------------------------------------------------
+db_catalog_edit:
+    FRAME_BEGIN 96, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov r10, ARG1
+    cmp qword [r10 + DB_WRITABLE], 0
+    je .e_readonly
+    cmp qword [r10 + DB_MODE], 1
+    jne .e_state
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_CATALOG
+    jz .e_state
+    cmp qword [r10 + DB_GENERATION], -1
+    je .e_generation
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    call db_catalog_page
+    test rax, rax
+    jz .e_state
+    mov r10, [rbp - 8]
+    mov rcx, rax
+    sub rcx, [r10 + DB_BASE]
+    shr rcx, CybouDB_PAGE_SHIFT
+    mov [rbp - 32], rcx
+    mov rax, [r10 + DB_ROOT]
+    mov [rbp - 40], rax
+    mov ARG1, [rbp - 8]
+    call db_bitmap_headroom
+    cmp rax, 2                      ; the page and the directory
+    jb .e_full
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 32]
+    lea ARG3, [rbp - 48]
+    call db_cow_copy_page
+    test eax, eax
+    jnz .e_done
+    mov r10, [rbp - 8]
+    mov rax, [rbp - 48]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
+    mov [rbp - 64], rax
+    mov ARG1, rax
+    mov ARG2, r10
+    call stamp
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 40]
+    lea ARG3, [rbp - 56]
+    call db_cow_copy_page
+    test eax, eax
+    jnz .e_done
+    mov r10, [rbp - 8]
+    mov rax, [rbp - 56]
+    shl rax, CybouDB_PAGE_SHIFT
+    add rax, [r10 + DB_BASE]
+    mov [rbp - 72], rax
+    mov ARG1, rax
+    mov ARG2, r10
+    call stamp
+    mov r10, [rbp - 72]
+    mov ecx, [r10 + CAT_COUNT]
+    mov r11, [rbp - 16]
+    add r10, CAT_DATA
+.e_entry:
+    cmp [r10], r11
+    je .e_found
+    add r10, 16
+    dec ecx
+    jnz .e_entry
+    mov eax, CybouDB_E_CATALOG
+    jmp .e_done
+.e_found:
+    mov rax, [rbp - 48]
+    mov [r10 + 8], rax
+    mov ARG1, [rbp - 72]
+    call seal_page
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 56]
+    call db_cow_set_root
+    test eax, eax
+    jnz .e_done
+    mov r11, [rbp - 24]
+    mov rax, [rbp - 64]
+    mov [r11], rax
+    xor eax, eax
+    jmp .e_done
+.e_readonly:
+    mov eax, CybouDB_E_READONLY
+    jmp .e_done
+.e_state:
+    mov eax, CybouDB_E_STATE
+    jmp .e_done
+.e_generation:
+    mov eax, CybouDB_E_GENERATION
+    jmp .e_done
+.e_full:
+    mov eax, CybouDB_E_FULL
+.e_done:
+    FRAME_END
+    ret
+
+; db_catalog_seal(ARG1 = a page db_catalog_edit handed back): checksum it.
+db_catalog_seal:
+    jmp seal_page
+
 ; -----------------------------------------------------------------------------
 db_catalog_set_index_root:
     FRAME_BEGIN 96, 0

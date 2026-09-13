@@ -854,10 +854,32 @@ zero, took the process with it. The default is now an explicit `INSERT` case
 and a neutral line for anything else: a new statement kind should print the
 wrong word at worst.
 
-Not done: `ENQUEUE` and `DEQUEUE`. Nothing writes a segment page yet, so the
-segment walk and the deep per-message pass are written and unexercised - which
-is worth saying rather than letting a passing suite imply otherwise. Dropping a
-queue that holds segments will have to retire them, the way dropping an index
+`ENQUEUE INTO q VALUES ('bytes')` and `DEQUEUE FROM q` work for a payload of
+32 bytes or fewer, which is what a slot holds. A message goes into the slot its
+position names, a new segment appears when the tail crosses a boundary, and a
+segment every one of whose positions is behind the head is retired and its
+entry dropped - so a queue drained as fast as it is filled holds the segments
+it is using rather than the ones it has used. The first segment the directory
+names is derived from the head rather than tracked, which is what keeps it from
+ever disagreeing with the validator that requires exactly that.
+
+A segment already allocated by this transaction is written in place rather than
+copied again, for the reason an index node is: nothing published reaches it,
+and a segment has exactly one parent. Without it an ENQUEUE of many messages
+would spend a page each.
+
+Writing it cost one bug, and it was the one this project keeps paying for: a
+page id in RDX, then `mov ARG2, ...` which is RDX on Win64, then `mov ARG3,
+rdx` handing the superblock pointer on as the page. The rule the index work
+arrived at - put call data in a register no argument aliases before touching
+the argument registers - is the fix, and it has now been the fix six times.
+
+Not done: a payload longer than a slot, which is the varlen extent chain the
+format already reserves a flag for. `DEQUEUE` through the C ABI, which is
+refused rather than run: it answers with the message, and that ABI has no way
+to hand back a value that did not come out of a batch view, so running it would
+take a message off the queue and drop it. The CLI and the console can. Dropping
+a queue that holds segments will have to retire them, the way dropping an index
 retires its tree.
 
 What is decided:

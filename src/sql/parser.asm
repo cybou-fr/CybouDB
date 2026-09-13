@@ -1694,6 +1694,10 @@ sql_parse:
     je      .parse_commit
     cmp     rax, TOK_ROLLBACK
     je      .parse_rollback
+    cmp     rax, TOK_ENQUEUE
+    je      .parse_enqueue
+    cmp     rax, TOK_DEQUEUE
+    je      .parse_dequeue
 
     ; Unknown initial token
     mov     ARG1, [rbp - 40]
@@ -2269,6 +2273,83 @@ sql_parse:
     call    sql_tok_next
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_RPAREN
     jne     .bad_syntax
+    jmp     .check_eof
+
+; --- ENQUEUE INTO name VALUES (literal) --------------------------------------
+; One message, and only a literal: a queue takes bytes, not an expression over
+; rows it has no columns for.
+.parse_enqueue:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_ENQUEUE
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_INTO
+    jne     .bad_syntax
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_table_name
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + QUEUE_NAME_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + QUEUE_NAME_LEN], rax
+
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_VALUES
+    jne     .bad_syntax
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_LPAREN
+    jne     .bad_syntax
+
+    lea     ARG1, [rbp - 160]
+    mov     ARG2, [rbp - 8]
+    mov     ARG3, [rbp - 24]
+    mov     ARG4, [rbp - 40]
+    call    parse_primary
+    test    rax, rax
+    jz      .fail
+    cmp     qword [rax + EXPR_KIND], EXPR_LITERAL
+    jne     .bad_syntax
+    mov     r10, [rbp - 48]
+    mov     [r10 + QUEUE_VALUE_EXPR], rax
+
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_RPAREN
+    jne     .bad_syntax
+    jmp     .check_eof
+
+; --- DEQUEUE FROM name -------------------------------------------------------
+.parse_dequeue:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_DEQUEUE
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_FROM
+    jne     .bad_syntax
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_table_name
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + QUEUE_NAME_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + QUEUE_NAME_LEN], rax
     jmp     .check_eof
 
 ; --- CREATE QUEUE name -------------------------------------------------------

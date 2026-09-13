@@ -64,6 +64,8 @@
 %define TOK_INDEX           86
 %define TOK_UNIQUE          87
 %define TOK_QUEUE           88
+%define TOK_ENQUEUE         89
+%define TOK_DEQUEUE         90
 
 ; Types
 %define TOK_TYPE_INT32      30
@@ -129,6 +131,8 @@
 %define STMT_DROP_INDEX     11
 %define STMT_CREATE_QUEUE   12
 %define STMT_DROP_QUEUE     13
+%define STMT_ENQUEUE        14
+%define STMT_DEQUEUE        15
 
 ; --- AST Statement header and statement-specific payload --------------------
 %define AST_STMT_TYPE       0           ; qword: STMT_*
@@ -186,6 +190,13 @@
 %define DROP_TABLE_NAME_PTR    0
 %define DROP_TABLE_NAME_LEN    8
 %define DROP_PAYLOAD_SIZE      16
+
+; ENQUEUE INTO q VALUES (literal) and DEQUEUE FROM q. The queue's name goes
+; where every other statement over one object puts a name.
+%define QUEUE_NAME_PTR         0
+%define QUEUE_NAME_LEN         8
+%define QUEUE_VALUE_EXPR      16       ; AST_EXPR*; parser requires a literal
+%define QUEUE_PAYLOAD_SIZE    24
 
 %define SELECT_TABLE_NAME_PTR   0
 %define SELECT_TABLE_NAME_LEN   8

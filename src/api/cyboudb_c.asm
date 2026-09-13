@@ -532,6 +532,10 @@ cyboudb_step:
     je      .step_drop
     cmp     rcx, STMT_DROP_QUEUE
     je      .step_drop                  ; and the fourth kind, the same way
+    cmp     rcx, STMT_ENQUEUE
+    je      .step_drop                  ; nothing to hand back
+    cmp     rcx, STMT_DEQUEUE
+    je      .step_dequeue_unsupported
 
     mov     eax, CybouDB_C_ERROR
     jmp     .step_exit
@@ -837,6 +841,15 @@ cyboudb_step:
 .step_stale:
     mov eax, CybouDB_E_STATE
     jmp .step_mutation_error
+
+.step_dequeue_unsupported:
+    ; DEQUEUE answers with the message, and this ABI has no way to hand back a
+    ; value that did not come out of a batch view. Refusing is the only honest
+    ; answer: running it would take the message off the queue and drop it,
+    ; which is worse than not running it. The CLI and the console can already
+    ; do this; see ROADMAP.md for what the ABI needs first.
+    mov     eax, CybouDB_C_MISUSE
+    jmp     .step_exit
 
 .step_misuse:
     mov     eax, CybouDB_C_MISUSE

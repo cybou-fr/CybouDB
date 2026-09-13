@@ -67,6 +67,8 @@ kw_rollback:        db "rollback", 0
 kw_index:           db "index", 0
 kw_unique:          db "unique", 0
 kw_queue:           db "queue", 0
+kw_enqueue:         db "enqueue", 0
+kw_dequeue:         db "dequeue", 0
 
     align 8
 kw_table_entries:
@@ -122,6 +124,8 @@ kw_table_entries:
     dq kw_index,    5, TOK_INDEX
     dq kw_unique,   6, TOK_UNIQUE
     dq kw_queue,    5, TOK_QUEUE
+    dq kw_enqueue,  7, TOK_ENQUEUE
+    dq kw_dequeue,  7, TOK_DEQUEUE
     dq 0,          0, 0                 ; terminator
 
 section .text

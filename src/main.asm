@@ -193,6 +193,8 @@ msg_sql_index_created: db "Index created.", 10, 0
 msg_sql_index_dropped: db "Index dropped.", 10, 0
 msg_sql_queue_created: db "Queue created.", 10, 0
 msg_sql_queue_dropped: db "Queue dropped.", 10, 0
+msg_sql_enqueued:      db "ENQUEUE 1", 10, 0
+msg_sql_queue_empty:   db "(empty)", 10, 0
 msg_sql_done:          db "OK.", 10, 0
 msg_sql_insert_prefix: db "INSERT ", 0
 msg_sql_update_prefix: db "UPDATE ", 0
@@ -1141,6 +1143,10 @@ cyboudb_exec_query:
     je      .queue_created
     cmp     qword [r10 + PLAN_TYPE], STMT_DROP_QUEUE
     je      .queue_dropped
+    cmp     qword [r10 + PLAN_TYPE], STMT_ENQUEUE
+    je      .enqueued
+    cmp     qword [r10 + PLAN_TYPE], STMT_DEQUEUE
+    je      .dequeued
     ; Anything else has to say so rather than be assumed to be an INSERT. It
     ; used to fall through into the line below, which reads PLAN_DATA1 as a
     ; batch - and a statement that leaves that field zero, as DROP QUEUE does,
@@ -1192,6 +1198,25 @@ cyboudb_exec_query:
 
 .create_done:
     PUTS    msg_sql_table_created
+    jmp     .exec_success
+
+.enqueued:
+    PUTS    msg_sql_enqueued
+    jmp     .exec_success
+
+; The payload, as the bytes it is. A queue stores what it was given and has no
+; column to say how to read it back, so printing it is printing bytes.
+.dequeued:
+    mov     r10, [rbp - 40]
+    cmp     qword [r10 + PLAN_DATA3], 0
+    je      .dequeued_empty
+    mov     ARG1, [r10 + PLAN_DATA1]
+    mov     ARG2, [r10 + PLAN_DATA2]
+    call    os_write
+    PUTS    str_nl
+    jmp     .exec_success
+.dequeued_empty:
+    PUTS    msg_sql_queue_empty
     jmp     .exec_success
 
 .queue_created:

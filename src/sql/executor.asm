@@ -52,7 +52,7 @@ default rel
 extern db_catalog_put, db_catalog_drop, db_catalog_truncate_data, db_pax_insert, db_pax_update_one, db_pax_capacity, db_commit, db_rollback
 extern db_pax_mark_dead, db_pax_dead_total
 extern db_catalog_put_index, db_catalog_set_index_root, db_index_of_table
-extern db_catalog_put_queue
+extern db_catalog_put_queue, db_queue_push, db_queue_pop
 extern db_catalog_page
 extern db_index_retire_tree
 extern db_index_insert, db_index_insert_unique, db_index_delete
@@ -583,6 +583,10 @@ sql_execute_batch:
     je      .exec_create_queue
     cmp     rax, STMT_DROP_QUEUE
     je      .exec_drop_queue
+    cmp     rax, STMT_ENQUEUE
+    je      .exec_enqueue
+    cmp     rax, STMT_DEQUEUE
+    je      .exec_dequeue
     cmp     rax, STMT_BEGIN
     je      .exec_begin
     cmp     rax, STMT_COMMIT
@@ -1226,6 +1230,49 @@ sql_execute_batch:
     mov     ARG3, [r10 + PLAN_DATA1]
     call    db_catalog_put_queue
     jmp     .storage_done
+
+.exec_enqueue:
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    mov     ARG3, [r10 + PLAN_DATA1]
+    mov     ARG4, [r10 + PLAN_DATA2]
+    call    db_queue_push
+    jmp     .storage_done
+
+; The message comes back through the plan, because a DEQUEUE answers with one
+; value and not with rows: it has no columns to describe and no schema to
+; describe them from. PLAN_DATA3 says whether there was one at all, which is
+; how an empty queue differs from a message of no bytes.
+.exec_dequeue:
+    mov     r10, [rbp - 16]
+    mov     qword [r10 + PLAN_DATA3], 0
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, QMSG_INLINE_MAX
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .dequeue_oom
+    mov     r10, [rbp - 16]
+    mov     [r10 + PLAN_DATA1], rax
+    mov     ARG3, rax
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    lea     ARG4, [r10 + PLAN_DATA2]
+    call    db_queue_pop
+    cmp     eax, CybouDB_E_NOTFOUND
+    je      .dequeue_empty
+    test    eax, eax
+    jnz     .storage_done
+    mov     r10, [rbp - 16]
+    mov     qword [r10 + PLAN_DATA3], 1
+    xor     eax, eax
+    jmp     .exec_exit
+.dequeue_empty:
+    xor     eax, eax
+    jmp     .exec_exit
+.dequeue_oom:
+    mov     eax, SQL_ERR_NO_STORAGE
+    jmp     .exec_exit
 
 .exec_drop_queue:
     mov     ARG1, [rbp - 8]

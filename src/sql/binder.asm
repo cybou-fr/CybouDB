@@ -34,7 +34,9 @@ err_no_index:        db "database was not created with index support", 0
 err_index_type:      db "an index needs an INT32 or INT64 column", 0
 err_index_missing:   db "index not found in catalog", 0
 err_no_queue:        db "database was not created with queue support", 0
-err_queue_missing:   db "queue not found in catalog", 0
+err_queue_missing:   db "queue not found in catalog", 0
+err_queue_payload:   db "a queue message is TEXT or BLOB", 0
+err_queue_long:      db "message longer than a slot holds; extents are not implemented", 0
 err_join_key_type: db "JOIN keys currently require INT32 or INT64", 0
 err_order_pending: db "ORDER BY execution is not implemented yet", 0
 err_varlen_pending: db "TEXT/BLOB storage extents are not implemented yet", 0
@@ -977,6 +979,10 @@ sql_bind:
     je      .bind_create_queue
     cmp     rax, STMT_DROP_QUEUE
     je      .bind_drop_queue
+    cmp     rax, STMT_ENQUEUE
+    je      .bind_enqueue
+    cmp     rax, STMT_DEQUEUE
+    je      .bind_dequeue
 
     mov     eax, SQL_ERR_SYNTAX
     jmp     .binder_exit
@@ -1897,6 +1903,78 @@ sql_bind:
     xor     eax, eax
     jmp     .binder_exit
 
+; --- BIND ENQUEUE / DEQUEUE --------------------------------------------------
+; Both resolve one name, and it has to be a queue: catalog_find_queue is what
+; makes ENQUEUE INTO a table a refusal rather than a surprise.
+;
+; A payload is bytes. A TEXT or BLOB literal is already bytes and arrives with
+; a pointer and a length; anything else is refused, because a queue has no
+; column to say what an integer in it would mean.
+.bind_enqueue:
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + PLAN_TYPE], STMT_ENQUEUE
+    mov     r11, [rbp - 8]
+    test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_QUEUE
+    jz      .queue_unsupported
+    mov     r10, [rbp - 16]
+    mov     rcx, [r10 + QUEUE_NAME_LEN]
+    cmp     rcx, 31
+    ja      .bad_tbl_len
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + QUEUE_NAME_PTR]
+    mov     ARG3, [r10 + QUEUE_NAME_LEN]
+    lea     ARG4, [rbp - 56]
+    call    catalog_find_queue
+    test    rax, rax
+    jz      .queue_not_found
+
+    mov     r10, [rbp - 16]
+    mov     r9, [r10 + QUEUE_VALUE_EXPR]
+    mov     eax, [r9 + EXPR_LIT_TYPE]
+    cmp     eax, CAT_TEXT
+    je      .enqueue_bytes
+    cmp     eax, CAT_BLOB
+    jne     .queue_bad_payload
+.enqueue_bytes:
+    mov     rcx, [r9 + EXPR_LIT_LEN]
+    cmp     rcx, QMSG_INLINE_MAX
+    ja      .queue_too_long             ; until extents carry a message
+    mov     r10, [rbp - 48]
+    mov     rdx, [rbp - 56]
+    mov     [r10 + PLAN_TABLE_ID], rdx
+    mov     rax, [r9 + EXPR_LIT_PTR]
+    mov     [r10 + PLAN_DATA1], rax
+    mov     [r10 + PLAN_DATA2], rcx
+    mov     r11, [rbp - 8]
+    mov     [r10 + PLAN_CTX], r11
+    xor     eax, eax
+    jmp     .binder_exit
+
+.bind_dequeue:
+    mov     r10, [rbp - 48]
+    mov     qword [r10 + PLAN_TYPE], STMT_DEQUEUE
+    mov     r11, [rbp - 8]
+    test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_QUEUE
+    jz      .queue_unsupported
+    mov     r10, [rbp - 16]
+    mov     rcx, [r10 + QUEUE_NAME_LEN]
+    cmp     rcx, 31
+    ja      .bad_tbl_len
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + QUEUE_NAME_PTR]
+    mov     ARG3, [r10 + QUEUE_NAME_LEN]
+    lea     ARG4, [rbp - 56]
+    call    catalog_find_queue
+    test    rax, rax
+    jz      .queue_not_found
+    mov     r10, [rbp - 48]
+    mov     rdx, [rbp - 56]
+    mov     [r10 + PLAN_TABLE_ID], rdx
+    mov     r11, [rbp - 8]
+    mov     [r10 + PLAN_CTX], r11
+    xor     eax, eax
+    jmp     .binder_exit
+
 ; --- BIND DROP INDEX ---------------------------------------------------------
 .bind_drop_index:
     mov     r10, [rbp - 48]
@@ -2743,6 +2821,24 @@ sql_bind:
     lea     ARG4, [err_queue_missing]
     call    set_binder_error
     mov     eax, SQL_ERR_TABLE_NOT_FOUND
+    jmp     .binder_exit
+
+.queue_bad_payload:
+    mov     ARG1, [rbp - 40]
+    mov     ARG2, SQL_ERR_TYPE_MISMATCH
+    xor     ARG3, ARG3
+    lea     ARG4, [err_queue_payload]
+    call    set_binder_error
+    mov     eax, SQL_ERR_TYPE_MISMATCH
+    jmp     .binder_exit
+
+.queue_too_long:
+    mov     ARG1, [rbp - 40]
+    mov     ARG2, SQL_ERR_TYPE_MISMATCH
+    xor     ARG3, ARG3
+    lea     ARG4, [err_queue_long]
+    call    set_binder_error
+    mov     eax, SQL_ERR_TYPE_MISMATCH
     jmp     .binder_exit
 
 .bad_val_count:
