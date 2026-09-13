@@ -234,10 +234,17 @@ jobs:
           copy include\cyboudb.h build\pkgtest\include\ >nul
           copy build\cyboudb.lib build\pkgtest\ >nul
           copy tests\package_consumer.c build\pkgtest\ >nul
+          rem build.bat runs vcvars64 inside its own setlocal, so nothing it set
+          rem reaches us here. This step compiles C itself and has to find MSVC
+          rem for itself, exactly the way tools\package.bat does.
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
+          if not defined VSPATH echo error: MSVC not found & exit /b 1
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
           cd build\pkgtest
           cl.exe /O2 /W3 /nologo /Iinclude package_consumer.c /Fe:consumer.exe /Fo:consumer.obj /link cyboudb.lib kernel32.lib
           if errorlevel 1 exit /b 1
-          consumer.exe
+          .\consumer.exe
           if errorlevel 1 exit /b 1
 
       - name: Build static library and run C API tests
