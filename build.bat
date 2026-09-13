@@ -17,24 +17,24 @@ set OBJDIR=build
 set INC=-Iinclude/
 
 rem Modules: portable core + SQL engine + Windows platform layer
-set BASE_SOURCES=src\core\database.asm src\core\cow.asm src\core\bitmap.asm src\core\catalog.asm src\core\pax.asm src\core\varlen.asm src\core\zonemap.asm src\core\index.asm src\core\queue.asm src\core\compress.asm src\core\vector_arena.asm src\core\checksum.asm src\sql\tokenizer.asm src\sql\parser.asm src\sql\binder.asm src\sql\executor.asm src\sql\select_cursor.asm src\sql\join_cursor.asm src\sql\order_executor.asm src\sql\zone_predicate.asm src\sql\result_rows.asm src\sql\kernels_scalar.asm src\sql\kernels_avx2.asm src\sql\for_kernels_avx2.asm src\sql\vector_kernels_scalar.asm src\sql\vector_kernels_avx2.asm src\sql\vector_topk.asm src\sql\bmi2.asm src\sql\popcount.asm src\platform\windows\os_win.asm
+set BASE_SOURCES=src\core\database.asm src\core\cow.asm src\core\bitmap.asm src\core\catalog.asm src\core\pax.asm src\core\varlen.asm src\core\zonemap.asm src\core\index.asm src\core\queue.asm src\core\stream.asm src\core\compress.asm src\core\vector_arena.asm src\core\checksum.asm src\sql\tokenizer.asm src\sql\parser.asm src\sql\binder.asm src\sql\executor.asm src\sql\select_cursor.asm src\sql\join_cursor.asm src\sql\order_executor.asm src\sql\zone_predicate.asm src\sql\result_rows.asm src\sql\kernels_scalar.asm src\sql\kernels_avx2.asm src\sql\for_kernels_avx2.asm src\sql\vector_kernels_scalar.asm src\sql\vector_kernels_avx2.asm src\sql\vector_topk.asm src\sql\bmi2.asm src\sql\popcount.asm src\platform\windows\os_win.asm
 set SOURCES=src\main.asm src\console\repl.asm !BASE_SOURCES!
 if "%~1"=="--core-tests" (
     set OUT=build\cow_harness.exe
     set OBJDIR=build\core-tests
-    set SOURCES=tests\cow_harness.asm src\core\database.asm src\core\cow.asm src\core\bitmap.asm src\core\catalog.asm src\core\pax.asm src\core\varlen.asm src\core\zonemap.asm src\core\index.asm src\core\queue.asm src\core\compress.asm src\core\checksum.asm src\platform\windows\os_win.asm
+    set SOURCES=tests\cow_harness.asm src\core\database.asm src\core\cow.asm src\core\bitmap.asm src\core\catalog.asm src\core\pax.asm src\core\varlen.asm src\core\zonemap.asm src\core\index.asm src\core\queue.asm src\core\stream.asm src\core\compress.asm src\core\checksum.asm src\platform\windows\os_win.asm
 )
 
 if "%~1"=="--varlen-tests" (
     set OUT=build\varlen_harness.exe
     set OBJDIR=build\varlen-tests
-    set SOURCES=tests\varlen_harness.asm src\core\database.asm src\core\cow.asm src\core\bitmap.asm src\core\catalog.asm src\core\pax.asm src\core\varlen.asm src\core\zonemap.asm src\core\index.asm src\core\queue.asm src\core\compress.asm src\core\checksum.asm src\platform\windows\os_win.asm
+    set SOURCES=tests\varlen_harness.asm src\core\database.asm src\core\cow.asm src\core\bitmap.asm src\core\catalog.asm src\core\pax.asm src\core\varlen.asm src\core\zonemap.asm src\core\index.asm src\core\queue.asm src\core\stream.asm src\core\compress.asm src\core\checksum.asm src\platform\windows\os_win.asm
 )
 
 if "%~1"=="--varlen-fragmentation-tests" (
     set OUT=build\varlen_fragmentation_harness.exe
     set OBJDIR=build\varlen-fragmentation-tests
-    set SOURCES=tests\varlen_fragmentation_harness.asm src\core\database.asm src\core\cow.asm src\core\bitmap.asm src\core\catalog.asm src\core\pax.asm src\core\varlen.asm src\core\zonemap.asm src\core\index.asm src\core\queue.asm src\core\compress.asm src\core\checksum.asm src\platform\windows\os_win.asm
+    set SOURCES=tests\varlen_fragmentation_harness.asm src\core\database.asm src\core\cow.asm src\core\bitmap.asm src\core\catalog.asm src\core\pax.asm src\core\varlen.asm src\core\zonemap.asm src\core\index.asm src\core\queue.asm src\core\stream.asm src\core\compress.asm src\core\checksum.asm src\platform\windows\os_win.asm
 )
 
 if "%~1"=="--sql-tests" (
@@ -308,6 +308,8 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     cl.exe /O2 /W3 /nologo /Iinclude tests\index_plan_test.c /Febuild\index_plan_test.exe /Fobuild\index_plan_test.obj /link build\cyboudb.lib kernel32.lib
     if errorlevel 1 goto :fail
     cl.exe /O2 /W3 /nologo /Iinclude tests\queue_page_test.c /Febuild\queue_page_test.exe /Fobuild\queue_page_test.obj /link build\cyboudb.lib kernel32.lib
+    if errorlevel 1 goto :fail
+    cl.exe /O2 /W3 /nologo /Iinclude tests\stream_page_test.c /Febuild\stream_page_test.exe /Fobuild\stream_page_test.obj /link build\cyboudb.lib kernel32.lib
     if errorlevel 1 goto :fail
     cl.exe /O2 /W3 /nologo /Iinclude tests\queue_api_test.c /Febuild\queue_api_test.exe /Fobuild\queue_api_test.obj /link build\cyboudb.lib kernel32.lib
     if errorlevel 1 goto :fail

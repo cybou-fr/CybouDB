@@ -12,10 +12,12 @@ extern db_cow_alloc_page, db_cow_copy_page, db_cow_set_root
 extern db_pax_validate, db_pax_check_new
 extern index_page_valid
 extern queue_page_valid
+extern stream_page_valid
 extern db_zone_validate
 global db_catalog_validate, db_catalog_put, db_catalog_get, db_catalog_drop
 global db_catalog_put_index, db_catalog_set_index_root, db_catalog_page
-global db_catalog_put_queue, db_catalog_edit, db_catalog_seal
+global db_catalog_put_queue, db_catalog_put_stream
+global db_catalog_edit, db_catalog_seal
 global db_catalog_set_data, db_catalog_set_data_stats, db_catalog_replace_data
 global db_catalog_replace_data_stats
 global db_catalog_truncate_data
@@ -243,6 +245,14 @@ page_valid:
     jz .bad
     jmp .reserved_done
 .not_queue:
+    ; A stream page keeps its two positions in the same span, and answers for
+    ; them where its cursors and segments are validated.
+    cmp dword [r8 + CAT_TYPE], CAT_STREAM
+    jne .not_stream
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_STREAM
+    jz .bad
+    jmp .reserved_done
+.not_stream:
     test qword [r10 + DB_FEATURES], CybouDB_FEATURE_PAX
     jz .reserved_all
     ; An index page keeps its root, column, flags and entry count in the same
@@ -352,6 +362,8 @@ db_catalog_validate:
     je .index_entry
     cmp dword [r10 + CAT_TYPE], CAT_QUEUE
     je .queue_entry
+    cmp dword [r10 + CAT_TYPE], CAT_STREAM
+    je .stream_entry
     cmp dword [r10 + CAT_TYPE], CAT_SCHEMA
     jne .bad
     mov ARG1, r10
@@ -385,6 +397,14 @@ db_catalog_validate:
     mov ARG2, [rbp - 16]
     mov ARG3, [rbp - 56]
     call queue_page_valid
+    test eax, eax
+    jz .bad
+    jmp .named
+.stream_entry:
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 56]
+    call stream_page_valid
     test eax, eax
     jz .bad
 .named:
@@ -569,6 +589,12 @@ db_catalog_put_index:
 ; the page a caller is asking the catalog to publish.
 db_catalog_put_queue:
     mov r11d, CAT_QUEUE
+    jmp catalog_put_common
+; db_catalog_put_stream(ctx, stream id, page image): and for the fifth kind. A
+; stream arrives empty too - no records, no segments, no cursors - so the shape
+; check says the same thing about a page a caller is asking to have published.
+db_catalog_put_stream:
+    mov r11d, CAT_STREAM
 catalog_put_common:
     FRAME_BEGIN 96, 0
     mov [rbp - 96], r11
@@ -586,6 +612,8 @@ catalog_put_common:
     je .generation
     test ARG2, ARG2
     jz .schema
+    cmp qword [rbp - 96], CAT_STREAM
+    je .shape_stream
     cmp qword [rbp - 96], CAT_QUEUE
     je .shape_queue
     cmp qword [rbp - 96], CAT_INDEX
@@ -630,6 +658,24 @@ catalog_put_common:
     cmp qword [r11 + Q_TAIL], 0
     jne .schema
     cmp qword [r11 + Q_FIRST_SEG], 0
+    jne .schema
+    jmp .shape_ok
+.shape_stream:
+    mov r10, [rbp - 8]
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_STREAM
+    jz .state
+    mov r11, [rbp - 24]
+    cmp byte [r11 + S_NAME], 0
+    je .schema
+    cmp dword [r11 + S_SEGMENTS], 0
+    jne .schema
+    cmp qword [r11 + S_FIRST], 0
+    jne .schema
+    cmp qword [r11 + S_END], 0
+    jne .schema
+    cmp qword [r11 + S_FIRST_SEG], 0
+    jne .schema
+    cmp qword [r11 + S_CURSORS], 0
     jne .schema
 .shape_ok:
     mov ARG1, [rbp - 8]

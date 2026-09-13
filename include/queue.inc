@@ -73,4 +73,21 @@
 %define QMSG_FLAG_EXTENT 1
 %define QMSG_STATE_HELD 0
 
+; --- What db_queue_segments_valid is asked to prove ---------------------------
+; A stream keeps its records in these same segments, so the walk over them is
+; one routine and not two. What differs between a queue and a stream is the
+; page that names the segments, which is what the caller has already checked
+; by the time it fills this in.
+%define QSV_CTX 0
+%define QSV_SB 8
+%define QSV_OWNER 16                     ; the id a segment must answer to
+%define QSV_ENTRIES 24                   ; where entry zero is
+%define QSV_TAIL_END 32                  ; where the entries must have stopped
+%define QSV_SEGMENTS 40
+%define QSV_FIRST_SEG 48
+%define QSV_LOW 56                       ; the first position held
+%define QSV_HIGH 64                      ; one past the last
+%define QSV_MAX_SEG 72
+%define QSV_SIZE 80
+
 %endif

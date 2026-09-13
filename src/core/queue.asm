@@ -16,7 +16,7 @@ extern db_bitmap_candidate_payload, db_bitmap_is_fresh, db_bitmap_retire
 extern db_cow_alloc_page, db_cow_copy_page
 extern db_catalog_page, db_catalog_edit, db_catalog_seal
 extern db_var_validate_chain, db_var_write_chain, db_var_read_chain
-global queue_page_valid, db_queue_seg_addr, queue_seg_seal
+global queue_page_valid, db_queue_seg_addr, queue_seg_seal, db_queue_segments_valid
 global db_queue_push, db_queue_pop, db_queue_peek, db_queue_depth
 global db_queue_retire_all
 
@@ -78,175 +78,174 @@ queue_seg_seal:
 ;               [rbp-64]=entry index, [rbp-72]=segment address,
 ;               [rbp-80]=position, [rbp-88]=slot address
 ; -----------------------------------------------------------------------------
-queue_page_valid:
-    FRAME_BEGIN 128, 2
+;  db_queue_segments_valid(ARG1 = descriptor) -> RAX: 1 when the segments an
+;  object names are coherent.
+;
+;  A queue and a stream are different promises over the same storage, so this
+;  is the walk both of them get. What the caller has already proved is the page
+;  that names the segments; what this proves is the segments.
+;
+;  What it costs is the segments the object is holding, not the records it has
+;  carried. A drained queue, or a fully trimmed stream, is one page. The
+;  per-record walk - the shape of a slot and the extent chain a long payload
+;  names - runs under DB_VERIFY, which `cyboudb check` sets, for the reason the
+;  index recomputes subtree sizes only there: a segment's own checksum already
+;  covers its slots, and what a checksum cannot say is whether a page id inside
+;  one leads anywhere.
+;
+;  Local slots: [rbp-8]=descriptor, [rbp-16]=entry index, [rbp-24]=segment
+;               address, [rbp-32]=position, [rbp-40]=slot address
+; -----------------------------------------------------------------------------
+db_queue_segments_valid:
+    FRAME_BEGIN 96, 2
     mov [rbp - 8], ARG1
-    mov [rbp - 16], ARG2
-    mov [rbp - 24], ARG3
-    mov r10, ARG1
-    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_QUEUE
-    jz .bad
-
-    mov r11, ARG3
-    cmp byte [r11 + Q_NAME], 0
-    je .bad                         ; a queue nothing can name
-    cmp qword [r11 + Q_RESERVED2], 0
-    jne .bad
-    cmp qword [r11 + Q_RESERVED2 + 8], 0
-    jne .bad
-
-    mov rax, [r11 + Q_HEAD]
-    mov [rbp - 32], rax
-    mov rdx, [r11 + Q_TAIL]
-    mov [rbp - 40], rdx
-    cmp rax, rdx
-    ja .bad                         ; the head cannot pass the tail
-    ; A version 1 DEQUEUE hands out and acknowledges in one step, so the claim
-    ; cursor is the head. The field is where a lease would keep it; until there
-    ; is a capability bit saying a build writes leases, a file whose claim has
-    ; run ahead was written by something this build does not understand.
-    mov rcx, [r11 + Q_CLAIM]
-    cmp rcx, rax
-    jne .bad
-    mov ecx, [r11 + Q_SEGMENTS]
-    mov [rbp - 48], rcx
-    cmp rcx, Q_MAX_SEGMENTS
+    mov r11, ARG1
+    mov rax, [r11 + QSV_LOW]
+    cmp rax, [r11 + QSV_HIGH]
+    ja .bad                         ; the low end cannot pass the high one
+    mov rcx, [r11 + QSV_SEGMENTS]
+    cmp rcx, [r11 + QSV_MAX_SEG]
     ja .bad
-    mov rax, [r11 + Q_FIRST_SEG]
-    mov [rbp - 56], rax
 
-    ; The directory names exactly the segments spanning [head, tail). Both
-    ; ends follow from the positions, so a queue cannot carry a segment it has
-    ; drained or be missing one it is using.
-    mov rax, [rbp - 32]
+    ; The directory names exactly the segments spanning [low, high). Both ends
+    ; follow from the positions, so an object cannot carry a segment it has
+    ; let go of or be missing one it is using.
     xor edx, edx
     mov rcx, QUEUE_SEG_SLOTS
-    div rcx                         ; rax = the segment the head is in
-    cmp rax, [rbp - 56]
+    div rcx                         ; rax = the segment the low end is in
+    mov r11, [rbp - 8]
+    cmp rax, [r11 + QSV_FIRST_SEG]
     jne .bad
-    mov rdx, [rbp - 32]
-    cmp rdx, [rbp - 40]
+    mov rax, [r11 + QSV_LOW]
+    cmp rax, [r11 + QSV_HIGH]
     jne .not_empty
-    cmp qword [rbp - 48], 0
-    jne .bad                        ; an empty queue names no segment
+    cmp qword [r11 + QSV_SEGMENTS], 0
+    jne .bad                        ; holding nothing names no segment
     jmp .entries_done
 .not_empty:
-    mov rax, [rbp - 40]
+    mov rax, [r11 + QSV_HIGH]
     dec rax
     xor edx, edx
     mov rcx, QUEUE_SEG_SLOTS
-    div rcx                         ; rax = the segment the last message is in
-    sub rax, [rbp - 56]
+    div rcx                         ; the segment the last record is in
+    mov r11, [rbp - 8]
+    sub rax, [r11 + QSV_FIRST_SEG]
     inc rax
-    cmp rax, [rbp - 48]
+    cmp rax, [r11 + QSV_SEGMENTS]
     jne .bad
 
-    ; And every one of them is a page this generation reaches, carrying this
-    ; queue's id and the position the arithmetic says it starts at. Two entries
+    ; And every one of them is a page this generation reaches, carrying the
+    ; owner's id and the position the arithmetic says it starts at. Two entries
     ; naming one page would need one page to start at two positions, so the
     ; entries are distinct without being compared.
-    mov qword [rbp - 64], 0
+    mov qword [rbp - 16], 0
 .entry:
-    mov rax, [rbp - 64]
-    cmp rax, [rbp - 48]
+    mov r11, [rbp - 8]
+    mov rax, [rbp - 16]
+    cmp rax, [r11 + QSV_SEGMENTS]
     jae .entries_done
     inc qword [rel queue_segments_walked]
     ; The page goes in a register no argument aliases: ARG2 is RDX on one of
     ; the two ABIs, and loading the superblock would take the page with it.
-    mov r11, [rbp - 24]
-    mov r9, [r11 + Q_ENTRIES + rax * 8]
-    mov ARG1, [rbp - 8]
-    mov ARG2, [rbp - 16]
+    mov rcx, [r11 + QSV_ENTRIES]
+    mov r9, [rcx + rax * 8]
+    mov ARG1, [r11 + QSV_CTX]
+    mov ARG2, [r11 + QSV_SB]
     mov ARG3, r9
     call db_bitmap_candidate_payload
     test eax, eax
     jz .bad
-    mov r11, [rbp - 24]
-    mov rax, [rbp - 64]
-    mov ARG2, [r11 + Q_ENTRIES + rax * 8]
-    mov ARG1, [rbp - 8]
+    mov r11, [rbp - 8]
+    mov rcx, [r11 + QSV_ENTRIES]
+    mov rax, [rbp - 16]
+    mov r9, [rcx + rax * 8]
+    mov ARG1, [r11 + QSV_CTX]
+    mov ARG2, r9
     call db_queue_seg_addr
-    mov [rbp - 72], rax
+    mov [rbp - 24], rax
     mov r10, rax
     cmp dword [r10 + QSEG_MAGIC], QSEG_MAGIC_VALUE
     jne .bad
     cmp dword [r10 + QSEG_VERSION], QSEG_VERSION_VALUE
     jne .bad
-    mov r11, [rbp - 24]
-    mov rax, [rbp - 64]
-    mov rdx, [r11 + Q_ENTRIES + rax * 8]
+    mov r11, [rbp - 8]
+    mov rcx, [r11 + QSV_ENTRIES]
+    mov rax, [rbp - 16]
+    mov rdx, [rcx + rax * 8]
     cmp [r10 + QSEG_PAGE_ID], rdx
     jne .bad
-    mov rdx, [r11 + CAT_OWNER]
+    mov rdx, [r11 + QSV_OWNER]
     cmp [r10 + QSEG_OWNER], rdx
-    jne .bad                        ; a segment answers to the queue that names it
+    jne .bad                        ; a segment answers to the object naming it
     cmp qword [r10 + QSEG_RESERVED], 0
     jne .bad
     cmp qword [r10 + QSEG_RESERVED + 8], 0
     jne .bad
     cmp qword [r10 + QSEG_RESERVED + 16], 0
     jne .bad
-    mov rax, [rbp - 64]
-    add rax, [rbp - 56]
+    mov rax, [rbp - 16]
+    add rax, [r11 + QSV_FIRST_SEG]
     imul rax, QUEUE_SEG_SLOTS
     cmp [r10 + QSEG_FIRST], rax
     jne .bad
     mov ARG1, r10
     mov ARG2, QSEG_CRC
     call crc32c
-    mov r10, [rbp - 72]
+    mov r10, [rbp - 24]
     cmp [r10 + QSEG_CRC], eax
     jne .bad
-    inc qword [rbp - 64]
+    inc qword [rbp - 16]
     jmp .entry
 
 .entries_done:
-    ; Everything past the entries this queue claims is zero, as every tail in
+    ; Everything past the entries the object claims is zero, as every tail in
     ; this format is. A commit re-checks a page's checksum only when this
     ; transaction wrote it, so without this a directory entry sitting past the
     ; count would be read by nothing and refused by nothing - which is how a
     ; page written by some other build gets believed.
-    mov r8, [rbp - 24]
-    mov rax, [rbp - 48]
-    lea r9, [r8 + Q_ENTRIES + rax * 8]
-    lea r11, [r8 + Q_CRC]
+    mov r11, [rbp - 8]
+    mov rax, [r11 + QSV_SEGMENTS]
+    mov r9, [r11 + QSV_ENTRIES]
+    lea r9, [r9 + rax * 8]
+    mov rcx, [r11 + QSV_TAIL_END]
 .tail:
-    cmp r9, r11
+    cmp r9, rcx
     jae .tail_done
     cmp dword [r9], 0
     jne .bad
     add r9, 4
     jmp .tail
 .tail_done:
-
-    mov r10, [rbp - 8]
+    mov r11, [rbp - 8]
+    mov r10, [r11 + QSV_CTX]
     cmp qword [r10 + DB_VERIFY], 0
     je .good
 
-    ; The deep pass: every message the queue is holding, in the slot the
+    ; The deep pass: every record the object is holding, in the slot the
     ; arithmetic puts it in.
+    mov rax, [r11 + QSV_LOW]
+    mov [rbp - 32], rax
+.record:
+    mov r11, [rbp - 8]
     mov rax, [rbp - 32]
-    mov [rbp - 80], rax
-.message:
-    mov rax, [rbp - 80]
-    cmp rax, [rbp - 40]
+    cmp rax, [r11 + QSV_HIGH]
     jae .good
     xor edx, edx
     mov rcx, QUEUE_SEG_SLOTS
     div rcx                         ; rax = segment, rdx = slot
-    mov [rbp - 88], rdx             ; before an argument register takes it
-    sub rax, [rbp - 56]
-    mov r11, [rbp - 24]
-    mov r9, [r11 + Q_ENTRIES + rax * 8]
-    mov ARG1, [rbp - 8]
+    mov [rbp - 40], rdx             ; before an argument register takes it
+    sub rax, [r11 + QSV_FIRST_SEG]
+    mov rcx, [r11 + QSV_ENTRIES]
+    mov r9, [rcx + rax * 8]
+    mov ARG1, [r11 + QSV_CTX]
     mov ARG2, r9
     call db_queue_seg_addr
-    mov rdx, [rbp - 88]
+    mov rdx, [rbp - 40]
     shl rdx, 6                      ; QUEUE_SLOT_SIZE
     lea rax, [rax + QSEG_SLOTS + rdx]
-    mov [rbp - 88], rax
+    mov [rbp - 40], rax
     mov r10, rax
-    ; Nothing has a lease yet, and a message that claims one was not written by
+    ; Nothing has a lease yet, and a record that claims one was not written by
     ; this build.
     cmp dword [r10 + QMSG_STATE], QMSG_STATE_HELD
     jne .bad
@@ -261,26 +260,26 @@ queue_page_valid:
     jnz .bad
     mov edx, [r10 + QMSG_LENGTH]
     test ecx, QMSG_FLAG_EXTENT
-    jnz .message_extent
+    jnz .record_extent
     cmp rdx, QMSG_INLINE_MAX
-    ja .bad                         ; longer than a slot holds and not an extent
-    jmp .message_done
-.message_extent:
+    ja .bad                         ; longer than a slot holds, and not an extent
+    jmp .record_done
+.record_extent:
     cmp rdx, QMSG_INLINE_MAX
     jbe .bad                        ; short enough to have stayed in the slot
-    mov r11, [rbp - 24]
-    mov rax, [r11 + CAT_OWNER]
+    mov r11, [rbp - 8]
+    mov rax, [r11 + QSV_OWNER]
     PASS_ARG5 rax
     mov ARG4, rdx
     mov ARG3, [r10 + QMSG_EXTENT]
-    mov ARG1, [rbp - 8]
-    mov ARG2, [rbp - 16]
+    mov ARG1, [r11 + QSV_CTX]
+    mov ARG2, [r11 + QSV_SB]
     call db_var_validate_chain
     test eax, eax
     jz .bad
-.message_done:
-    inc qword [rbp - 80]
-    jmp .message
+.record_done:
+    inc qword [rbp - 32]
+    jmp .record
 
 .good:
     mov eax, 1
@@ -291,6 +290,69 @@ queue_page_valid:
     FRAME_END
     ret
 
+; -----------------------------------------------------------------------------
+;  queue_page_valid(ARG1 = ctx, ARG2 = candidate superblock, ARG3 = queue page)
+;      -> RAX: 1 when the queue that page defines is coherent.
+;
+;  Called where every other directory-reachable page is proved: at every commit
+;  and at every open, refusing the generation rather than the statement. What
+;  is here is what makes a queue a queue; the segments are proved by the walk
+;  a stream shares.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=sb, [rbp-24]=queue page,
+;               [rbp-96]=the descriptor
+; -----------------------------------------------------------------------------
+queue_page_valid:
+    FRAME_BEGIN 128, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_QUEUE
+    jz .q_bad
+
+    mov r11, ARG3
+    cmp byte [r11 + Q_NAME], 0
+    je .q_bad                       ; a queue nothing can name
+    cmp qword [r11 + Q_RESERVED2], 0
+    jne .q_bad
+    cmp qword [r11 + Q_RESERVED2 + 8], 0
+    jne .q_bad
+    ; A version 1 DEQUEUE hands out and acknowledges in one step, so the claim
+    ; cursor is the head. The field is where a lease would keep it; until there
+    ; is a capability bit saying a build writes leases, a file whose claim has
+    ; run ahead was written by something this build does not understand.
+    mov rax, [r11 + Q_HEAD]
+    cmp rax, [r11 + Q_CLAIM]
+    jne .q_bad
+
+    mov [rbp - 96 + QSV_CTX], ARG1
+    mov rax, [rbp - 16]
+    mov [rbp - 96 + QSV_SB], rax
+    mov r11, [rbp - 24]
+    mov rax, [r11 + CAT_OWNER]
+    mov [rbp - 96 + QSV_OWNER], rax
+    lea rax, [r11 + Q_ENTRIES]
+    mov [rbp - 96 + QSV_ENTRIES], rax
+    lea rax, [r11 + Q_CRC]
+    mov [rbp - 96 + QSV_TAIL_END], rax
+    mov ecx, [r11 + Q_SEGMENTS]
+    mov [rbp - 96 + QSV_SEGMENTS], rcx
+    mov rax, [r11 + Q_FIRST_SEG]
+    mov [rbp - 96 + QSV_FIRST_SEG], rax
+    mov rax, [r11 + Q_HEAD]
+    mov [rbp - 96 + QSV_LOW], rax
+    mov rax, [r11 + Q_TAIL]
+    mov [rbp - 96 + QSV_HIGH], rax
+    mov qword [rbp - 96 + QSV_MAX_SEG], Q_MAX_SEGMENTS
+    lea ARG1, [rbp - 96]
+    call db_queue_segments_valid
+    FRAME_END
+    ret
+.q_bad:
+    xor eax, eax
+    FRAME_END
+    ret
 ; queue_copy_seg(ARG1 = ctx, ARG2 = page id, ARG3 = out id) -> RAX: result
 ; A segment this transaction already allocated is already its own copy, for the
 ; reason an index node is: nothing published reaches it, and a segment has

@@ -990,11 +990,32 @@ one per caller.
 
 ## Phase 12 - Streams
 
-The decisions are fixed in [docs/STREAM.md](docs/STREAM.md). Nothing
-implements them yet, and `CybouDB_FEATURE_STREAM` is reserved rather than
-accepted: until this build can read a stream page, a file carrying the bit is
-refused at open as a file whose features are unknown, which is the clean
-refusal the bit exists for.
+The decisions are fixed in [docs/STREAM.md](docs/STREAM.md).
+
+**Done: the catalog page and what a commit proves about it.** A fifth
+directory type, `CAT_STREAM`, in the same id space and namespace as tables,
+indexes and queues. `CybouDB_FEATURE_STREAM` is now accepted at open, and
+accepted only with `QUEUE`, because a stream's records live in a queue's
+segments and the bit means nothing without the bit that defines them - which
+is checked before the queue bit is taken out of the combination, since that is
+where it is still there to see.
+
+The segment walk is one routine, `db_queue_segments_valid`, called by both
+validators through a descriptor: one storage shape, two objects, one walk.
+What `stream_page_valid` adds is the part a queue has no equivalent of - no
+cursor unnamed, no two cursors the same reader, every cursor within
+`[first, end]`, and the slots past the count holding nothing.
+
+`tests/stream_page_test.c` is 63 checks: the page, the shared namespace
+against all of a table, a stream and a queue, six shapes the catalog refuses
+to publish, eleven fields whose damage must stop a commit, and the three
+cursor cases - one standing outside the stream, two sharing a name, and then
+two that are genuinely two, which is the control that says the first two
+failed for the reason claimed rather than because any cursor at all is
+refused.
+
+Still to come: `CREATE STREAM` and `DROP STREAM`, `APPEND` and cursors,
+`READ`, `TRIM`, the C ABI.
 
 What is decided:
 
