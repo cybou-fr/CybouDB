@@ -280,6 +280,36 @@ def main():
         check("leaving a file that checks out", r.returncode == 0 and
               "Status:          OK" in r.stdout, r.stdout)
 
+        # --- dropping a queue hands back what it was holding ------------------
+        # Removing the directory entry takes the last reference to the segments
+        # and to the extent chains of every message still in them, so the drop
+        # has to retire them first - the way DROP INDEX retires its tree.
+        #
+        # The assertion is again a file too small to survive the leak: a
+        # hundred rounds of create, fill with three two-page messages, drop,
+        # through three hundred pages. Without the retire this runs out part
+        # way, which is what makes it an assertion rather than a demonstration.
+        churn = os.path.abspath(str(Path(tmp) / "churn.cdb"))
+        run("create-large", churn, "300", "--force")
+        body = "e" * 4000
+        fill = "".join(f"ENQUEUE INTO q VALUES ('{body}');" + chr(10)
+                       for _ in range(3))
+        round_script = ("CREATE QUEUE q;" + chr(10) + fill +
+                        "DROP QUEUE q;" + chr(10) + ".quit" + chr(10))
+        rounds = 0
+        for _ in range(100):
+            r = subprocess.run([os.path.abspath(str(cyboudb)), "console", churn],
+                               input=round_script, capture_output=True,
+                               text=True, encoding="utf-8", errors="replace")
+            if "error" in r.stdout:
+                break
+            rounds += 1
+        check("a hundred rounds of fill and drop through a file too small "
+              "to leak", rounds == 100, f"stopped after {rounds}")
+        r = run("check", churn)
+        check("leaving a file that checks out", r.returncode == 0 and
+              "Status:          OK" in r.stdout, r.stdout)
+
         # --- which check lives where -----------------------------------------
         # Damage does not make a file fail to open. It makes the generation
         # holding it stop being selectable, and the one before it is what opens

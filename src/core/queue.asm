@@ -18,6 +18,7 @@ extern db_catalog_page, db_catalog_edit, db_catalog_seal
 extern db_var_validate_chain, db_var_write_chain, db_var_read_chain
 global queue_page_valid, db_queue_seg_addr, queue_seg_seal
 global db_queue_push, db_queue_pop, db_queue_peek, db_queue_depth
+global db_queue_retire_all
 
 section .data
 ; Segment pages this process looked at while validating. A queue that is
@@ -871,5 +872,96 @@ db_queue_peek:
     ret
 .k_state:
     mov eax, CybouDB_E_STATE
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  db_queue_retire_all(ctx, queue id) -> RAX: result code
+;
+;  Every page a queue is holding, handed back: the extent chain of each message
+;  still in it, and then the segments themselves. What a DROP QUEUE does before
+;  the catalog entry goes, for the reason DROP INDEX retires its tree - an
+;  entry removed from the directory takes the last reference to those pages
+;  with it, and a payload page nothing references is a page nothing will ever
+;  hand out again.
+;
+;  Messages already taken are not walked. Their chains went at the take, and
+;  their positions are below the head.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=id, [rbp-24]=queue page, [rbp-32]=head,
+;               [rbp-40]=tail, [rbp-48]=segments, [rbp-56]=first segment,
+;               [rbp-64]=position, [rbp-72]=entry index
+; -----------------------------------------------------------------------------
+db_queue_retire_all:
+    FRAME_BEGIN 96, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_QUEUE
+    jz .a_ok
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    call db_catalog_page
+    test rax, rax
+    jz .a_ok
+    cmp dword [rax + CAT_TYPE], CAT_QUEUE
+    jne .a_ok
+    mov [rbp - 24], rax
+    mov rdx, [rax + Q_HEAD]
+    mov [rbp - 32], rdx
+    mov rdx, [rax + Q_TAIL]
+    mov [rbp - 40], rdx
+    mov ecx, [rax + Q_SEGMENTS]
+    mov [rbp - 48], rcx
+    mov rdx, [rax + Q_FIRST_SEG]
+    mov [rbp - 56], rdx
+
+    ; The chains first, while the entries that name their segments are still
+    ; there to find them through.
+    mov rax, [rbp - 32]
+    mov [rbp - 64], rax
+.a_message:
+    mov rax, [rbp - 64]
+    cmp rax, [rbp - 40]
+    jae .a_segments
+    xor edx, edx
+    mov rcx, QUEUE_SEG_SLOTS
+    div rcx                         ; rax = segment, rdx = slot
+    mov [rbp - 80], rdx             ; before an argument register takes it
+    sub rax, [rbp - 56]
+    mov r11, [rbp - 24]
+    mov r9, [r11 + Q_ENTRIES + rax * 8]
+    mov ARG1, [rbp - 8]
+    mov ARG2, r9
+    call db_queue_seg_addr
+    mov rdx, [rbp - 80]
+    shl rdx, 6                      ; QUEUE_SLOT_SIZE
+    lea r8, [rax + QSEG_SLOTS + rdx]
+    mov ecx, [r8 + QMSG_FLAGS]
+    test ecx, QMSG_FLAG_EXTENT
+    jz .a_next_message
+    mov r9, [r8 + QMSG_EXTENT]
+    mov ARG1, [rbp - 8]
+    mov ARG2, r9
+    call queue_retire_chain
+.a_next_message:
+    inc qword [rbp - 64]
+    jmp .a_message
+
+.a_segments:
+    mov qword [rbp - 72], 0
+.a_segment:
+    mov rax, [rbp - 72]
+    cmp rax, [rbp - 48]
+    jae .a_ok
+    mov r11, [rbp - 24]
+    mov r9, [r11 + Q_ENTRIES + rax * 8]
+    mov ARG1, [rbp - 8]
+    mov ARG2, r9
+    call db_bitmap_retire
+    inc qword [rbp - 72]
+    jmp .a_segment
+.a_ok:
+    xor eax, eax
     FRAME_END
     ret

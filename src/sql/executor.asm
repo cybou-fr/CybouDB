@@ -53,6 +53,7 @@ extern db_catalog_put, db_catalog_drop, db_catalog_truncate_data, db_pax_insert,
 extern db_pax_mark_dead, db_pax_dead_total
 extern db_catalog_put_index, db_catalog_set_index_root, db_index_of_table
 extern db_catalog_put_queue, db_queue_push, db_queue_pop, db_queue_peek
+extern db_queue_retire_all
 extern db_catalog_page
 extern db_index_retire_tree
 extern db_index_insert, db_index_insert_unique, db_index_delete
@@ -1293,6 +1294,15 @@ sql_execute_batch:
     jmp     .exec_exit
 
 .exec_drop_queue:
+    ; The pages it is holding go first. Removing the directory entry takes
+    ; the last reference to them with it, and a payload page nothing
+    ; references is one nothing will hand out again.
+    mov     ARG1, [rbp - 8]
+    mov     r10, [rbp - 16]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    call    db_queue_retire_all
+    test    eax, eax
+    jnz     .storage_done
     mov     ARG1, [rbp - 8]
     mov     r10, [rbp - 16]
     mov     ARG2, [r10 + PLAN_TABLE_ID]
