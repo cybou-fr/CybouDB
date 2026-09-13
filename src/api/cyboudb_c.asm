@@ -49,7 +49,7 @@ global cyboudb_column_int64
 global cyboudb_column_int32
 global cyboudb_column_float
 global cyboudb_column_bool
-global cyboudb_column_bytes
+global cyboudb_column_bytes, cyboudb_message
 global cyboudb_column_vector_dimensions
 global cyboudb_column_vector_f32
 global cyboudb_exec
@@ -535,7 +535,7 @@ cyboudb_step:
     cmp     rcx, STMT_ENQUEUE
     je      .step_drop                  ; nothing to hand back
     cmp     rcx, STMT_DEQUEUE
-    je      .step_dequeue_unsupported
+    je      .step_dequeue
 
     mov     eax, CybouDB_C_ERROR
     jmp     .step_exit
@@ -842,13 +842,53 @@ cyboudb_step:
     mov eax, CybouDB_E_STATE
     jmp .step_mutation_error
 
-.step_dequeue_unsupported:
-    ; DEQUEUE answers with the message, and this ABI has no way to hand back a
-    ; value that did not come out of a batch view. Refusing is the only honest
-    ; answer: running it would take the message off the queue and drop it,
-    ; which is worse than not running it. The CLI and the console can already
-    ; do this; see ROADMAP.md for what the ABI needs first.
-    mov     eax, CybouDB_C_MISUSE
+; DEQUEUE answers with one value rather than with rows, so it does not come
+; back through a batch view - there is no schema to describe and no column to
+; describe it as. What it does use is the vocabulary a step already has: ROW
+; when a message came back, DONE when the queue was empty. The bytes are then
+; read with cyboudb_message.
+;
+; The state is deliberately not latched to DONE. A queue is not a result set
+; that runs out: stepping again asks again, and a message enqueued in between
+; is there to be taken.
+.step_dequeue:
+    lea     ARG1, [rbp - 96]
+    lea     ARG2, [r12 + STMT_H_SELECT]
+    mov     ARG3, STMT_H_ARENA_BUF - STMT_H_SELECT
+    call    sql_arena_init
+    mov     r10, [r12 + STMT_H_DB]
+    lea     ARG1, [r10 + DB_H_CTX]
+    mov     ARG2, [rbp - 24]            ; plan
+    lea     ARG3, [rbp - 96]
+    xor     ARG4, ARG4
+    xor     eax, eax
+    PASS_ARG5 rax
+    xor     eax, eax
+    PASS_ARG6 rax
+    call    sql_execute_batch
+    test    eax, eax
+    jnz     .step_mutation_error
+
+    ; Each step is its own transaction, which is the commit-then-work order
+    ; docs/QUEUE.md calls at-most-once. A caller that needs the other order
+    ; opens a transaction of its own around the step.
+    mov     r10, [r12 + STMT_H_DB]
+    test    dword [r10 + DB_H_FLAGS], CybouDB_C_OPEN_READWRITE
+    jz      .step_dequeue_answer
+    cmp     qword [r10 + DB_H_CTX + DB_TX_ACTIVE], 0
+    jne     .step_dequeue_answer
+    lea     ARG1, [r10 + DB_H_CTX]
+    call    db_commit
+    test    eax, eax
+    jnz     .step_mutation_error
+.step_dequeue_answer:
+    mov     r10, [rbp - 24]
+    cmp     qword [r10 + PLAN_DATA3], 0
+    je      .step_dequeue_empty
+    mov     eax, CybouDB_C_ROW
+    jmp     .step_exit
+.step_dequeue_empty:
+    mov     eax, CybouDB_C_DONE
     jmp     .step_exit
 
 .step_misuse:
@@ -1444,6 +1484,63 @@ cyboudb_column_bool:
     xor     eax, eax
     ret
 
+
+; =============================================================================
+; cyboudb_message(stmt, out, capacity, out_length) -> int
+; =============================================================================
+;  The message the last step of a DEQUEUE took. It is not a column and does
+;  not pretend to be one: a queue holds bytes with no schema to say how to
+;  read them, so a caller that wants them asks for them rather than being
+;  handed a synthetic row to read them out of.
+;
+;  The bytes live in the statement's own arena and stay valid until the next
+;  step or the finalize.
+;
+;  Local slots: [rbp-8]=stmt, [rbp-16]=out, [rbp-24]=capacity,
+;               [rbp-32]=out_length, [rbp-40]=length
+cyboudb_message:
+    FRAME_BEGIN 64, 0
+    mov     [rbp - 8], ARG1
+    mov     [rbp - 16], ARG2
+    mov     [rbp - 24], ARG3
+    mov     [rbp - 32], ARG4
+    test    ARG1, ARG1
+    jz      .msg_misuse
+    test    ARG4, ARG4
+    jz      .msg_misuse
+    mov     qword [ARG4], 0
+    mov     r10, [ARG1 + STMT_H_PLAN]
+    test    r10, r10
+    jz      .msg_misuse
+    cmp     qword [r10 + PLAN_TYPE], STMT_DEQUEUE
+    jne     .msg_misuse
+    cmp     qword [r10 + PLAN_DATA3], 0
+    je      .msg_misuse                 ; the last step took nothing
+    mov     rdx, [r10 + PLAN_DATA2]
+    mov     [rbp - 40], rdx
+    cmp     rdx, [rbp - 24]
+    ja      .msg_misuse                 ; the buffer is not big enough
+    mov     r9, [r10 + PLAN_DATA1]
+    mov     r11, [rbp - 16]
+    xor     ecx, ecx
+.msg_byte:
+    cmp     rcx, rdx
+    jae     .msg_copied
+    mov     al, [r9 + rcx]
+    mov     [r11 + rcx], al
+    inc     rcx
+    jmp     .msg_byte
+.msg_copied:
+    mov     r11, [rbp - 32]
+    mov     rax, [rbp - 40]
+    mov     [r11], rax
+    mov     eax, CybouDB_C_OK
+    FRAME_END
+    ret
+.msg_misuse:
+    mov     eax, CybouDB_C_MISUSE
+    FRAME_END
+    ret
 
 ; =============================================================================
 ; cyboudb_column_bytes(stmt, col_idx, out, capacity, out_length) -> int

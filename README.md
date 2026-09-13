@@ -392,8 +392,10 @@ All test suites run in CI on both Linux and Windows.
 * **[docs/QUEUE.md](docs/QUEUE.md)** - durable FIFO queues: the page layout,
   why a message is addressed by position rather than threaded on pointers,
   what `DEQUEUE` does and does not promise, and what is reserved for leases.
-  `CREATE QUEUE`, `DROP QUEUE`, `ENQUEUE` and `DEQUEUE` work, with a longer
-  payload carried by the same extent chain a TEXT cell uses.
+  `CREATE QUEUE`, `DROP QUEUE`, `ENQUEUE` and `DEQUEUE` work from the command
+  line, the console and the C ABI, with a longer payload carried by the same
+  extent chain a TEXT cell uses. Leases are not implemented; the format
+  reserves what they need.
 
 ---
 

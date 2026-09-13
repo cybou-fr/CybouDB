@@ -425,6 +425,29 @@ int cyboudb_column_bytes(cyboudb_stmt *stmt, int col_idx, void *out,
                          uint64_t capacity, uint64_t *out_length);
 
 /**
+ * Copy the message the last step of a DEQUEUE took.
+ *
+ * A queue holds bytes and no schema to say how to read them, so a message is
+ * not a column and is not presented as one. `cyboudb_step` on a DEQUEUE
+ * answers CybouDB_ROW when it took a message and CybouDB_DONE when the queue
+ * was empty; this fetches the bytes after a ROW. Stepping again asks again -
+ * a queue is not a result set that runs out, and a message enqueued in
+ * between is there to be taken.
+ *
+ * Each step is its own transaction unless one is already open, which is the
+ * commit-then-work order: a crash after the step has taken the message and
+ * not done the work. A caller that wants the other order opens a transaction
+ * around the step. See docs/QUEUE.md.
+ *
+ * The bytes stay valid until the next step or the finalize.
+ *
+ * @return CybouDB_OK, or CybouDB_MISUSE when the last step took nothing, the
+ *         statement is not a DEQUEUE, or the buffer is too small.
+ */
+int cyboudb_message(cyboudb_stmt *stmt, void *out, uint64_t capacity,
+                    uint64_t *out_length);
+
+/**
  * Return the dimension count of a VECTOR column (1..4096).
  *
  * @param stmt     The prepared statement.

@@ -928,12 +928,26 @@ That nearly became a test that proved nothing.
 
 CI runs the lint.
 
-Not done: `DEQUEUE` through the C ABI, which is
-refused rather than run: it answers with the message, and that ABI has no way
-to hand back a value that did not come out of a batch view, so running it would
-take a message off the queue and drop it. The CLI and the console can. Dropping
-a queue that holds segments will have to retire them, the way dropping an index
-retires its tree.
+`DROP QUEUE` retires what the queue was holding - the extent chain of every
+message still in it, then the segments - before the directory entry goes, for
+the reason `DROP INDEX` retires its tree. Removing the entry takes the last
+reference to those pages with it, and a payload page nothing references is one
+nothing will hand out again. Tested the same way: a hundred rounds of create,
+fill with three two-page messages, drop, through three hundred pages. Without
+the retire it runs out at the forty-eighth.
+
+`DEQUEUE` through the C ABI answers in the vocabulary a step already has:
+`CybouDB_ROW` when it took a message, `CybouDB_DONE` when the queue was empty,
+and `cyboudb_message` for the bytes. It is not presented as a column, because a
+queue holds bytes and no schema to say how to read them, and a synthetic row to
+read one out of would be a second representation of what a row is. Stepping the
+same statement again asks again - a queue is not a result set that runs out,
+and a message enqueued in between is there to be taken.
+
+Each step is its own transaction unless one is already open, which is the
+commit-then-work order and therefore at-most-once. A caller that wants the
+other order opens a transaction around the step. That is stated in
+`include/cyboudb.h` where a caller will read it, rather than only here.
 
 What is decided:
 
