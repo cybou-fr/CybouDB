@@ -1,0 +1,164 @@
+name: Release
+
+# Publishing has been a manual step, which is why a tag alone produced a page
+# with nothing on it but GitHub's own source archives. A tag should build the
+# thing people download.
+#
+# The tag is the input and the source of truth: v0.6.0 packages 0.6.0, and
+# tools/package.sh refuses to build a package whose binary answers anything
+# else. So a tag pushed against a tree that still says 0.6.0-dev fails here
+# rather than publishing a tarball whose name and contents disagree.
+#
+# workflow_dispatch takes the same tag, for a release that has to be rebuilt
+# after the fact - including this workflow's own first run, since v0.6.0 was
+# tagged before it existed.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and publish, e.g. v0.6.0'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: Package Linux x86-64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Install NASM
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm
+
+      # The suites run here too. A release is the one build nobody gets to
+      # re-run before it reaches someone, so it is the wrong place to trust
+      # that CI said yes to the same tree earlier.
+      - name: Build and test
+        run: |
+          sh build.sh
+          sh tests/run_tests.sh
+          python3 tests/repl_tests.py ./cyboudb
+          python3 tests/compat_tests.py ./cyboudb
+          python3 tests/lease_sql_tests.py ./cyboudb
+
+      - name: An older reader still refuses a leases file
+        run: |
+          sh build.sh --no-leases
+          python3 tests/lease_format_tests.py ./cyboudb ./build/cyboudb_nolease
+          sh tests/release_gate_leases.sh ./cyboudb ./build/cyboudb_nolease
+
+      - name: Package
+        run: |
+          VERSION="${{ inputs.tag || github.ref_name }}"
+          sh tools/package.sh "${VERSION#v}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: build/release/*.tar.gz
+          if-no-files-found: error
+
+  windows:
+    name: Package Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Install NASM
+        run: choco install nasm -y --no-progress
+
+      - name: Build
+        shell: cmd
+        run: call build.bat
+
+      - name: Test
+        shell: bash
+        run: |
+          sh tests/run_tests.sh
+          python tests/repl_tests.py ./cyboudb.exe
+          python tests/compat_tests.py ./cyboudb.exe
+          python tests/lease_sql_tests.py ./cyboudb.exe
+
+      - name: Build a reader that does not know the leases bit
+        shell: cmd
+        run: call build.bat --no-leases
+
+      - name: An older reader still refuses a leases file
+        shell: bash
+        run: |
+          python tests/lease_format_tests.py ./cyboudb.exe ./build/cyboudb_nolease.exe
+          sh tests/release_gate_leases.sh ./cyboudb.exe ./build/cyboudb_nolease.exe
+
+      - name: Package
+        shell: cmd
+        # %TAG:~1% drops the leading v and nothing else; %TAG:v=% would strip
+        # every v in the string.
+        run: |
+          set "TAG=${{ inputs.tag || github.ref_name }}"
+          set "VERSION=%TAG:~1%"
+          call tools\package.bat %VERSION%
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: build/release/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # One SHA256SUMS over both archives, the way the 0.5 releases carry it,
+      # so a download can be checked without trusting the page it came from.
+      - name: Checksums
+        working-directory: dist
+        run: |
+          ls -l
+          sha256sum *.tar.gz *.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      # The annotated tag's own message is the release notes. It is written
+      # once, at the tag, and cannot drift from what was tagged.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          git tag -l --format='%(contents)' "$TAG" > tagmsg.txt
+          TITLE=$(head -1 tagmsg.txt)
+          tail -n +3 tagmsg.txt > notes.md
+          [ -n "$TITLE" ] || TITLE="CybouDB ${TAG#v}"
+          [ -s notes.md ] || cp tagmsg.txt notes.md
+          # A tag with a suffix - preview, rc - is not a final release.
+          case "$TAG" in *-*) PRE=--prerelease;; *) PRE=;; esac
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "$TITLE" --notes-file notes.md $PRE
+          fi
+          gh release view "$TAG"
