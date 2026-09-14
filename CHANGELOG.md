@@ -28,7 +28,7 @@ earlier one.
 A change to the format version itself would be announced on its own, with a
 migration path, and is not something a minor release does quietly.
 
-## [Unreleased]
+## [0.6.0] - 2026-09-14
 
 ### Queue leases
 
@@ -152,11 +152,16 @@ A predicate parameter is applied per execution, over the zero the binder left
 in the bound expression node, so the plan still holds no value. The kernel was
 never the problem - `sql_kernel_resolve` picks from the column's physical type
 and never from the literal's - and zone pruning already read the literal when it
-ran rather than when the plan was built. What does not yet work is an index
-seek: its key bounds are arithmetic on the literal done at bind time, so a
-parameterised predicate declines the seek and scans with zone pruning instead.
-Correct, and slower than it should be; recomputing the bounds per execution is
-named in `ROADMAP.md` rather than left implied.
+ran rather than when the plan was built.
+
+The index seek was. Its key bounds were arithmetic on the literal done at bind
+time, so the first version of this work declined the seek and scanned with zone
+pruning instead - correct, and slower than it should be. That is fixed rather
+than deferred: choosing the index stays at plan time and computing the bounds
+moved to execution, through one `sql_index_bounds` called by the binder for a
+literal and by the execution for a bound value. A parameterised predicate now
+seeks, and `tests/bind_test.c` compares `index_lookups` between the bound form
+and the literal one to keep it that way.
 
 `?` is accepted in `INSERT ... VALUES`, on the value side of a `WHERE`
 comparison, and as an `UPDATE` assignment's value. Anywhere else it is a syntax

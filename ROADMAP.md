@@ -225,7 +225,8 @@ Steps 3 and 4 cost nothing: every predicate in the dialect is built by the same
 the same time as `SELECT`. They still get tests - a thing that works by
 accident is a thing that can stop working by accident.
 
-**Parameter binding is closed.** What remains in `0.6` is queue leases.
+**Parameter binding is closed**, and so is `0.6`: the queue-lease work below
+shipped with it.
 
 The CRUD path, not parameters everywhere. `?` in a projection list, in an
 `ORDER BY`, in a `LIMIT` or as a table name is not part of this and is not
