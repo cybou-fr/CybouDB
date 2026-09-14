@@ -104,8 +104,8 @@ being right; this is about it being usable.
 
 ```text
 0.6
- ├─ flush investigation
- ├─ parameter binding
+ ├─ flush investigation    done
+ ├─ parameter binding      done
  └─ queue leases
 ```
 
