@@ -111,11 +111,13 @@ cyboudb_close(db);
 Build the library with `sh build.sh --lib` or `build.bat --lib`; the public
 declarations and the full contract are in
 [include/cyboudb.h](include/cyboudb.h). `cyboudb_step_batch` with
-`cyboudb_batch_column` gives borrowed typed columns for bulk reads. Two worked
-examples are built and run by CI: [`examples/worker.c`](examples/worker.c), a
-worker loop with no broker under it, and
-[`examples/vector_search.c`](examples/vector_search.c), filtered exact search
-through the standalone vector runtime.
+`cyboudb_batch_column` gives borrowed typed columns for bulk reads. Three
+worked examples are built and run by CI: [`examples/worker.c`](examples/worker.c),
+a worker loop with no broker under it;
+[`examples/leased_worker.c`](examples/leased_worker.c), the same loop for work
+that outlives a transaction, where a claim is held by a deadline and finished
+by a ticket; and [`examples/vector_search.c`](examples/vector_search.c),
+filtered exact search through the standalone vector runtime.
 
 ---
 

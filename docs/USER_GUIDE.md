@@ -417,22 +417,31 @@ For long-running background tasks, consuming with immediate deletion is dangerou
 if the worker process dies midway through processing, the job is lost forever.
 
 CybouDB provides **Queue Leases**, enabling worker pools to claim jobs with a
-time-to-live (TTL) deadline:
+deadline. A claim returns a **ticket** - a position and a token - and every
+other lease statement names it:
 
 ```sql
--- 1. Worker claims next available message for 30,000 milliseconds (30s)
+-- 1. Take the next claimable message and hold it for 30,000 ms (30s).
 CLAIM FROM task_queue FOR 30000;
--- Returns: message payload, message_id, and an ephemeral lease_token (64-bit int)
+-- Prints the payload, then the ticket:  AT 41 TOKEN 3
 
--- 2a. On successful processing: acknowledge and permanently retire the message
-ACK task_queue <lease_token>;
+-- 2a. On success: finish it, in the same transaction as the work's own writes.
+ACK   FROM task_queue AT 41 TOKEN 3;
 
--- 2b. On failure or error: explicitly release message back for immediate retry
-NACK task_queue <lease_token>;
+-- 2b. On failure: hand it back for immediate retry, rather than after a timeout.
+NACK  FROM task_queue AT 41 TOKEN 3;
 
--- 2c. If processing takes longer: renew the deadline before it expires
-RENEW task_queue <lease_token> FOR 30000;
+-- 2c. If the work runs long: extend the deadline before it passes.
+RENEW FROM task_queue AT 41 TOKEN 3 FOR 30000;
 ```
+
+A database must be created for leases - `cyboudb create-leases`, or
+`cyboudb_create_with_options` with `CybouDB_CREATE_QUEUE_LEASES`. It is decided
+when the file is made and never afterwards, so a database created without it
+stays readable by builds that predate leases. In C the payload comes out
+through `cyboudb_message` the way a `DEQUEUE`'s does, and `cyboudb_claim_ticket`
+hands back the two numbers;
+[`examples/leased_worker.c`](../examples/leased_worker.c) is the whole loop.
 
 #### Lease Guarantees:
 * A claimed message is hidden from all other workers until its deadline expires or
@@ -440,6 +449,14 @@ RENEW task_queue <lease_token> FOR 30000;
 * If a worker crashes, the lease expires automatically based on the high-water
   wall clock. The message becomes immediately claimable by another worker without
   requiring explicit recovery cleanup.
+* **The deadline decides when a message becomes claimable again; the token
+  decides whose acknowledgement counts.** A lapsed lease is not by itself a
+  refusal - if nobody re-claimed the message, the late `ACK` is accepted. If
+  somebody did, the reclaim raised the token, so the late `ACK` is refused and
+  the job cannot be finished twice. No clock error of any size can cost the
+  queue's integrity.
+* Nothing is written when a lease lapses: expiry is a predicate, not an event,
+  so recovering a dead worker's message costs no sweeper and no write.
 
 ---
 
