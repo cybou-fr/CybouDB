@@ -395,7 +395,7 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     echo Build OK -^> build\chacha20_test.exe
     "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\crypto\poly1305.asm -o build\poly1305.obj
     if errorlevel 1 goto :fail
-    cl.exe /O2 /W3 /nologo tests\poly1305_test.c build\poly1305.obj /Febuild\poly1305_test.exe /Fobuild\poly1305_test.obj
+    cl.exe /O2 /W3 /nologo tests\poly1305_test.c build\poly1305.obj build\chacha20.obj /Febuild\poly1305_test.exe /Fobuild\poly1305_test.obj
     if errorlevel 1 goto :fail
     echo Build OK -^> build\poly1305_test.exe
     goto :eof

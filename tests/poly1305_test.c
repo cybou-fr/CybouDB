@@ -30,6 +30,12 @@
 void cyboudb_poly1305(const uint8_t *key, const uint8_t *msg, uint64_t len,
                       uint8_t *mac);
 
+/* The cipher, so that the number the design actually cares about - a whole
+   page sealed, in the engine's own language - is measured rather than added
+   up from two separate runs. */
+void cyboudb_chacha20_xor(const uint8_t *key, uint32_t counter,
+                          const uint8_t *nonce, uint8_t *buf, uint64_t len);
+
 static int checks, failures;
 
 static void check(const char *what, int ok) {
@@ -275,6 +281,27 @@ int main(void) {
             cyboudb_poly1305(key, page, sizeof page, mac);
         t = now_seconds() - t;
         printf("\n     4096-byte page: %.0f ns, %.2f GB/s\n",
+               t * 1e9 / 20000.0, 4096.0 * 20000.0 / t / 1e9);
+    }
+
+    /* And the whole seal: encrypt the page, then authenticate the ciphertext.
+       This is not yet an AEAD - the one-time MAC key must come from the
+       cipher's first block, and the associated data of
+       docs/ENCRYPTED_FORMAT.md Decision 5 is not here - so it measures the two
+       primitives back to back rather than the finished construction. */
+    {
+        static uint8_t page[4096];
+        uint8_t mac[16], nonce[12];
+        double t;
+        for (i = 0; i < sizeof page; i++) page[i] = (uint8_t)i;
+        for (i = 0; i < sizeof nonce; i++) nonce[i] = (uint8_t)(i + 1);
+        t = now_seconds();
+        for (i = 0; i < 20000; i++) {
+            cyboudb_chacha20_xor(key, i, nonce, page, sizeof page);
+            cyboudb_poly1305(key, page, sizeof page, mac);
+        }
+        t = now_seconds() - t;
+        printf("     sealing one, cipher + MAC: %.0f ns, %.2f GB/s\n",
                t * 1e9 / 20000.0, 4096.0 * 20000.0 / t / 1e9);
     }
 

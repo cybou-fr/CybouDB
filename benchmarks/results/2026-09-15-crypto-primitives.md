@@ -202,6 +202,27 @@ It is the same class of mistake as the two in the I/O spike: a benchmark that
 is wrong in a plausible direction. Three for three, all found by disbelieving a
 number rather than by reading code.
 
+## What the assembly does
+
+The C measurements above chose the design; `src/crypto/chacha20.asm` and
+`src/crypto/poly1305.asm` are what the engine actually runs, and they land
+where the C said they would:
+
+| | C | assembly |
+| :--- | ---: | ---: |
+| cipher | 2,589 ns (SSE2, four blocks transposed) | 2,500 ns (SSE2, three blocks interleaved) |
+| MAC | 1,146 ns (four chains) | 1,148 ns (four chains) |
+| **a 4096-byte page sealed** | **3,722 ns** | **3,676 ns** |
+
+The cipher reaches the four-block number with three blocks because sixteen
+state words in sixteen registers leave nothing for the rotation temporary - and
+because the win was never the width, it was having independent work.
+
+Both are held to their RFC 8439 vectors and, at every length from 0 to 600, to
+C references that share no representation with them: the MAC's reference uses
+five 26-bit limbs against the assembly's three of 44, so no carry chain and no
+reduction is common to the two.
+
 ## Reproducing
 
 ```

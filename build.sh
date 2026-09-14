@@ -185,7 +185,7 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/crypto/poly1305.asm \
             -o build/poly1305.o
         "$CC" -O2 -no-pie -Wall -Wextra tests/poly1305_test.c \
-            build/poly1305.o -o build/poly1305_test
+            build/poly1305.o build/chacha20.o -o build/poly1305_test
         echo "Build OK -> build/poly1305_test"
     fi
     if [ "${1:-}" = "--crypto-probe" ]; then

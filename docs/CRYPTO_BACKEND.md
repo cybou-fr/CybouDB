@@ -132,9 +132,10 @@ improvement, with the cipher and the MAC finally within 30% of each other:
 
 ```
                           cipher     MAC      page
-scalar, serial MAC         7,235   1,839    9,120 ns
-SSE2 4-block, 4-chain      2,589   1,146    3,722 ns
-AVX2 8-block, 4-chain      1,486   1,146    2,620 ns
+scalar, serial MAC         7,235   1,839    9,120 ns    C
+SSE2 4-block, 4-chain      2,589   1,146    3,722 ns    C
+AVX2 8-block, 4-chain      1,486   1,146    2,620 ns    C
+SSE2 3-block, 4-chain      2,500   1,148    3,676 ns    assembly, shipped
 ```
 
 Two things follow. **The SSE2 four-block path is the one to build first**: no
@@ -193,8 +194,8 @@ official vectors does not ship.
 | :--- | :--- |
 | ~~a vectorised ChaCha20, measured~~ | done: 2.25 GB/s with AVX2, 1.49 with SSE2, and the expectation it was testing turned out to be 1.75x optimistic |
 | ~~a parallel Poly1305~~ | done: four chains with precomputed powers, 1.6x, and a sealed page at 2.6 µs |
-| an assembly implementation | **both halves exist now**: `src/crypto/chacha20.asm` runs three blocks interleaved at 1.6 GB/s, and `src/crypto/poly1305.asm` is the serial MAC at 2.2 GB/s. Each is held to its RFC 8439 vector and to an independent C reference at every length from 0 to 600, and the cipher to Win64's register contract by `tests/chacha20_abi.asm` |
-| the four-chain MAC in assembly | the serial one matches the serial C; the four-chain C is 1.6x faster, and that is the version a page seal should use |
+| ~~an assembly implementation~~ | **done, both halves and both fast paths.** `src/crypto/chacha20.asm` runs three blocks interleaved at 1.6 GB/s; `src/crypto/poly1305.asm` runs four accumulator chains at 3.6 GB/s. Each is held to its RFC 8439 vector and to an independent C reference at every length from 0 to 600, and the cipher to Win64's register contract by `tests/chacha20_abi.asm`. **A 4096-byte page is sealed in 3.6 µs**, matching the C measurement |
+| the AEAD, rather than two primitives | the one-time MAC key has to come from the cipher's first block, and the associated data of [Decision 5](ENCRYPTED_FORMAT.md#decision-5--what-the-tag-covers) has to be fed in. What exists is the arithmetic, not yet the construction |
 | XChaCha20 and the AEAD wiring in assembly | the C probe measures the pieces; nothing yet computes a whole sealed page in the engine's own language |
 | XChaCha20's own vectors | the HChaCha20 construction has published test vectors of its own; ChaCha20's do not cover it |
 | a Poly1305 one-time-key derivation check | the AEAD derives its MAC key from the cipher; that wiring has its own vector in RFC 8439 section 2.8.2 |
