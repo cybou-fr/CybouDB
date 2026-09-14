@@ -576,6 +576,128 @@ for.
 
 A segment is retired when `head` has passed all of it, exactly as now.
 
+### What a valid file looks like, with leases and without
+
+The validator is the part that cannot be changed later, because it decides
+which files exist. So this is the whole of it, written before any of it is
+assembly, and the thing to notice is that **it is not the zero rules with the
+zeros removed**.
+
+Without the capability, nothing has changed and nothing may:
+
+```text
+WITHOUT QUEUE_LEASES
+
+  Q_CLAIM      == Q_HEAD
+  Q_TIME_FLOOR == 0
+
+  every slot in [head, tail):
+      state    == HELD
+      deadline == 0
+      token    == 0
+```
+
+With it:
+
+```text
+WITH QUEUE_LEASES
+
+  Q_HEAD <= Q_CLAIM <= Q_TAIL
+
+  a slot outside [head, tail) is not read and is not required to be anything
+
+  HELD      deadline == 0
+            token    >= 0
+  CLAIMED   deadline >  0
+            token    >  0
+  ACKED     deadline == 0
+            token    >  0
+
+  Q_TIME_FLOOR == 0, or a plausible millisecond timestamp
+```
+
+#### `HELD` does not mean the token is zero, and that is not a relaxation
+
+This is the line worth reading twice, because the obvious rule is wrong and the
+document already committed to the reason two sections ago.
+
+`NACK` raises the token. It has to: without that, a worker could hand a message
+back, watch another worker take it, and then acknowledge the work it abandoned.
+So after
+
+```text
+CLAIM   token 7
+NACK            -> token 8, state HELD
+```
+
+the message is `HELD` again and its token is 8. Requiring `token == 0` for
+`HELD` would make that file invalid - it would forbid the state that `NACK` is
+*defined* to produce.
+
+So the token is not a property of being claimed. It is the fencing history of
+the slot, and it only ever goes up:
+
+```text
+token == 0    this message has never been claimed
+token >  0    it has been claimed this many times, whatever it is doing now
+```
+
+A `CLAIMED` slot must have a non-zero token because a claim raised it. A `HELD`
+slot may have any token, and which one it has says whether it is fresh out of
+an `ENQUEUE` or back from a `NACK` or a lapse.
+
+#### `ACKED` keeps its token
+
+An explicit decision rather than an omission, and it could have gone the other
+way: clearing the token on `ACK` would save nothing and cost the one thing the
+token is for.
+
+Keep it, and the slot is self-describing: a ticket presented against an `ACKED`
+slot is *visibly* stale, refused by the same token comparison that refuses
+every other stale ticket, with no second rule about a state where tokens do not
+apply. Clear it, and an `ACKED` slot would accept a token of zero - which is
+the value that means *never claimed* - so the one state that is finished would
+be the one state where a forged ticket has a value to guess.
+
+Nothing has to clean it up. The slot stops being read the moment `head` passes
+it, and its segment is retired whole when `head` has passed all of it, exactly
+as now. Copy-on-write reclaims the page; the token goes with it.
+
+#### `Q_TIME_FLOOR` becomes conditional, not permitted
+
+When leases arrive, the rule that the field is zero does not go away - it gains
+a branch:
+
+```text
+without QUEUE_LEASES   Q_TIME_FLOOR == 0
+with QUEUE_LEASES      Q_TIME_FLOOR == 0, or a timestamp
+```
+
+**Zero stays legal in a database that has the capability**, and the reason is
+the distinction the capability bit is built on: having leases and having used
+them are different facts. The bit is set when the file is created; a queue in
+that file may never see a `CLAIM`, and until it does there is no time it has
+ever used. A validator that demanded a timestamp would be demanding evidence of
+use from a file that only claimed the ability.
+
+Deleting the zero check instead of branching it would be the same mistake the
+field was found in, made on purpose: eight bytes that a queue without leases is
+still required not to use, with nothing requiring it.
+
+What *plausible* means for a timestamp is deliberately left until there is a
+clock reading it. A bound like "not before the file was created" is tempting
+and is a check on the world rather than on the file - see the clock section for
+why a queue's time can legitimately be ahead of the machine's.
+
+#### The cursor invariant
+
+`Q_HEAD <= Q_CLAIM <= Q_TAIL` replaces `Q_CLAIM == Q_HEAD`, and it is the only
+ordering rule the queue page gains. It is worth stating what it does not say:
+it does not say that everything below `claim` has been claimed, because a lapse
+un-claims a message without moving anything, and it does not say that
+everything above it is `HELD`, because `claim` is one past the highest position
+ever handed out and a message may have been enqueued since.
+
 ### The open problem: finding a claimable message
 
 **This, and not the clock, is the hard part of leases**, and it is left open
@@ -640,21 +762,43 @@ lease slots inspected per CLAIM
 segments inspected per CLAIM
 ```
 
+A third is reserved and not used yet:
+
+```text
+summary nodes inspected per CLAIM
+```
+
+If the per-segment summary turns out to need a level above it, that level will
+want counting too, and reserving the name now costs nothing where changing the
+instrumentation afterwards would mean re-taking every measurement it had
+already produced.
+
 and the acceptance criterion is stated against them rather than against a
 wall-clock time, for the same reason the commit work was:
 
-| Queue depth | An ordinary `CLAIM` must |
-| ---: | :--- |
-| 100 | not scan the retained queue |
-| 10,000 | not scan the retained queue |
-| 1,000,000 | not scan the retained queue |
+**Depth is not enough on its own.** A queue of a million messages that is
+otherwise tidy would let almost any strategy look constant, so the probe has to
+vary the *shape* at a fixed depth as well. Six scenarios, each present because
+it breaks a different plausible answer:
 
-*Ordinary* means: fresh messages available, some claims live, some
-acknowledgements out of order. The number that must stay flat across those
-three rows is slots inspected per claim - the same shape as the 2.14 → 163.41
-→ 1.00 table `preview.2` closed with, and the same reason for preferring a
-counter to a timing: a counter says whether the cost follows the work or the
-backlog, and a timing says what the machine was doing that afternoon.
+| Scenario | What it has to show |
+| :--- | :--- |
+| A fresh `HELD` message at the front | the ordinary claim is cheap |
+| Many live `CLAIMED` messages before the first available one | cost does not follow the number of live claims |
+| One stuck `head` with thousands of `ACKED` behind it | **the pathological case**, and the one a cursor alone does not fix |
+| A lapsed claim far behind `Q_CLAIM` | a hint does not lose a reclaimable message |
+| No claimable message at all | a negative answer is bounded too, not a full walk |
+| Depth 100, 10,000, 1,000,000 | cost does not follow retention |
+
+The last row is the one `preview.2` already taught: what must stay flat is
+**slots inspected per claim**, the same shape as the 2.14 → 163.41 → 1.00 table
+that work closed with. A counter says whether the cost follows the work or the
+backlog; a timing says what the machine was doing that afternoon.
+
+The fifth row is the one most likely to be forgotten. A strategy can be fast
+whenever there is something to find and linear whenever there is not - and a
+work queue asks "is there anything for me" far more often than it gets an
+answer, so a bounded *no* is as load-bearing as a bounded *yes*.
 
 `Q_CLAIM` becomes *one past the highest position ever handed out*. It is not
 where the scan starts - it cannot be, since a lapsed message behind it has to
@@ -772,33 +916,32 @@ build that already exists, so it is made in the format's own documents before a
 single page is written with a non-zero lease state:
 
 ```text
-1. docs/FORMAT.md        the bit, its dependency, what an old reader must do
-2. include/format.inc    the constant
-3. the creator           `cyboudb create` gains the choice
-4. open-time validation  QUEUE_LEASES without QUEUE is a refusal
-5. an old-reader test    a frozen fixture a 0.5 build must refuse, cleanly
+1. docs/FORMAT.md        the bit, its dependency, what an old reader must do   done
+2. include/format.inc    the constant                                          done
+3. the creator           `cyboudb create-leases`                               done
+4. open-time validation  QUEUE_LEASES without QUEUE is a refusal               done
+5. an old-reader test    a build that does not know the bit must refuse        done
+6. conditional validation  the state table above, behind the bit
 ```
 
-Step 5 is the one that makes the rest true rather than intended. A `0.5` build
-opening a leases file has to say *unsupported feature* and not *corrupt queue*,
-and the only thing that establishes it is a file those builds actually refuse -
-asserted by a fixture, the way the compatibility promise already is.
+Step 5 is the one that makes the rest true rather than intended, and it is done
+by construction rather than by assertion: `build.sh --no-leases` builds a reader
+with the bit dropped from the mask of what it understands, which is what every
+released `0.5` binary is, and `tests/lease_format_tests.py` runs both binaries
+against the same files.
 
-`FORMAT.md` currently stops at `32768 STREAM`, which is correct today because
-leases do not exist. It stops being correct the moment they do.
+**What that does not prove**, and the release is where it gets proved: a build
+made from today's source with one macro flipped is a very good model of a `0.5`
+reader and is not literally one. Before `0.6` ships, the lease fixture goes once
+against the actual released `preview.1` and `preview.2` binaries, on both
+platforms. Not on every push - the structural check above is what belongs in
+CI - but once, so that *released 0.5 refuses a 0.6 lease file cleanly* is a
+sentence someone has watched happen.
 
-**And `Q_TIME_FLOOR`'s zero check becomes conditional rather than deleted.**
-The check added with the clock design says the field is zero; when leases
-arrive the rule is not *remove it*, it is:
-
-```text
-without QUEUE_LEASES   Q_TIME_FLOOR == 0
-with QUEUE_LEASES      Q_TIME_FLOOR is a timestamp, validated as one
-```
-
-Deleting the check would make a queue without leases stop caring about eight
-bytes it is still required not to use - which is the same mistake the field was
-found in, repeated deliberately.
+Step 6 is where the state table above stops being a document. Nothing writes a
+non-zero lease field until the validator knows which ones are legal, because
+the first file that escapes with one settles the question for every reader that
+already exists.
 
 ### What is still open
 

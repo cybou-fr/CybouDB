@@ -334,6 +334,13 @@ backwards extends every lease and one that jumps forward expires them all at
 once. What a deadline means when the file is opened on another machine, or a
 year later, has to be answered in `docs/QUEUE.md` before any of it is assembly.
 
+**The format contract is in** - bit 65536, its dependency, a creator, and a
+reader built without the bit that refuses a leases file with the feature
+message rather than a damage one (`tests/lease_format_tests.py`). Before the
+release that fixture goes once against the actual released `preview.1` and
+`preview.2` binaries on both platforms, because a build made from today's
+source with one macro flipped models a `0.5` reader well and is not one.
+
 **Both design questions are now answered there**, in *The clock a lease
 deadline is measured on* and *The shape of CLAIM, ACK, NACK and RENEW*: a
 deadline is wall-clock milliseconds floored by a high-water the queue carries,
