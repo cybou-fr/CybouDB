@@ -30,6 +30,44 @@ migration path, and is not something a minor release does quietly.
 
 ## [Unreleased]
 
+### Queue leases
+
+A message can be **claimed** with a deadline instead of taken, which is what
+lets a worker hold a job across a transaction boundary rather than holding a
+transaction open while it works.
+
+```sql
+CLAIM FROM jobs FOR 30000;
+ACK   FROM jobs AT 41 TOKEN 3;
+NACK  FROM jobs AT 41 TOKEN 3;
+RENEW FROM jobs AT 41 TOKEN 3 FOR 30000;
+```
+
+Only in a database created for it - `cyboudb create-leases`, incompatible bit
+65536, decided when the file is made and never afterwards. A `0.5` build
+refuses such a file saying *unsupported feature* rather than *corrupt queue*,
+which is what the bit is for; one created without it is unchanged and stays
+readable by `0.5` forever.
+
+**The deadline decides when a message becomes claimable again. The token
+decides whose acknowledgement counts.** They are separate, and only the second
+is a correctness argument: a worker whose lease lapsed still gets its `ACK` on
+a message nobody re-claimed, because if another worker had taken it the token
+would say so. No clock error of any size can cause a message to be
+acknowledged twice - a wrong clock costs a delay or duplicated work and cannot
+cost the queue's integrity.
+
+Deadlines are wall-clock milliseconds, floored by the largest time the queue
+has already used, so a queue's clock never runs backwards whatever the
+machine's does. Expiry is a predicate rather than an event: nothing is written
+when a lease lapses, which matters because the process that would have run a
+sweep is usually the one that stopped.
+
+`cyboudb_claim_ticket` hands back the position and token in C; the bytes come
+out through `cyboudb_message`, the way a `DEQUEUE`'s do. A lease refusal has an
+error code of its own, because a stale ticket is what a worker whose lease was
+reclaimed is told rather than a programming mistake.
+
 ### Parameter binding
 
 `INSERT ... VALUES`, `WHERE` comparisons in `SELECT`, `UPDATE` and `DELETE`,

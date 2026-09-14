@@ -23,6 +23,7 @@ err_dup_table:       db "table already exists", 0
 err_dup_col:         db "duplicate column name in table definition", 0
 err_type_mismatch:   db "type mismatch in expression or literal", 0
 err_param_placement: db "a parameter must be compared against a column", 0
+err_no_leases:       db "database was not created with queue leases", 0
 err_not_nullable:    db "cannot insert NULL into non-nullable column", 0
 err_val_count:       db "row value count does not match column count", 0
 err_no_pax:          db "database does not have PAX table storage enabled", 0
@@ -1143,6 +1144,14 @@ sql_bind:
     je      .bind_enqueue
     cmp     rax, STMT_DEQUEUE
     je      .bind_dequeue
+    cmp     rax, STMT_CLAIM
+    je      .bind_lease
+    cmp     rax, STMT_ACK
+    je      .bind_lease
+    cmp     rax, STMT_NACK
+    je      .bind_lease
+    cmp     rax, STMT_RENEW
+    je      .bind_lease
     cmp     rax, STMT_CREATE_STREAM
     je      .bind_create_stream
     cmp     rax, STMT_DROP_STREAM
@@ -2386,6 +2395,58 @@ sql_bind:
     mov     r11, [rbp - 8]
     mov     [r10 + PLAN_CTX], r11
     xor     eax, eax
+    jmp     .binder_exit
+
+; --- BIND CLAIM / ACK / NACK / RENEW ------------------------------------------
+; All four name a queue and carry numbers, so they bind the same way: resolve
+; the object, copy what the statement said, and let execution do the rest. The
+; capability is checked here rather than at execution because a database
+; without it has no such operation at all, and saying so at prepare is where a
+; caller can do something about it.
+.bind_lease:
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 240]
+    mov     [r10 + PLAN_TYPE], rax
+    mov     r11, [rbp - 8]
+    test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_QUEUE
+    jz      .queue_unsupported
+    test    qword [r11 + DB_FEATURES], CybouDB_FEATURE_QUEUE_LEASES
+    jz      .lease_unsupported
+
+    mov     r10, [rbp - 16]
+    mov     rcx, [r10 + QUEUE_NAME_LEN]
+    cmp     rcx, 31
+    ja      .bad_tbl_len
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + QUEUE_NAME_PTR]
+    mov     ARG3, [r10 + QUEUE_NAME_LEN]
+    lea     ARG4, [rbp - 56]
+    call    catalog_find_queue
+    test    rax, rax
+    jz      .queue_not_found
+
+    mov     r10, [rbp - 48]
+    mov     rdx, [rbp - 56]
+    mov     [r10 + PLAN_TABLE_ID], rdx
+    mov     r11, [rbp - 16]
+    mov     rdx, [r11 + LEASE_DURATION]
+    mov     [r10 + PLAN_LEASE_DURATION], rdx
+    mov     rdx, [r11 + LEASE_POSITION]
+    mov     [r10 + PLAN_LEASE_POSITION], rdx
+    mov     rdx, [r11 + LEASE_TOKEN]
+    mov     [r10 + PLAN_LEASE_TOKEN], rdx
+    mov     r11, [rbp - 8]
+    mov     [r10 + PLAN_CTX], r11
+    xor     eax, eax
+    jmp     .binder_exit
+
+.lease_unsupported:
+    mov     ARG1, [rbp - 40]
+    mov     ARG2, SQL_ERR_NO_STORAGE
+    xor     ARG3, ARG3
+    lea     ARG4, [err_no_leases]
+    call    set_binder_error
+    mov     eax, SQL_ERR_NO_STORAGE
     jmp     .binder_exit
 
 ; --- BIND DROP INDEX ---------------------------------------------------------

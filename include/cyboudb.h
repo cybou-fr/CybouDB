@@ -562,6 +562,36 @@ int cyboudb_message(cyboudb_stmt *stmt, void *out, uint64_t capacity,
                     uint64_t *out_length);
 
 /**
+ * What the last CLAIM took, and the proof that this caller holds it.
+ *
+ * `CLAIM FROM q FOR <milliseconds>` takes the first claimable message and
+ * gives it a deadline instead of removing it. Stepping it answers CybouDB_ROW
+ * when it took one and CybouDB_DONE when nothing was claimable; the bytes come
+ * out through cyboudb_message, and this hands back the position and the token
+ * to acknowledge it with:
+ *
+ *     ACK   FROM q AT <position> TOKEN <token>
+ *     NACK  FROM q AT <position> TOKEN <token>
+ *     RENEW FROM q AT <position> TOKEN <token> FOR <milliseconds>
+ *
+ * The ticket is data the caller keeps rather than state the statement
+ * remembers, because a worker acknowledges from a different transaction and
+ * possibly after the file was reopened.
+ *
+ * The deadline decides when a message becomes claimable again; the token
+ * decides whose acknowledgement counts. A lapsed deadline is not by itself a
+ * refusal - if another worker had taken the message, the token would say so.
+ * See docs/QUEUE.md.
+ *
+ * Either pointer may be NULL.
+ *
+ * @return CybouDB_OK, or CybouDB_MISUSE for a bad handle, a statement that is
+ *         not a CLAIM, or a claim whose last step took nothing.
+ */
+int cyboudb_claim_ticket(cyboudb_stmt *stmt, uint64_t *position,
+                         uint64_t *token);
+
+/**
  * Return the dimension count of a VECTOR column (1..4096).
  *
  * @param stmt     The prepared statement.

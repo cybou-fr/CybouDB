@@ -69,6 +69,13 @@ kw_unique:          db "unique", 0
 kw_queue:           db "queue", 0
 kw_enqueue:         db "enqueue", 0
 kw_dequeue:         db "dequeue", 0
+kw_claim:           db "claim", 0
+kw_ack:             db "ack", 0
+kw_nack:            db "nack", 0
+kw_renew:           db "renew", 0
+kw_for:             db "for", 0
+kw_at:              db "at", 0
+kw_token:           db "token", 0
 kw_stream:          db "stream", 0
 kw_append:          db "append", 0
 kw_to:              db "to", 0
@@ -140,6 +147,13 @@ kw_table_entries:
     dq kw_read,     4, TOK_READ
     dq kw_trim,     4, TOK_TRIM
     dq kw_before,   6, TOK_BEFORE
+    dq kw_claim,    5, TOK_CLAIM
+    dq kw_ack,      3, TOK_ACK
+    dq kw_nack,     4, TOK_NACK
+    dq kw_renew,    5, TOK_RENEW
+    dq kw_for,      3, TOK_FOR
+    dq kw_at,       2, TOK_AT
+    dq kw_token,    5, TOK_TOKEN
     dq 0,          0, 0                 ; terminator
 
 section .text

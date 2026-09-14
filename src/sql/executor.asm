@@ -62,6 +62,8 @@ extern db_catalog_put_index, db_catalog_set_index_root, db_index_of_table
 extern db_catalog_put_queue, db_queue_push, db_queue_pop, db_queue_peek
 extern db_queue_retire_all
 extern sql_index_bounds
+extern db_queue_claim, db_queue_ack, db_queue_nack, db_queue_renew
+extern lease_find_slot, os_wall_ms, queue_slot_copy
 extern db_catalog_put_stream, db_stream_retire_all, db_stream_append
 extern db_stream_cursor_add, db_stream_cursor_drop
 extern db_stream_peek, db_stream_read, db_stream_trim
@@ -733,6 +735,14 @@ sql_execute_batch:
     je      .exec_enqueue
     cmp     rax, STMT_DEQUEUE
     je      .exec_dequeue
+    cmp     rax, STMT_CLAIM
+    je      .exec_claim
+    cmp     rax, STMT_ACK
+    je      .exec_ack
+    cmp     rax, STMT_NACK
+    je      .exec_nack
+    cmp     rax, STMT_RENEW
+    je      .exec_renew
     cmp     rax, STMT_BEGIN
     je      .exec_begin
     cmp     rax, STMT_COMMIT
@@ -1556,6 +1566,113 @@ sql_execute_batch:
 .dequeue_oom:
     mov     eax, SQL_ERR_NO_STORAGE
     jmp     .exec_exit
+
+; --- CLAIM -------------------------------------------------------------------
+; A DEQUEUE's shape, because a caller reads the bytes the same way: PLAN_DATA1
+; is where they are, PLAN_DATA2 how many, and PLAN_DATA3 says whether this step
+; took anything at all. What a claim adds is the ticket.
+.exec_claim:
+    mov     r10, [rbp - 16]
+    mov     qword [r10 + PLAN_DATA3], 0
+    call    os_wall_ms
+    mov     [rbp - 48], rax
+    mov     r10, [rbp - 16]
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    mov     ARG3, [rbp - 48]
+    mov     ARG4, [r10 + PLAN_LEASE_DURATION]
+    lea     rax, [r10 + PLAN_LEASE_POSITION]
+    PASS_ARG5 rax
+    lea     rax, [r10 + PLAN_LEASE_TOKEN]
+    PASS_ARG6 rax
+    call    db_queue_claim
+    cmp     eax, CybouDB_E_NOTFOUND
+    je      .claim_empty
+    test    eax, eax
+    jnz     .storage_done
+
+    ; The bytes, copied out of the segment into the arena before anything else
+    ; moves: the page they are in may be rewritten by the next operation.
+    mov     r10, [rbp - 16]
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    mov     ARG3, [r10 + PLAN_LEASE_POSITION]
+    call    lease_find_slot
+    test    rax, rax
+    jz      .claim_empty
+    mov     [rbp - 56], rax
+    mov     ecx, [rax + QMSG_LENGTH]
+    mov     [rbp - 64], rcx
+    mov     ARG2, rcx
+    test    ARG2, ARG2
+    jnz     .claim_sized
+    mov     ARG2, 1                 ; a message of no bytes still needs one
+.claim_sized:
+    mov     ARG1, [rbp - 24]
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .claim_oom
+    mov     r10, [rbp - 16]
+    mov     [r10 + PLAN_DATA1], rax
+    ; queue_slot_copy(ctx, id, slot, out, out length, capacity) - the same six
+    ; db_queue_pop hands it, because it is the same copy.
+    mov     rcx, [rbp - 64]
+    PASS_ARG6 rcx
+    lea     rcx, [rbp - 72]
+    PASS_ARG5 rcx
+    mov     ARG4, rax
+    mov     ARG3, [rbp - 56]
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    call    queue_slot_copy
+    test    eax, eax
+    jnz     .storage_done
+    mov     r10, [rbp - 16]
+    mov     rcx, [rbp - 72]
+    mov     [r10 + PLAN_DATA2], rcx
+    mov     qword [r10 + PLAN_DATA3], 1
+    xor     eax, eax
+    jmp     .exec_exit
+.claim_empty:
+    xor     eax, eax
+    jmp     .exec_exit
+.claim_oom:
+    mov     eax, SQL_ERR_NO_STORAGE
+    jmp     .exec_exit
+
+; --- ACK / NACK / RENEW ------------------------------------------------------
+.exec_ack:
+    mov     r10, [rbp - 16]
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    mov     ARG3, [r10 + PLAN_LEASE_POSITION]
+    mov     ARG4, [r10 + PLAN_LEASE_TOKEN]
+    call    db_queue_ack
+    jmp     .storage_done
+
+.exec_nack:
+    mov     r10, [rbp - 16]
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    mov     ARG3, [r10 + PLAN_LEASE_POSITION]
+    mov     ARG4, [r10 + PLAN_LEASE_TOKEN]
+    call    db_queue_nack
+    jmp     .storage_done
+
+.exec_renew:
+    call    os_wall_ms
+    mov     [rbp - 48], rax
+    mov     r10, [rbp - 16]
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [r10 + PLAN_TABLE_ID]
+    mov     ARG3, [r10 + PLAN_LEASE_POSITION]
+    mov     ARG4, [r10 + PLAN_LEASE_TOKEN]
+    mov     rax, [rbp - 48]
+    PASS_ARG5 rax
+    mov     rax, [r10 + PLAN_LEASE_DURATION]
+    PASS_ARG6 rax
+    call    db_queue_renew
+    jmp     .storage_done
 
 .exec_drop_queue:
     ; The pages it is holding go first. Removing the directory entry takes

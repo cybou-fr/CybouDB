@@ -60,7 +60,12 @@
 ; Only an open asking for CybouDB_VERIFY_INTEGRITY is told, because recovering
 ; is the right answer to every other question.
 %define CybouDB_E_DAMAGED    36
-%define CybouDB_E_COUNT      37            ; size of the message table
+; A lease operation refused: the message is not claimed, or the token is not
+; the one the current claim has. Routine rather than exceptional - it is what a
+; worker whose lease was reclaimed is told - so it says so rather than sharing
+; a message with a bad column value.
+%define CybouDB_E_LEASE      37
+%define CybouDB_E_COUNT      38            ; size of the message table
 
 ; --- Why an operating system call failed -------------------------------------
 ;  The platform layer translates its native error - errno on Linux, the Win32

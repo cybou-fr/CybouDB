@@ -22,6 +22,7 @@ global db_queue_push, db_queue_pop, db_queue_peek, db_queue_depth
 global db_queue_retire_all
 global db_queue_scan_claimable
 global db_queue_claim, db_queue_ack, db_queue_nack, db_queue_renew
+global lease_find_slot
 global db_stream_append
 global queue_slot_at, queue_slot_copy, queue_retire_chain
 global db_stream_retire_all
@@ -1683,13 +1684,13 @@ lease_hold:
     mov ARG3, [rbp - 24]
     call lease_find_slot
     test rax, rax
-    jz .lh_value
+    jz .lh_lease                    ; finished, or never in this queue at all
     mov r8, rax
     cmp dword [r8 + QMSG_STATE], QMSG_STATE_CLAIMED
-    jne .lh_value                   ; nobody holds it, or it is already done
+    jne .lh_lease                   ; nobody holds it, or it is already done
     mov rax, [rbp - 32]
     cmp [r8 + QMSG_LEASE_TOKEN], rax
-    jne .lh_value                   ; the lease was reclaimed and handed on
+    jne .lh_lease                   ; the lease was reclaimed and handed on
 
     mov ARG1, [rbp - 8]
     mov ARG2, [rbp - 16]
@@ -1700,6 +1701,10 @@ lease_hold:
     jnz .lh_done
     xor eax, eax
 .lh_done:
+    FRAME_END
+    ret
+.lh_lease:
+    mov eax, CybouDB_E_LEASE
     FRAME_END
     ret
 .lh_value:

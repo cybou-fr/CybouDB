@@ -149,7 +149,35 @@ collected from one source snapshot before any mutation, then coalesced by leaf
 so each changed leaf is copied, decoded, encoded, and sealed once. TEXT/BLOB
 targets and two-level tree directories are not yet supported.
 
-### 1.5 Transactions (BEGIN, COMMIT, ROLLBACK)
+### 1.5 Queue leases
+
+Only in a database created with `QUEUE_LEASES` - `cyboudb create-leases`. A
+database without it refuses these statements and names the capability.
+
+`sql
+CLAIM FROM queue_name FOR milliseconds;
+ACK   FROM queue_name AT position TOKEN token;
+NACK  FROM queue_name AT position TOKEN token;
+RENEW FROM queue_name AT position TOKEN token FOR milliseconds;
+`
+
+`CLAIM` takes the first claimable message and gives it a deadline instead of
+removing it, which is what lets a worker hold a job across a transaction
+boundary. It answers with the message and a ticket - the position and the
+token - and answers *empty* rather than failing when nothing is claimable.
+
+The ticket is what the other three take, because a worker acknowledges from a
+different transaction and possibly after the file was reopened. **The deadline
+decides when a message becomes claimable again; the token decides whose
+acknowledgement counts.** A lapsed deadline is not by itself a refusal - if
+another worker had taken the message, the token would say so - and a `NACK`
+raises the token, so a worker that hands a message back cannot acknowledge it
+afterwards.
+
+Durations and positions are integer literals. See [QUEUE.md](QUEUE.md) for the
+clock a deadline is measured on and for what each refusal means.
+
+### 1.6 Transactions (BEGIN, COMMIT, ROLLBACK)
 
 ```sql
 BEGIN [TRANSACTION | WORK];

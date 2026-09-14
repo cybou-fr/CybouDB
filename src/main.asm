@@ -187,6 +187,8 @@ e_busy: db "error: database is locked by another writer", 10, 0
 e_cursor: db "error: the stream has no reader of that name", 10, 0
 e_retained: db "error: a reader has not read that far yet - drop it or trim less", 10, 0
 e_trim_past: db "error: that position is past the end of the stream", 10, 0
+e_lease:   db "error: the lease was reclaimed, or that message is not claimed",
+           db 10, 0
 e_damaged: db "error: the newest generation is damaged - an older one is intact,"
            db " and an ordinary open would silently use it", 10, 0
 
@@ -199,13 +201,16 @@ err_table:
     dq e_bitmap, e_cow_pages
     dq e_catalog, e_schema, e_notfound, e_catalog_full
     dq e_rows, e_pax, e_value, e_busy, e_cursor, e_retained
-    dq e_damaged
+    dq e_damaged, e_lease
 
 err_no_pax_cli:  db "error: database does not support PAX tables (create with create-pax-multi)", 10, 0
 msg_sql_table_created: db "Table created.", 10, 0
 msg_sql_table_dropped: db "Table dropped.", 10, 0
 msg_sql_index_created: db "Index created.", 10, 0
 msg_sql_index_dropped: db "Index dropped.", 10, 0
+msg_sql_claim_at:    db "AT ", 0
+msg_sql_claim_token: db " TOKEN ", 0
+msg_sql_lease_ok:    db "OK.", 10, 0
 msg_sql_queue_created: db "Queue created.", 10, 0
 msg_sql_queue_dropped: db "Queue dropped.", 10, 0
 msg_sql_stream_created: db "Stream created.", 10, 0
@@ -1239,6 +1244,14 @@ cyboudb_exec_query:
     je      .enqueued
     cmp     qword [r10 + PLAN_TYPE], STMT_DEQUEUE
     je      .dequeued
+    cmp     qword [r10 + PLAN_TYPE], STMT_CLAIM
+    je      .claimed
+    cmp     qword [r10 + PLAN_TYPE], STMT_ACK
+    je      .lease_ok
+    cmp     qword [r10 + PLAN_TYPE], STMT_NACK
+    je      .lease_ok
+    cmp     qword [r10 + PLAN_TYPE], STMT_RENEW
+    je      .lease_ok
     ; Anything else has to say so rather than be assumed to be an INSERT. It
     ; used to fall through into the line below, which reads PLAN_DATA1 as a
     ; batch - and a statement that leaves that field zero, as DROP QUEUE does,
@@ -1309,6 +1322,31 @@ cyboudb_exec_query:
     jmp     .exec_success
 .dequeued_empty:
     PUTS    msg_sql_queue_empty
+    jmp     .exec_success
+
+; A claim prints what it took and the ticket to finish it with, because a
+; person at the prompt needs both and the second is not guessable.
+.claimed:
+    mov     r10, [rbp - 40]
+    cmp     qword [r10 + PLAN_DATA3], 0
+    je      .dequeued_empty
+    mov     ARG1, [r10 + PLAN_DATA1]
+    mov     ARG2, [r10 + PLAN_DATA2]
+    call    os_write
+    PUTS    str_nl
+    PUTS    msg_sql_claim_at
+    mov     r10, [rbp - 40]
+    mov     ARG1, [r10 + PLAN_LEASE_POSITION]
+    call    put_u64
+    PUTS    msg_sql_claim_token
+    mov     r10, [rbp - 40]
+    mov     ARG1, [r10 + PLAN_LEASE_TOKEN]
+    call    put_u64
+    PUTS    str_nl
+    jmp     .exec_success
+
+.lease_ok:
+    PUTS    msg_sql_lease_ok
     jmp     .exec_success
 
 .queue_created:

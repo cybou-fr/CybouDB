@@ -66,6 +66,7 @@ global cyboudb_bind_text
 global cyboudb_bind_blob
 global cyboudb_bind_vector_f32
 global cyboudb_clear_bindings
+global cyboudb_claim_ticket
 
 section .rodata
 str_ok:         db "ok", 0
@@ -623,6 +624,17 @@ cyboudb_step:
     je      .step_drop                  ; nothing to hand back
     cmp     rcx, STMT_DEQUEUE
     je      .step_dequeue
+    ; A claim answers the way a dequeue does - ROW when it took a message,
+    ; DONE when there was nothing claimable - because a caller reads the bytes
+    ; the same way. The other three change the queue and hand nothing back.
+    cmp     rcx, STMT_CLAIM
+    je      .step_dequeue
+    cmp     rcx, STMT_ACK
+    je      .step_drop
+    cmp     rcx, STMT_NACK
+    je      .step_drop
+    cmp     rcx, STMT_RENEW
+    je      .step_drop
     ; The fifth kind. Everything that changes a stream runs through the
     ; executor like everything else; only a READ has something to hand back,
     ; and it hands it back the way a DEQUEUE does.
@@ -1761,6 +1773,44 @@ cyboudb_clear_bindings:
     ret
 
 ; =============================================================================
+;  cyboudb_claim_ticket(stmt, uint64_t *position, uint64_t *token) -> int
+;
+;  What the last CLAIM took, and the proof that this caller holds it. A ticket
+;  is data the caller keeps rather than state the statement remembers: a worker
+;  claims, spends a while outside the database, and acknowledges from a
+;  different transaction - possibly after the file was reopened, which is a
+;  lifetime no prepared statement has.
+; =============================================================================
+cyboudb_claim_ticket:
+    test    ARG1, ARG1
+    jz      .ct_misuse
+    mov     rax, STMT_MAGIC_VAL
+    cmp     [ARG1 + STMT_H_MAGIC], rax
+    jne     .ct_misuse
+    mov     r10, [ARG1 + STMT_H_PLAN]
+    test    r10, r10
+    jz      .ct_misuse
+    cmp     qword [r10 + PLAN_TYPE], STMT_CLAIM
+    jne     .ct_misuse
+    cmp     qword [r10 + PLAN_DATA3], 0
+    je      .ct_misuse                  ; the last step took nothing
+    test    ARG2, ARG2
+    jz      .ct_no_position
+    mov     rax, [r10 + PLAN_LEASE_POSITION]
+    mov     [ARG2], rax
+.ct_no_position:
+    test    ARG3, ARG3
+    jz      .ct_ok
+    mov     rax, [r10 + PLAN_LEASE_TOKEN]
+    mov     [ARG3], rax
+.ct_ok:
+    xor     eax, eax
+    ret
+.ct_misuse:
+    mov     eax, CybouDB_C_MISUSE
+    ret
+
+; =============================================================================
 ;  cyboudb_finalize(cyboudb_stmt *stmt) -> int
 ; =============================================================================
 cyboudb_finalize:
@@ -2030,6 +2080,8 @@ cyboudb_message:
     jz      .msg_misuse
     mov     rcx, [r10 + PLAN_TYPE]
     cmp     rcx, STMT_DEQUEUE
+    je      .msg_typed
+    cmp     rcx, STMT_CLAIM
     je      .msg_typed
     cmp     rcx, STMT_READ
     jne     .msg_misuse

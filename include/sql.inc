@@ -77,6 +77,15 @@
 ; statement is parameter 0, and a statement says how many it has rather
 ; than the caller declaring them.
 %define TOK_PARAM           98          ; ?
+; Leases. CLAIM takes a message with a deadline instead of removing it; ACK,
+; NACK and RENEW are what the holder does with it afterwards. See docs/QUEUE.md.
+%define TOK_CLAIM           99
+%define TOK_ACK             100
+%define TOK_NACK            101
+%define TOK_RENEW           102
+%define TOK_FOR             103         ; how long a lease runs
+%define TOK_AT              104         ; which position it is about
+%define TOK_TOKEN           105         ; and which claim of it
 
 ; Types
 %define TOK_TYPE_INT32      30
@@ -151,6 +160,10 @@
 %define STMT_DROP_CURSOR    20
 %define STMT_READ           21
 %define STMT_TRIM           22
+%define STMT_CLAIM          23
+%define STMT_ACK            24
+%define STMT_NACK           25
+%define STMT_RENEW          26
 
 ; =============================================================================
 ;  A prepared plan is immutable across executions.
@@ -255,6 +268,13 @@
 %define CURSOR_NAME_PTR       32
 %define CURSOR_NAME_LEN       40
 %define TRIM_POSITION         32       ; TRIM: where the stream now begins
+; A lease statement names a queue and then up to three numbers. They alias the
+; slots a queue statement does not use rather than growing the payload: a
+; CLAIM has no value expression and no reader, and ACK, NACK and RENEW have
+; neither either.
+%define LEASE_DURATION        16       ; aliases QUEUE_VALUE_EXPR
+%define LEASE_POSITION        24
+%define LEASE_TOKEN           32       ; aliases CURSOR_NAME_PTR
 %define QUEUE_PAYLOAD_SIZE    48
 
 %define SELECT_TABLE_NAME_PTR   0
@@ -439,7 +459,7 @@
 %define PLAN_UPDATE_IS_NULL 264         ; qword boolean
 %define PLAN_VECTOR_TOPK_EXPR 272       ; qword: bound vector distance expr
 %define PLAN_DELETE_ROWS    280         ; qword rows a DELETE removed
-%define BOUND_PLAN_SIZE     384
+%define BOUND_PLAN_SIZE     416
 %define PLAN_PROJ_RIGHT_BIT 0x80000000  ; u32 projection index belongs to RHS
 %define PLAN_FLAG_LIMIT     2           ; bit 1: LIMIT clause is present
 %define PLAN_FLAG_ORDER     4           ; bit 2: ORDER BY is present
@@ -503,6 +523,12 @@
 ; is decided by the operator and the column and not by the value - and only
 ; the arithmetic on the value moves to execution.
 %define PLAN_INDEX_PARAM_BEXPR 376
+; What a lease statement carries. For a CLAIM the duration goes in and the
+; position and token come out, which is what cyboudb_claim_ticket hands to the
+; caller; for the other three all of them go in.
+%define PLAN_LEASE_DURATION  384
+%define PLAN_LEASE_POSITION  392
+%define PLAN_LEASE_TOKEN     400
 
 ; One parameter. The first three fields are what the binder resolved - where
 ; the value goes and what it has to be - and are written once; the rest is what

@@ -1106,8 +1106,16 @@ single page is written with a non-zero lease state:
 9. head advancement        a run of ACKED at the front, and its retirement    done
 10. the segment summary    QSEG_READY_AT written, used and validated         done
 11. the hierarchy          the sidecar page above the segments
-12. the public surface     SQL and C
+12. the public surface     SQL and C                                         done
 ```
+
+`CLAIM FROM q FOR <ms>` takes the first claimable message and prints it with
+the ticket to finish it with; `ACK`, `NACK` and `RENEW` take that ticket as
+`AT <position> TOKEN <token>`. In C the bytes come out through
+`cyboudb_message`, the way a `DEQUEUE`'s do, and `cyboudb_claim_ticket` hands
+back the two numbers. A lease refusal has an error code of its own, because a
+stale ticket is what a worker whose lease was reclaimed is told rather than a
+programming mistake.
 
 Step 5 is the one that makes the rest true rather than intended, and it is done
 by construction rather than by assertion: `build.sh --no-leases` builds a reader

@@ -81,7 +81,8 @@ read-only.
 meta-commands (`.tables`, `.schema`, `.indexes`, `.queues`, `.streams`,
 `.info`, `.help`). A script piped in on stdin runs the same way and exits
 nonzero if any statement failed. `cyboudb info` prints validated metadata and
-`cyboudb check` reads every page of every generation.
+`cyboudb check` reads every page of every generation. For the full walkthrough,
+see [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
 
 ### Embedding
 
@@ -264,6 +265,8 @@ The suites and what each one covers are listed in
 
 ## Documentation
 
+* **[docs/USER_GUIDE.md](docs/USER_GUIDE.md)** — comprehensive guide: mental model, CLI,
+  SQL dialect, indexes, vector search, queues, streams, C API and best practices.
 * **[ARCHITECTURE.md](ARCHITECTURE.md)** — the design: layering, the on-disk
   format, the commit protocol and the allocator.
 * **[CHANGELOG.md](CHANGELOG.md)** — what is in each release.

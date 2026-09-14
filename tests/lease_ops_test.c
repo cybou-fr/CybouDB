@@ -62,6 +62,10 @@ void cyboudb_test_mem_free(void *ptr, size_t size) { (void)size; free(ptr); }
    not the public header's - these functions are the engine's, not the API's. */
 #define CybouDB_E_VALUE    32
 #define CybouDB_E_NOTFOUND 28
+/* A lease refusal has a code of its own: the message is not claimed, or the
+   token is not the one the current claim has. Routine rather than a
+   programming error - it is what a worker whose lease was reclaimed is told. */
+#define CybouDB_E_LEASE    37
 
 #define STATE_HELD    0
 #define STATE_CLAIMED 1
@@ -228,15 +232,15 @@ int main(int argc, char **argv) {
 
     /* --- the token is the only authority --------------------------------- */
     check("a wrong token is refused",
-          db_queue_ack(ctx, qid, 0, 99) == CybouDB_E_VALUE);
+          db_queue_ack(ctx, qid, 0, 99) == CybouDB_E_LEASE);
     check("and so is acknowledging a message nobody holds",
-          db_queue_ack(ctx, qid, 2, 1) == CybouDB_E_VALUE);
+          db_queue_ack(ctx, qid, 2, 1) == CybouDB_E_LEASE);
     check("the right one is honoured",
           db_queue_ack(ctx, qid, 0, 1) == CybouDB_OK &&
           state_of(0) == STATE_ACKED && deadline_of(0) == 0);
     check("and the slot keeps the token that finished it", token_of(0) == 1);
     check("acknowledging twice is refused",
-          db_queue_ack(ctx, qid, 0, 1) == CybouDB_E_VALUE);
+          db_queue_ack(ctx, qid, 0, 1) == CybouDB_E_LEASE);
     check("the file is still intact",
           db_commit(ctx) == CybouDB_OK && intact());
 
@@ -264,7 +268,7 @@ int main(int argc, char **argv) {
               == CybouDB_OK && pos2 == 2);
     check("and the reclaim raised the token", tok2 == 2 && token_of(2) == 2);
     check("so the first worker's ticket is now refused",
-          db_queue_ack(ctx, qid, 2, tok) == CybouDB_E_VALUE);
+          db_queue_ack(ctx, qid, 2, tok) == CybouDB_E_LEASE);
     check("while the new holder's is honoured",
           db_queue_ack(ctx, qid, 2, tok2) == CybouDB_OK);
     check("the file is intact", db_commit(ctx) == CybouDB_OK && intact());
@@ -282,7 +286,7 @@ int main(int argc, char **argv) {
               token_of(3) == t + 1);
         check("which is what stops the worker that gave it back from "
               "acknowledging it",
-              db_queue_ack(ctx, qid, 3, t) == CybouDB_E_VALUE);
+              db_queue_ack(ctx, qid, 3, t) == CybouDB_E_LEASE);
         check("and it is claimable again, immediately",
               db_queue_claim(ctx, qid, T0 + 10 * MINUTE, MINUTE, &pos2, &tok2)
                   == CybouDB_OK && pos2 == 3);
@@ -296,7 +300,7 @@ int main(int argc, char **argv) {
           deadline_of(3) == T0 + 16 * MINUTE && token_of(3) == tok2);
     check("a wrong token cannot renew",
           db_queue_renew(ctx, qid, 3, tok2 + 7, T0 + 11 * MINUTE, MINUTE)
-              == CybouDB_E_VALUE);
+              == CybouDB_E_LEASE);
     check("a lapsed lease can still be renewed while nobody has taken it",
           db_queue_renew(ctx, qid, 3, tok2, T0 + 100 * MINUTE, MINUTE)
               == CybouDB_OK &&
@@ -350,7 +354,7 @@ int main(int argc, char **argv) {
     check("a zero-length lease is refused rather than granted expired",
           db_queue_claim(ctx, qid, T0, 0, &pos2, &tok2) == CybouDB_E_VALUE);
     check("a position outside the queue is refused",
-          db_queue_ack(ctx, qid, 9999, 1) == CybouDB_E_VALUE);
+          db_queue_ack(ctx, qid, 9999, 1) == CybouDB_E_LEASE);
     check("and so is one in another object",
           db_queue_ack(ctx, 999999, 0, 1) != CybouDB_OK);
 
@@ -442,70 +446,51 @@ int main(int argc, char **argv) {
     }
 
     /* --- and the extent chains come back --------------------------------- */
-    /* The real question is not whether the head moves but whether anything is
-       returned when it does. A queue filled and drained over and over is the
-       shape that tells: if the pages were not given back, the third round
-       would cost as much as the first three together. Extents are in it on
-       purpose - a payload longer than a slot is a chain of pages that the head
-       passing the message is what frees. */
-    {
-        /* Sixty rounds of forty messages, each payload twelve kilobytes so
-           that every one is a chain of four pages. That is 2,400 messages and
-           about 9,800 pages of chains against a file of 4,000 - so the run
-           only completes if what the head passes is given back and handed out
-           again. The size is chosen for that arithmetic: at 200 bytes a
-           message the chains came to 2,400 pages, the file swallowed them, and
-           leaking every one of them passed.
+    /* The other half of what the head passes: a payload longer than a slot is
+       a chain of pages, and the head passing the message is what frees it.
 
-           Exhaustion is the proof rather than a counter, and that is not a
-           second choice. The descriptor's allocated-page count is a high-water
-           of what the file has ever handed out and not a count of what is
-           live: reuse begins as the file approaches its end, which the flush
-           measurement established. So a number that grows there is what a
-           healthy database looks like, and only running out of room tells a
-           leaking one apart. */
-        uint64_t qid3 = 720003, pos3 = 0, tok3 = 0, alloc1 = 0, alloc2 = 0;
+       Measured the same way the segments are, and for the reason the segment
+       check taught. The first version of this ran the queue in circles until a
+       file too small to hold what it allocated either survived or did not -
+       which is a blunt instrument twice over. It could not tell a chain leak
+       from a segment leak, and it was slow for a reason that has nothing to do
+       with leases: a run whose whole point is to cycle more pages than the
+       file holds spends its time in the allocator's reuse sweep, which
+       restarts at the bottom after every commit.
+
+       Headroom says it exactly and in a second. Forty messages of twelve
+       kilobytes are a hundred and sixty pages of chains; drained, they come
+       back. */
+    {
+        uint64_t qid5 = 720005, p5 = 0, t5 = 0, room_full = 0, room_empty = 0;
         char big[12000];
-        int round, k, ok = 1;
+        int k5, ok5 = 1;
         memset(big, 'q', sizeof big);
         memset(image, 0, sizeof image);
-        strncpy((char *)image + Q_NAME_OFF, "cycle", 31);
-        check("a third queue, for filling and draining",
-              db_catalog_put_queue(ctx, qid3, image) == 0 &&
-              db_commit(ctx) == CybouDB_OK);
-        qid = qid3;
-
-        for (round = 0; round < 60 && ok; round++) {
-            for (k = 0; k < 40; k++) {
-                if (db_queue_push(ctx, qid3, big, sizeof big) != 0) ok = 0;
-            }
-            for (k = 0; k < 40 && ok; k++) {
-                if (db_queue_claim(ctx, qid3, T0, MINUTE, &pos3, &tok3) != 0)
-                    ok = 0;
-                else if (db_queue_ack(ctx, qid3, pos3, tok3) != 0) ok = 0;
-            }
-            /* One commit a round, not two: the durability barrier is most of
-               what a commit costs and this is measuring pages, not seconds.
-               Filling and draining inside one transaction is also the harder
-               case, because every page a round allocates and gives back is
-               allocated and given back before anything is published. */
-            if (db_commit(ctx) != CybouDB_OK) ok = 0;
-            /* A deep integrity check walks the whole graph, so it runs at the
-               ends rather than a hundred times in the middle. What the rounds
-               are for is the pages, and a file that had lost them would have
-               stopped accepting pushes long before the last one. */
-            if ((round == 0 || round == 59) && !intact()) ok = 0;
-            if (round == 0) alloc1 = qfield(Q_HEAD_OFF);
-            if (round == 59) alloc2 = qfield(Q_HEAD_OFF);
+        strncpy((char *)image + Q_NAME_OFF, "chains", 31);
+        check("a queue of long messages",
+              db_catalog_put_queue(ctx, qid5, image) == 0);
+        qid = qid5;
+        for (k5 = 0; k5 < 40 && ok5; k5++) {
+            if (db_queue_push(ctx, qid5, big, sizeof big) != 0) ok5 = 0;
         }
-        check("sixty rounds of forty messages, claimed and acknowledged in "
-              "a file too small to hold what they allocate between them", ok);
-        check("the positions kept running and the queue kept draining",
-              alloc1 == 40 && alloc2 == 2400 &&
-              qfield(Q_HEAD_OFF) == qfield(Q_TAIL_OFF));
-        check("holding no segments at the end",
+        check("forty of them, each a chain of four pages",
+              ok5 && db_commit(ctx) == CybouDB_OK);
+        room_full = db_bitmap_headroom(ctx);
+
+        for (k5 = 0; k5 < 40 && ok5; k5++) {
+            if (db_queue_claim(ctx, qid5, T0, MINUTE, &p5, &t5) != 0) ok5 = 0;
+            else if (db_queue_ack(ctx, qid5, p5, t5) != 0) ok5 = 0;
+        }
+        check("claimed and acknowledged, every one of them",
+              ok5 && db_commit(ctx) == CybouDB_OK);
+        check("leaves a queue holding nothing",
+              qfield(Q_HEAD_OFF) == qfield(Q_TAIL_OFF) &&
               u32(qp(), Q_SEGMENTS_OFF) == 0);
-        check("and still intact", intact());
+        room_empty = db_bitmap_headroom(ctx);
+        check("and the file with the chains' pages back",
+              room_empty >= room_full + 120);
+        check("the file is intact", intact());
     }
 
     /* Every state this suite produced, still acceptable after a reopen. */

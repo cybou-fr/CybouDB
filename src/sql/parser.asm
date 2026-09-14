@@ -1753,6 +1753,14 @@ sql_parse:
     je      .parse_trim
     cmp     rax, TOK_DEQUEUE
     je      .parse_dequeue
+    cmp     rax, TOK_CLAIM
+    je      .parse_claim
+    cmp     rax, TOK_ACK
+    je      .parse_ack
+    cmp     rax, TOK_NACK
+    je      .parse_nack
+    cmp     rax, TOK_RENEW
+    je      .parse_renew
 
     ; Unknown initial token
     mov     ARG1, [rbp - 40]
@@ -2430,6 +2438,165 @@ sql_parse:
     mov     [r10 + QUEUE_NAME_PTR], rax
     mov     rax, [rbp - 192 + TOK_LEN]
     mov     [r10 + QUEUE_NAME_LEN], rax
+    jmp     .check_eof
+
+; --- CLAIM FROM name FOR milliseconds ----------------------------------------
+; Takes the first claimable message and holds it for a while rather than
+; removing it. The bytes come back the way a DEQUEUE hands them over; the
+; ticket - the position and the token - through cyboudb_claim_ticket, because
+; a worker acknowledges from a different transaction and a statement is the
+; wrong lifetime to keep it in.
+.parse_claim:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_CLAIM
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_FROM
+    jne     .bad_syntax
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_table_name
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + QUEUE_NAME_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + QUEUE_NAME_LEN], rax
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_FOR
+    jne     .bad_syntax
+    lea     ARG1, [rbp - 160]
+    mov     ARG2, [rbp - 8]
+    mov     ARG3, [rbp - 24]
+    mov     ARG4, [rbp - 40]
+    call    parse_primary
+    test    rax, rax
+    jz      .fail
+    cmp     qword [rax + EXPR_KIND], EXPR_LITERAL
+    jne     .bad_syntax
+    cmp     dword [rax + EXPR_LIT_TYPE], CAT_INT64
+    je      .claim_for
+    cmp     dword [rax + EXPR_LIT_TYPE], CAT_INT32
+    jne     .bad_syntax
+.claim_for:
+    mov     r11, [rax + EXPR_LIT_VAL]
+    mov     r10, [rbp - 48]
+    mov     [r10 + LEASE_DURATION], r11
+    jmp     .check_eof
+
+; --- ACK / NACK FROM name AT position TOKEN t --------------------------------
+; The ticket is spelled out because the caller holds it: the deadline decides
+; when a message becomes claimable again, and the token decides whose
+; acknowledgement counts. See docs/QUEUE.md.
+.parse_ack:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_ACK
+    jmp     .parse_ticket
+.parse_nack:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_NACK
+    jmp     .parse_ticket
+
+; --- RENEW FROM name AT position TOKEN t FOR milliseconds --------------------
+.parse_renew:
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     qword [r10 + AST_STMT_TYPE], STMT_RENEW
+.parse_ticket:
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_FROM
+    jne     .bad_syntax
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_IDENT
+    jne     .bad_table_name
+    mov     r10, [rbp - 48]
+    mov     rax, [rbp - 192 + TOK_OFFSET]
+    add     rax, [rbp - 8]
+    mov     [r10 + QUEUE_NAME_PTR], rax
+    mov     rax, [rbp - 192 + TOK_LEN]
+    mov     [r10 + QUEUE_NAME_LEN], rax
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_AT
+    jne     .bad_syntax
+    lea     ARG1, [rbp - 160]
+    mov     ARG2, [rbp - 8]
+    mov     ARG3, [rbp - 24]
+    mov     ARG4, [rbp - 40]
+    call    parse_primary
+    test    rax, rax
+    jz      .fail
+    cmp     qword [rax + EXPR_KIND], EXPR_LITERAL
+    jne     .bad_syntax
+    cmp     dword [rax + EXPR_LIT_TYPE], CAT_INT64
+    je      .ticket_at
+    cmp     dword [rax + EXPR_LIT_TYPE], CAT_INT32
+    jne     .bad_syntax
+.ticket_at:
+    mov     r11, [rax + EXPR_LIT_VAL]
+    mov     r10, [rbp - 48]
+    mov     [r10 + LEASE_POSITION], r11
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_TOKEN
+    jne     .bad_syntax
+    lea     ARG1, [rbp - 160]
+    mov     ARG2, [rbp - 8]
+    mov     ARG3, [rbp - 24]
+    mov     ARG4, [rbp - 40]
+    call    parse_primary
+    test    rax, rax
+    jz      .fail
+    cmp     qword [rax + EXPR_KIND], EXPR_LITERAL
+    jne     .bad_syntax
+    cmp     dword [rax + EXPR_LIT_TYPE], CAT_INT64
+    je      .ticket_token
+    cmp     dword [rax + EXPR_LIT_TYPE], CAT_INT32
+    jne     .bad_syntax
+.ticket_token:
+    mov     r11, [rax + EXPR_LIT_VAL]
+    mov     r10, [rbp - 48]
+    mov     [r10 + LEASE_TOKEN], r11
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    cmp     qword [r10 + AST_STMT_TYPE], STMT_RENEW
+    jne     .check_eof
+    lea     ARG1, [rbp - 160]
+    lea     ARG2, [rbp - 192]
+    call    sql_tok_next
+    cmp     qword [rbp - 192 + TOK_TYPE], TOK_FOR
+    jne     .bad_syntax
+    lea     ARG1, [rbp - 160]
+    mov     ARG2, [rbp - 8]
+    mov     ARG3, [rbp - 24]
+    mov     ARG4, [rbp - 40]
+    call    parse_primary
+    test    rax, rax
+    jz      .fail
+    cmp     qword [rax + EXPR_KIND], EXPR_LITERAL
+    jne     .bad_syntax
+    cmp     dword [rax + EXPR_LIT_TYPE], CAT_INT64
+    je      .renew_for
+    cmp     dword [rax + EXPR_LIT_TYPE], CAT_INT32
+    jne     .bad_syntax
+.renew_for:
+    mov     r11, [rax + EXPR_LIT_VAL]
+    mov     r10, [rbp - 48]
+    mov     [r10 + LEASE_DURATION], r11
     jmp     .check_eof
 
 ; --- CREATE QUEUE name -------------------------------------------------------

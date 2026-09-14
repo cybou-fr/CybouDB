@@ -196,9 +196,21 @@ python3 tests/queue_sql_tests.py ./build/cyboudb_audit      # and the rest
 
 See [COMMIT_VALIDATION.md](COMMIT_VALIDATION.md).
 
+## The lease surface
+
+`tests/lease_sql_tests.py`, 27 checks, driving the command line. Queues reach
+the outside entirely through SQL, so leases went there rather than growing a
+C-only API beside them, and this is the part a user meets: that a claim prints
+the message **and the ticket**, because a person at the prompt needs both and
+the second is not guessable; that a refusal says which kind it is, since a
+stale ticket is a routine outcome rather than a programming error; that a
+database created without the capability refuses the statements and names the
+capability; and that each statement leaves a file `cyboudb check` accepts,
+which is the only assertion covering the pages it did not mean to touch.
+
 ## The four lease operations
 
-`tests/lease_ops_test.c`, 66 checks, against a `create-leases` database. The
+`tests/lease_ops_test.c`, 70 checks, against a `create-leases` database. The
 first code in the engine that writes a lease, so every check asks two things:
 what the operation returned, and whether the file it left behind still passes
 an integrity check. An operation that writes a state the format forbids fails
@@ -215,23 +227,28 @@ has two again once the clock passes without anything running.
 **Two groups are about what comes back rather than what happens.** The head
 moves over a *run* of acknowledged messages, and what it passes is what the
 queue gives back - segment pages and the extent chains of the messages on them.
-Each is proved separately because each fails separately, and the first two
-attempts at proving either were worth less than they looked:
+Each is proved separately because each fails separately, and getting to a
+proof that says so took three attempts worth recording:
 
 * asking whether a particular segment page is still payload answers *yes* for
   the wrong reason, because copy-on-write retires the page a claim rewrote
-  whether or not the head ever passes it. The check that works is **headroom** -
-  ten segments' worth of inline messages drained in one go, and the file must
-  have ten pages more reusable afterwards.
-* the endurance run - sixty rounds of forty messages in a file too small to
-  hold what they allocate between them - proves the chains, but only once the
-  payload is twelve kilobytes. At two hundred bytes the chains came to 2,400
-  pages, the four-thousand-page file swallowed them, and leaking every one of
-  them passed.
+  whether or not the head ever passes it. Disabling retirement entirely left
+  that check passing;
+* an endurance run - rounds of messages in a file too small to hold what they
+  allocate between them - proved the chains but never the segments, and only
+  once the payload was twelve kilobytes. It was also the slowest thing in the
+  suite by two orders of magnitude, for a reason with nothing to do with
+  leases: a run whose whole point is to cycle more pages than the file holds
+  spends its time in the allocator's reuse sweep, which restarts at the bottom
+  after every commit. It is gone;
+* **headroom says both exactly, and in a second.** It counts what is reusable,
+  so draining ten segments' worth of inline messages must leave ten more pages
+  reusable, and draining forty twelve-kilobyte messages must leave their
+  hundred and sixty.
 
-Both were confirmed by breaking them: the retirement loop disabled fails the
-headroom check and nothing else, and the chain retirement disabled fails the
-endurance run and nothing else.
+Each is confirmed by breaking it: the retirement loop disabled fails the
+segment check and nothing else, the chain retirement disabled fails the chain
+check and nothing else.
 
 **The group worth knowing about is the last one.** Five refusals, each followed
 immediately by a commit with nothing in between. The first version of these
