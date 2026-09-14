@@ -65,14 +65,22 @@ INSERT INTO table_name VALUES (val1, val2, ...), (val1, val2, ...);
   stepped, through `cyboudb_bind_*`. Placeholders are positional and unnamed -
   the first `?` in a statement is parameter 0 - and a statement reports how many
   it has rather than the caller declaring them. They are accepted in
-  `INSERT ... VALUES` and on the value side of a `WHERE` comparison, on either
-  side of the operator; a `?` elsewhere is a syntax error naming that, because
+  `INSERT ... VALUES`, on the value side of a `WHERE` comparison in `SELECT`,
+  `UPDATE` and `DELETE` (on either side of the operator), and as an `UPDATE`
+  assignment's value; a `?` elsewhere is a syntax error naming that, because
   the alternative message ("type mismatch") describes the wrong problem.
-  A predicate parameter takes the four scalar types a comparison already takes
-  - `INT32`, `INT64`, `FLOAT32`, `BOOL` - and not `TEXT`, `BLOB` or `VECTOR`,
-  which is where predicate comparisons already stopped. `NULL` is not bindable
-  in a predicate: `x = NULL` is unknown rather than a comparison against a
+
+  A **predicate** parameter takes the four scalar types a comparison already
+  takes - `INT32`, `INT64`, `FLOAT32`, `BOOL` - and not `TEXT`, `BLOB` or
+  `VECTOR`, which is where predicate comparisons already stopped. `NULL` is not
+  bindable there: `x = NULL` is unknown rather than a comparison against a
   value, and `IS NULL` is how to ask that.
+
+  An **assignment** parameter - `UPDATE t SET c = ?` - takes `TEXT` and `BLOB`
+  as well, because an assignment's value is a pointer and a length and the
+  engine's copy has both. `NULL` is bindable there, subject to the column
+  accepting one: assigning NULL is a value to write, where comparing against it
+  is a question with no answer.
   A bound value is input to one execution and never enters the plan, so a
   prepared statement may be bound, stepped, reset and bound again - see
   [section 5](#5-regression-tests) and the immutability rule in `include/sql.inc`.

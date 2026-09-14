@@ -1725,11 +1725,15 @@ sql_bind:
     mov     r11, [rbp - 16]
     mov     r9, [r11 + UPDATE_VALUE_EXPR]
     mov     [rbp - 72], r9
-    cmp     qword [r9 + EXPR_KIND], EXPR_LITERAL
-    jne     .type_mismatch
     mov     rdx, [rbp - 80]
     mov     r10d, [rdx]
     mov     r11d, [rdx + 4]
+    ; A placeholder first: its EXPR_LIT_TYPE is zero, which is also how a NULL
+    ; literal spells itself, so the kind decides before the type is read.
+    cmp     qword [r9 + EXPR_KIND], EXPR_PARAM
+    je      .upd_param
+    cmp     qword [r9 + EXPR_KIND], EXPR_LITERAL
+    jne     .type_mismatch
     cmp     dword [r9 + EXPR_LIT_TYPE], 0
     jne     .upd_not_null
     test    r11d, CAT_NULLABLE
@@ -1737,6 +1741,34 @@ sql_bind:
     mov     r10, [rbp - 48]
     mov     qword [r10 + PLAN_UPDATE_VALUE], 0
     mov     qword [r10 + PLAN_UPDATE_IS_NULL], 1
+    jmp     .upd_bind_where
+
+.upd_param:
+    ; The assignment's value arrives later. What the plan records now is the
+    ; column it is going into - which is what lets cyboudb_bind_* refuse a
+    ; wrong type at the call - and a zero where the value will go. Unlike a
+    ; predicate placeholder, this one accepts TEXT and BLOB: an UPDATE's value
+    ; is a pointer and a length, and the engine's copy has both.
+    mov     rcx, [bind_param_slots]
+    test    rcx, rcx
+    jz      .type_mismatch              ; a `?` the parser did not count
+    mov     rax, [r9 + EXPR_LIT_VAL]    ; the index this `?` has
+    shl     rax, 6                      ; PARAM_SLOT_SIZE
+    add     rcx, rax
+    mov     rdx, [rbp - 48]             ; the plan is what gets filled
+    mov     [rcx + PARAM_TARGET], rdx
+    mov     rax, r10
+    mov     [rcx + PARAM_TYPE], rax
+    mov     rax, r11
+    mov     [rcx + PARAM_FLAGS], rax
+    mov     qword [rcx + PARAM_STATE], PARAM_UNBOUND
+    mov     qword [rcx + PARAM_KIND], PARAM_TO_PLAN_UPDATE
+
+    ; Nothing reads these before the parameter is bound - an unbound one
+    ; refuses to execute - but they are left definite rather than stale.
+    mov     qword [rdx + PLAN_UPDATE_VALUE], 0
+    mov     qword [rdx + PLAN_UPDATE_LENGTH], 0
+    mov     qword [rdx + PLAN_UPDATE_IS_NULL], 0
     jmp     .upd_bind_where
 
 .upd_not_null:

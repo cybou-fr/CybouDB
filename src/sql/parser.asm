@@ -2147,7 +2147,10 @@ sql_parse:
     test    rax, rax
     jz      .fail
     cmp     qword [rax + EXPR_KIND], EXPR_LITERAL
+    je      .upd_value_ok
+    cmp     qword [rax + EXPR_KIND], EXPR_PARAM
     jne     .bad_syntax
+.upd_value_ok:
     mov     r10, [rbp - 48]
     mov     [r10 + UPDATE_VALUE_EXPR], rax
 

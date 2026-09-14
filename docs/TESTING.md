@@ -218,7 +218,7 @@ A year from now that would not have been true.
 
 ## Values that arrive after prepare
 
-`tests/bind_test.c`, 77 checks, built with `--c-tests` and run against a
+`tests/bind_test.c`, 99 checks, built with `--c-tests` and run against a
 `create-large` database. A `?` is a hole in a statement, and the suite is
 organised around what happens at the edges of the hole rather than in it.
 

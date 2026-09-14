@@ -584,15 +584,47 @@ sql_params_apply_predicates:
     mov     rdx, rcx
     shl     rdx, 6                      ; PARAM_SLOT_SIZE
     add     rdx, r11
-    cmp     qword [rdx + PARAM_KIND], PARAM_TO_BEXPR
-    jne     .more
+    cmp     qword [rdx + PARAM_KIND], PARAM_TO_CELL
+    je      .more                       ; an INSERT applies its own, later
     cmp     qword [rdx + PARAM_STATE], PARAM_UNBOUND
     je      .unbound
     mov     r8, [rdx + PARAM_TARGET]
     test    r8, r8
     jz      .more
+    cmp     qword [rdx + PARAM_KIND], PARAM_TO_PLAN_UPDATE
+    je      .to_assignment
+
+    ; A predicate: the literal field of a bound comparison node.
     mov     rax, [rdx + PARAM_VAL]
     mov     [r8 + BEXPR_LIT_VAL], rax
+    jmp     .more
+
+.to_assignment:
+    ; An UPDATE's SET value, which is a scalar or a pointer and a length.
+    cmp     qword [rdx + PARAM_STATE], PARAM_NULL
+    je      .assignment_null
+    mov     rax, [rdx + PARAM_TYPE]
+    cmp     rax, CAT_TEXT
+    jae     .assignment_varlen
+    mov     rax, [rdx + PARAM_VAL]
+    mov     [r8 + PLAN_UPDATE_VALUE], rax
+    mov     qword [r8 + PLAN_UPDATE_LENGTH], 0
+    mov     qword [r8 + PLAN_UPDATE_IS_NULL], 0
+    jmp     .more
+.assignment_varlen:
+    ; The engine's copy of the bytes, not the caller's pointer.
+    mov     rax, [r8 + PLAN_PARAM_BUF]
+    add     rax, PARAM_BUF_BYTES
+    add     rax, [rdx + PARAM_VAL]
+    mov     [r8 + PLAN_UPDATE_VALUE], rax
+    mov     rax, [rdx + PARAM_LEN]
+    mov     [r8 + PLAN_UPDATE_LENGTH], rax
+    mov     qword [r8 + PLAN_UPDATE_IS_NULL], 0
+    jmp     .more
+.assignment_null:
+    mov     qword [r8 + PLAN_UPDATE_VALUE], 0
+    mov     qword [r8 + PLAN_UPDATE_LENGTH], 0
+    mov     qword [r8 + PLAN_UPDATE_IS_NULL], 1
 .more:
     test    rcx, rcx
     jnz     .next

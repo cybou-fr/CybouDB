@@ -32,7 +32,8 @@ migration path, and is not something a minor release does quietly.
 
 ### Parameter binding
 
-`INSERT ... VALUES` and `WHERE` comparisons take `?` placeholders, and ten new
+`INSERT ... VALUES`, `WHERE` comparisons in `SELECT`, `UPDATE` and `DELETE`,
+and `UPDATE` assignments take `?` placeholders, and ten new
 C functions supply
 their values: `cyboudb_bind_int32`, `_int64`, `_float`, `_bool`, `_text`,
 `_blob`, `_vector_f32`, `_null`, `cyboudb_bind_parameter_count`, and
@@ -80,8 +81,11 @@ parameterised predicate declines the seek and scans with zone pruning instead.
 Correct, and slower than it should be; recomputing the bounds per execution is
 named in `ROADMAP.md` rather than left implied.
 
-`?` is accepted in `INSERT ... VALUES` and on the value side of a `WHERE`
-comparison. Anywhere else it is a syntax error that says so.
+`?` is accepted in `INSERT ... VALUES`, on the value side of a `WHERE`
+comparison, and as an `UPDATE` assignment's value. Anywhere else it is a syntax
+error that says so. An assignment parameter also takes `TEXT` and `BLOB` and a
+bindable `NULL`, which a predicate parameter does not: assigning NULL is a
+value to write, comparing against it is a question with no answer.
 
 `tests/bind_test.c` (77 checks) runs on both platforms in CI. Its gate compares
 the engine's zone-pruning counters between a bound predicate and the literal

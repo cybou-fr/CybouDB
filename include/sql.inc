@@ -228,7 +228,7 @@
 %define UPDATE_TABLE_NAME_LEN  8
 %define UPDATE_COLUMN_NAME_PTR 16
 %define UPDATE_COLUMN_NAME_LEN 24
-%define UPDATE_VALUE_EXPR      32       ; AST_EXPR*; parser requires literal
+%define UPDATE_VALUE_EXPR      32       ; AST_EXPR*; a literal or a placeholder
 %define UPDATE_WHERE_EXPR      40       ; AST_EXPR*; mandatory in V1
 %define UPDATE_PAYLOAD_SIZE    48
  
@@ -516,6 +516,7 @@
 
 %define PARAM_TO_CELL       0
 %define PARAM_TO_BEXPR      1
+%define PARAM_TO_PLAN_UPDATE 2
 
 %define PARAM_UNBOUND       0
 %define PARAM_BOUND         1

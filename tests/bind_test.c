@@ -518,6 +518,171 @@ int main(int argc, char **argv) {
         sql_zone_trace = 0;
     }
 
+    /* --- UPDATE and DELETE: the rest of the CRUD path --------------------- */
+    check("a table to mutate",
+          cyboudb_exec(db, "CREATE TABLE b_mut (a INT64, b INT64, t TEXT NULL)")
+              == CybouDB_OK);
+    {
+        int i, made = 1;
+        for (i = 0; i < 20; i++) {
+            char z[160];
+            sprintf(z, "INSERT INTO b_mut VALUES (%d, 0, NULL)", i);
+            if (cyboudb_exec(db, z) != CybouDB_OK) made = 0;
+        }
+        check("twenty rows", made &&
+              count(db, "SELECT COUNT(*) FROM b_mut") == 20);
+    }
+
+    /* The predicate cases came free with the SELECT work - the same bind_expr
+       builds every predicate - so what is tested here is that they did, and
+       that the value belongs to the execution rather than to the plan. */
+    check("a bound UPDATE predicate",
+          cyboudb_prepare(db, "UPDATE b_mut SET b = 5 WHERE a = ?", &st)
+              == CybouDB_OK);
+    if (st) {
+        check("updates the row it was bound to",
+              cyboudb_bind_int64(st, 0, 3) == CybouDB_OK &&
+              cyboudb_step(st) == CybouDB_DONE &&
+              count(db, "SELECT COUNT(*) FROM b_mut WHERE b = 5") == 1);
+        check("and re-binding moves it to another row, not the same one again",
+              cyboudb_reset(st) == CybouDB_OK &&
+              cyboudb_bind_int64(st, 0, 7) == CybouDB_OK &&
+              cyboudb_step(st) == CybouDB_DONE &&
+              count(db, "SELECT COUNT(*) FROM b_mut WHERE b = 5") == 2);
+    }
+    cyboudb_finalize(st);
+    st = NULL;
+
+    check("a bound SET value",
+          cyboudb_prepare(db, "UPDATE b_mut SET b = ? WHERE a = 9", &st)
+              == CybouDB_OK);
+    if (st) {
+        check("writes what it was bound to",
+              cyboudb_bind_int64(st, 0, 42) == CybouDB_OK &&
+              cyboudb_step(st) == CybouDB_DONE &&
+              count(db, "SELECT COUNT(*) FROM b_mut WHERE b = 42") == 1);
+        check("and the second execution writes the second value, not the first",
+              cyboudb_reset(st) == CybouDB_OK &&
+              cyboudb_bind_int64(st, 0, 43) == CybouDB_OK &&
+              cyboudb_step(st) == CybouDB_DONE &&
+              count(db, "SELECT COUNT(*) FROM b_mut WHERE b = 43") == 1 &&
+              count(db, "SELECT COUNT(*) FROM b_mut WHERE b = 42") == 0);
+    }
+    cyboudb_finalize(st);
+    st = NULL;
+
+    check("both halves of an UPDATE bound at once",
+          cyboudb_prepare(db, "UPDATE b_mut SET b = ? WHERE a = ?", &st)
+              == CybouDB_OK &&
+          cyboudb_bind_parameter_count(st) == 2 &&
+          cyboudb_bind_int64(st, 0, 77) == CybouDB_OK &&
+          cyboudb_bind_int64(st, 1, 11) == CybouDB_OK &&
+          cyboudb_step(st) == CybouDB_DONE &&
+          count(db, "SELECT COUNT(*) FROM b_mut WHERE b = 77") == 1);
+    cyboudb_finalize(st);
+    st = NULL;
+
+    /* A bound TEXT assignment is a pointer and a length like a literal one,
+       except the pointer is the engine's. Destroying the source before the
+       step is what says so. */
+    check("a bound TEXT assignment",
+          cyboudb_prepare(db, "UPDATE b_mut SET t = ? WHERE a = 1", &st)
+              == CybouDB_OK);
+    if (st) {
+        char *scratch = malloc(64);
+        memcpy(scratch, "written by a bind", 18);
+        check("binds, and the source is then destroyed",
+              cyboudb_bind_text(st, 0, scratch, -1) == CybouDB_OK);
+        memset(scratch, '?', 64);
+        free(scratch);
+        check("and the row holds what was bound",
+              cyboudb_step(st) == CybouDB_DONE &&
+              one_text_is(db, "SELECT t FROM b_mut WHERE a = 1",
+                          "written by a bind", 17));
+    }
+    cyboudb_finalize(st);
+    st = NULL;
+
+    /* NULL is bindable here and not in a predicate, because an assignment of
+       NULL is a value to write while `x = NULL` is a question with no answer. */
+    check("a bound NULL assignment",
+          cyboudb_prepare(db, "UPDATE b_mut SET t = ? WHERE a = 1", &st)
+              == CybouDB_OK &&
+          cyboudb_bind_null(st, 0) == CybouDB_OK &&
+          cyboudb_step(st) == CybouDB_DONE &&
+          count(db, "SELECT COUNT(*) FROM b_mut WHERE a = 1 AND t IS NULL")
+              == 1);
+    cyboudb_finalize(st);
+    st = NULL;
+
+    /* A plain INT64 column accepts NULL in this dialect, so refusing one needs
+       a column that actually says NOT NULL - otherwise the check would pass
+       for the wrong reason, or fail for it. */
+    check("a NULL into a SET on a column that refuses it",
+          cyboudb_exec(db, "CREATE TABLE b_mutnn (a INT64, b INT64 NOT NULL)")
+              == CybouDB_OK &&
+          cyboudb_exec(db, "INSERT INTO b_mutnn VALUES (1, 1)") == CybouDB_OK &&
+          cyboudb_prepare(db, "UPDATE b_mutnn SET b = ? WHERE a = 1", &st)
+              == CybouDB_OK &&
+          cyboudb_bind_null(st, 0) == CybouDB_MISUSE);
+    cyboudb_finalize(st);
+    st = NULL;
+
+    check("and a NULL into one that accepts it is fine",
+          cyboudb_prepare(db, "UPDATE b_mut SET b = ? WHERE a = 12", &st)
+              == CybouDB_OK &&
+          cyboudb_bind_null(st, 0) == CybouDB_OK &&
+          cyboudb_step(st) == CybouDB_DONE &&
+          count(db, "SELECT COUNT(*) FROM b_mut WHERE a = 12 AND b IS NULL")
+              == 1);
+    cyboudb_finalize(st);
+    st = NULL;
+
+    check("a wrong type for a SET is refused at the bind",
+          cyboudb_prepare(db, "UPDATE b_mut SET b = ? WHERE a = 1", &st)
+              == CybouDB_OK &&
+          cyboudb_bind_text(st, 0, "x", 1) == CybouDB_MISUSE);
+    cyboudb_finalize(st);
+    st = NULL;
+
+    check("an unbound SET stops the statement and writes nothing",
+          cyboudb_prepare(db, "UPDATE b_mut SET b = ? WHERE a = 0", &st)
+              == CybouDB_OK &&
+          cyboudb_step(st) != CybouDB_DONE &&
+          count(db, "SELECT COUNT(*) FROM b_mut WHERE a = 0 AND b = 0") == 1);
+    cyboudb_finalize(st);
+    st = NULL;
+
+    check("a bound DELETE predicate",
+          cyboudb_prepare(db, "DELETE FROM b_mut WHERE a = ?", &st)
+              == CybouDB_OK);
+    if (st) {
+        check("removes the row it was bound to",
+              cyboudb_bind_int64(st, 0, 19) == CybouDB_OK &&
+              cyboudb_step(st) == CybouDB_DONE &&
+              count(db, "SELECT COUNT(*) FROM b_mut") == 19);
+        check("and re-binding removes another one",
+              cyboudb_reset(st) == CybouDB_OK &&
+              cyboudb_bind_int64(st, 0, 18) == CybouDB_OK &&
+              cyboudb_step(st) == CybouDB_DONE &&
+              count(db, "SELECT COUNT(*) FROM b_mut") == 18);
+        check("and one that matches nothing removes nothing",
+              cyboudb_reset(st) == CybouDB_OK &&
+              cyboudb_bind_int64(st, 0, 99999) == CybouDB_OK &&
+              cyboudb_step(st) == CybouDB_DONE &&
+              count(db, "SELECT COUNT(*) FROM b_mut") == 18);
+    }
+    cyboudb_finalize(st);
+    st = NULL;
+
+    check("an unbound DELETE predicate deletes nothing",
+          cyboudb_prepare(db, "DELETE FROM b_mut WHERE a = ?", &st)
+              == CybouDB_OK &&
+          cyboudb_step(st) != CybouDB_DONE &&
+          count(db, "SELECT COUNT(*) FROM b_mut") == 18);
+    cyboudb_finalize(st);
+    st = NULL;
+
     check("a `?` that is not compared against a column is still refused",
           cyboudb_prepare(db, "SELECT a FROM b_pred WHERE ?", &st)
               != CybouDB_OK);
