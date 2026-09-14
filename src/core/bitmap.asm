@@ -921,7 +921,7 @@ cs_release:
 ;  Local slots: [rbp-8]=ctx, [rbp-16]=published, [rbp-24]=staged,
 ;               [rbp-32]=first page, [rbp-40]=byte offset, [rbp-48]=the page
 cs_leaf_explained:
-    FRAME_BEGIN 64, 0
+    FRAME_BEGIN 96, 0
     mov     [rbp - 8], ARG1
     mov     [rbp - 16], ARG2
     mov     [rbp - 24], ARG3
@@ -962,26 +962,72 @@ cs_leaf_explained:
     add     rax, [rbp - 32]
     add     rax, r9
     mov     [rbp - 48], rax
-    ; It has to be in the log, ending in the state the staged map gives it.
+    ; The log has to tell a whole story about this page: starting where the
+    ; published map has it, every hop a legal one, each hop continuing from
+    ; where the last ended, and the last ending where the staged map has it.
+    ;
+    ; Checking only the final state - which is what this did first - accepts a
+    ; history that never happened. An entry claiming RETIRED -> PAYLOAD for a
+    ; page the published map has as PAYLOAD ends in the right place and is a
+    ; lie about how it got there, and the point of the change-set is that a
+    ; commit can believe it.
     mov     r10, [rbp - 8]
     mov     r11, [r10 + DB_CS_LOG]
     test    r11, r11
     jz      .bad
     mov     rcx, [r10 + DB_CS_COUNT]
-.scan:
-    test    rcx, rcx
-    jz      .bad                        ; a change nobody registered
-    dec     rcx
-    mov     rax, rcx
+    mov     [rbp - 56], rdx             ; expected: where the published map has it
+    mov     qword [rbp - 64], 0         ; hops seen for this page
+    xor     r10d, r10d
+.chain:
+    cmp     r10, rcx
+    jae     .chain_done
+    mov     rax, r10
     shl     rax, 4
     mov     rdx, [r11 + rax + CS_ENTRY_PAGE]
     cmp     rdx, [rbp - 48]
-    jne     .scan
+    jne     .chain_next
     mov     rdx, [r11 + rax + CS_ENTRY_STATES]
+    mov     rax, rdx
+    and     rax, 0xff
+    cmp     rax, [rbp - 56]
+    jne     .bad                        ; a hop that starts somewhere else
+    mov     [rbp - 72], rax             ; from
     shr     rdx, 8
-    and     edx, 0xff
-    cmp     edx, r8d
-    jne     .scan                       ; an earlier hop of the same page
+    and     rdx, 0xff                   ; to
+    ; Only these transitions exist. FREE becomes payload or the metadata a
+    ; growing map reserves; a live page becomes RETIRED; and a RETIRED page
+    ; comes back as PAYLOAD when it is reused, which is the one span_reuse
+    ; does - it never passes back through FREE.
+    mov     rax, [rbp - 72]
+    test    rax, rax
+    jz      .from_free
+    cmp     rax, MAP_RETIRED
+    je      .from_retired
+    cmp     rdx, MAP_RETIRED
+    jne     .bad
+    jmp     .legal
+.from_free:
+    cmp     rdx, MAP_PAYLOAD
+    je      .legal
+    cmp     rdx, MAP_METADATA
+    je      .legal
+    jmp     .bad
+.from_retired:
+    cmp     rdx, MAP_PAYLOAD
+    jne     .bad
+.legal:
+    mov     [rbp - 56], rdx
+    inc     qword [rbp - 64]
+.chain_next:
+    inc     r10
+    jmp     .chain
+.chain_done:
+    cmp     qword [rbp - 64], 0
+    je      .bad                        ; a change nobody registered
+    mov     rax, [rbp - 56]
+    cmp     eax, r8d
+    jne     .bad                        ; the story ends somewhere else
 .next_entry:
     inc     r9d
     jmp     .entry

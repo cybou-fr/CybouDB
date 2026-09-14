@@ -82,6 +82,24 @@ jobs:
           sh build.sh --queue-bench
           python3 tests/public_select_tests.py ./cyboudb ./build/bench_harness ./build/c_api_harness
 
+
+      # A change-set too small to hold a transaction, so the path taken when
+      # the log cannot be trusted is one the suites walk rather than one
+      # nobody reaches. Inheritance has to switch itself off there: with the
+      # log overflowing, segment visits per commit go back to 33 at depth
+      # 2,000 from 1, and everything still has to pass.
+      - name: The fallback taken when the change-set cannot be trusted
+        run: |
+          sh build.sh --cs-overflow
+          sh tests/run_tests.sh ./build/cyboudb_overflow
+          python3 tests/queue_sql_tests.py ./build/cyboudb_overflow
+          python3 tests/stream_sql_tests.py ./build/cyboudb_overflow
+          python3 tests/transaction_tests.py ./build/cyboudb_overflow
+          python3 tests/delete_tests.py ./build/cyboudb_overflow
+          python3 tests/cross_primitive_crash_tests.py ./build/cyboudb_overflow
+          python3 tests/compat_tests.py ./build/cyboudb_overflow
+          python3 tests/integrity_tests.py ./build/cyboudb_overflow
+
       # Built the way a release is built - `--lib`, no allocation injection -
       # and compiled in a directory holding only what a release ships. This is
       # the check that the published package links for somebody who has only
@@ -227,6 +245,28 @@ jobs:
           call build.bat --queue-bench
           if errorlevel 1 exit /b 1
           python tests/public_select_tests.py ./cyboudb.exe ./build/bench_harness.exe ./build/c_api_harness.exe
+
+
+      # A change-set too small to hold a transaction, so the fallback taken
+      # when the log cannot be trusted is a path the suites walk. Built in cmd
+      # like every other build here, and driven from bash, because `cmd //c`
+      # out of bash has failed quietly on this runner before.
+      - name: Build with a change-set that overflows
+        shell: cmd
+        run: |
+          call build.bat --cs-overflow
+          if errorlevel 1 exit /b 1
+
+      - name: The fallback taken when the change-set cannot be trusted
+        shell: bash
+        run: |
+          sh tests/run_tests.sh ./build/cyboudb_overflow.exe
+          python tests/queue_sql_tests.py ./build/cyboudb_overflow.exe
+          python tests/stream_sql_tests.py ./build/cyboudb_overflow.exe
+          python tests/transaction_tests.py ./build/cyboudb_overflow.exe
+          python tests/cross_primitive_crash_tests.py ./build/cyboudb_overflow.exe
+          python tests/compat_tests.py ./build/cyboudb_overflow.exe
+          python tests/integrity_tests.py ./build/cyboudb_overflow.exe
 
       - name: An application with only the published package
         shell: cmd

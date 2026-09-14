@@ -132,6 +132,12 @@ Built with `--c-tests`:
   reaches any more must still commit - because a rule that refuses everything
   is not a rule.
 
+  It also forges the change-set itself through `cs_record`, which is the
+  only way to attack a structure nothing outside the engine can reach. That
+  is the point: the log is part of what a commit trusts now, so a mutation
+  recording the wrong transition has to end as a refused commit rather than
+  a published one.
+
 * `sh build.sh --cs-overflow` builds with a change-set too small to hold a
   transaction, so the path taken when the log cannot be trusted is one the
   suites walk rather than one nobody reaches. Inheritance has to switch itself

@@ -439,6 +439,8 @@ D. forge a directory edge or an allocation transition the change-set
 | A queue naming another queue's segment | commit refused | `validator_attack_test` |
 | One page in two logical segment positions | commit refused | `validator_attack_test` |
 | A change-set that overflowed | no inheritance; the long proof | `build.sh --cs-overflow` |
+| A log whose hops do not follow from each other | commit refused | `validator_attack_test` |
+| The same change with nothing forged | commit accepted | `validator_attack_test` |
 | A damaged newest generation | open recovers, `check` reports | `integrity_tests` |
 | A torn superblock | open recovers, `check` reports OK | the storage suite |
 
@@ -467,13 +469,46 @@ while an inherited object reaches them would not be caught here. The pages of
 a run are retired together with their header, which is what makes that
 narrow.
 
+### The chain, not just its end
+
+Checking only where a page ends up accepts a history that never happened. An
+entry claiming `RETIRED -> PAYLOAD` for a page the published map holds as
+`PAYLOAD` ends in the right state and lies about how it got there, and the
+whole point of the change-set is that a commit now believes it.
+
+So `cs_leaf_explained` follows the whole story for every entry that differs:
+
+```text
+published map state
+        =  first recorded from
+           each hop legal
+           each to  =  the next from
+        =  last recorded to
+staged map state
+```
+
+The legal hops are the ones the engine actually makes - `FREE` to `PAYLOAD` or
+to the `METADATA` a growing map reserves, a live page to `RETIRED`, and
+`RETIRED` back to `PAYLOAD` when `span_reuse` hands it out again. A page never
+passes back through `FREE` on its way to being reused, which is what the code
+does rather than what the state names suggest.
+
+This is not defence against a user: nothing outside the engine can reach the
+log. It is defence against the engine. The change-set is part of what a commit
+trusts now, so a mutation that records the wrong transition has to end as a
+refused commit rather than a published one.
+
+`tests/validator_attack_test.c` attacks it through `cs_record`, which is the
+hook, and has the same drop without the forged entry beside it - otherwise the
+refusal could be about the drop.
+
 ### Still open
 
-Forging the change-set itself - an entry whose recorded `from` state does not
-match the published map - cannot be attacked from a test without a hook for
-writing the log directly, and no such hook exists. `cs_leaf_explained` checks
-that a differing entry ends in the state the log records, not that the chain
-starts where the published map says it starts.
+A retired page with no shared header cannot be attributed to an owner, so the
+continuation pages of a multi-page run rest on a separate invariant: a run is
+retired whole, header included, and the header is what gets attributed. Making
+a continuation page retire on its own - if an internal hook can construct that
+state at all - is the negative control this does not yet have.
 
 Every outcome must be wholly the base generation or wholly the candidate. There
 is no third state a reader can observe, and that is unchanged by any of this.

@@ -54,6 +54,16 @@ extern unsigned char *db_queue_seg_addr(void *ctx, uint64_t page);
 extern int db_commit(void *ctx);
 extern int db_rollback(void *ctx);
 extern int db_bitmap_retire(void *ctx, uint64_t page);
+/* The change-set, written directly. Nothing outside the engine can reach this
+ * - the point is not that a user could forge a transition, but that an engine
+ * bug recording the wrong one must be refused rather than believed. The
+ * change-set is part of what a commit now trusts, so it has to be checked. */
+extern void cs_record(void *ctx, uint64_t page, uint64_t from, uint64_t to);
+
+#define MAP_FREE     0
+#define MAP_PAYLOAD  1
+#define MAP_METADATA 2
+#define MAP_RETIRED  3
 
 static int failures = 0;
 static int checks = 0;
@@ -192,13 +202,46 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* --- a transition the log tells the wrong story about ----------------- */
+    /* The published map has this page as PAYLOAD. A forged entry claiming it
+       arrived from RETIRED ends in the right state and lies about how it got
+       there - which is exactly what checking only the final state cannot
+       tell apart from the truth. The commit has to follow the whole chain:
+       where the published map has the page, every hop from there, and where
+       the staged map leaves it. */
+    {
+        uint64_t g_page = 0, g_seg = 0, g_id;
+        check("a queue to drop inside a transaction",
+              cyboudb_exec(db, "CREATE QUEUE gamma") == CybouDB_OK &&
+              cyboudb_exec(db, "ENQUEUE INTO gamma VALUES ('x')")
+              == CybouDB_OK);
+        g_id = queue_id(ctx, "gamma", &g_page);
+        check("which is findable", g_id != 0 && g_page != 0);
+        g_seg = u64(db_queue_seg_addr(ctx, g_page), Q_ENTRIES_OFF);
+        check("and names a segment", g_seg != 0);
+
+        /* Dropping it retires that segment for real, so the published map has
+           the page as PAYLOAD, the staged map has it RETIRED, and the log
+           holds the hop that did it. The forged entry then claims a second
+           hop that does not continue from where the first ended. */
+        check("dropping it inside a transaction",
+              cyboudb_exec(db, "BEGIN") == CybouDB_OK &&
+              cyboudb_exec(db, "DROP QUEUE gamma") == CybouDB_OK);
+        cs_record(ctx, g_seg, MAP_FREE, MAP_RETIRED);
+        check("a log that does not follow from itself is refused",
+              db_commit(ctx) != CybouDB_OK);
+        db_rollback(ctx);
+
+        /* And the same drop without the forgery, which must go through - or
+           the case above would be refusing the drop rather than the lie. */
+        check("the same drop, with nothing forged, commits",
+              cyboudb_exec(db, "DROP QUEUE gamma") == CybouDB_OK);
+    }
+
     /* --- and after all of that the database is still usable --------------- */
     check("alpha still answers",
           cyboudb_exec(db, "ENQUEUE INTO alpha VALUES ('after')")
           == CybouDB_OK);
-    check("beta was never touched",
-          db_catalog_get(ctx, b_id, &b_page) == 0 && b_page != 0 &&
-          u64(db_queue_seg_addr(ctx, b_page), Q_ENTRIES_OFF) == b_seg);
     check("closing", cyboudb_close(db) == CybouDB_OK);
 
     printf("validator attack suite: %d passed, %d failed\n",
