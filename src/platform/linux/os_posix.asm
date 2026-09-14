@@ -35,6 +35,7 @@ global vfs_size, vfs_resize, vfs_map_rw, vfs_map_ro, vfs_unmap
 global vfs_sync, vfs_close, vfs_flush_range
 global vfs_lock_writer, vfs_lock_reader, vfs_reclaim_safe
 global os_wall_ms
+global os_random
 global os_mem_alloc, os_mem_free
 
 ; --- System call numbers -----------------------------------------------------
@@ -51,6 +52,7 @@ global os_mem_alloc, os_mem_free
 %define SYS_fcntl       72
 %define SYS_ftruncate   77
 %define SYS_clock_gettime 228
+%define SYS_getrandom   318
 %define SYS_exit_group  231
 
 ; --- errno values we tell apart ----------------------------------------------
@@ -848,4 +850,55 @@ os_mem_free:
     ret
 
 ; The stack is not executable - mark the section so ld stays quiet.
+
+; =============================================================================
+;  os_random(buffer, length) -> EAX: 0 when the buffer was filled
+; =============================================================================
+;  getrandom(2), with no flags: it draws from the same pool /dev/urandom does
+;  and blocks only until that pool is initialised for the first time after a
+;  boot. No file descriptor, so nothing to exhaust and nothing an attacker can
+;  replace by arranging for the open to fail.
+;
+;  This is the kernel's generator and not one of ours, which is the whole
+;  point - docs/CRYPTO_BACKEND.md, Decision 1. A hand-written cryptographic
+;  RNG is the single worst thing this project could choose to own.
+;
+;  A short return is a real possibility for large requests, so the loop keeps
+;  asking, and EINTR is retried rather than reported.
+; =============================================================================
+os_random:
+    FRAME_BEGIN 32, 0
+    mov     [rbp - 8], ARG1             ; buffer
+    mov     [rbp - 16], ARG2            ; bytes still wanted
+
+.again:
+    cmp     qword [rbp - 16], 0
+    je      .filled
+
+    mov     rdi, [rbp - 8]
+    mov     rsi, [rbp - 16]
+    xor     rdx, rdx                    ; no flags
+    mov     eax, SYS_getrandom
+    syscall
+
+    cmp     rax, -4                     ; -EINTR
+    je      .again
+    test    rax, rax
+    js      .failed
+    jz      .failed                     ; no progress: do not spin forever
+
+    add     [rbp - 8], rax
+    sub     [rbp - 16], rax
+    jmp     .again
+
+.filled:
+    xor     eax, eax
+    FRAME_END
+    ret
+
+.failed:
+    mov     eax, 1
+    FRAME_END
+    ret
+
 section .note.GNU-stack noalloc noexec nowrite progbits

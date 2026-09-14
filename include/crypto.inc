@@ -42,6 +42,17 @@
 %define AEAD_TAG       48               ; uint8_t *, written by seal, read by open
 %define CybouDB_AEAD_ARGS_SIZE 56
 
+; --- the associated data a sealed page is bound to ---------------------------
+;  docs/ENCRYPTED_FORMAT.md, Decision 5. Forty-eight bytes, which is already a
+;  multiple of sixteen - so the AEAD's padding step has nothing to pad, and the
+;  MAC input for a 4096-byte page is 48 + 4096 + 16 with no gaps.
+%define AAD_UUID        0               ; 16 bytes: the database's identity
+%define AAD_PAGE_NO     16
+%define AAD_GENERATION  24
+%define AAD_PAGE_TYPE   32
+%define AAD_SEAL_EPOCH  40
+%define CybouDB_PAGE_AAD_SIZE 48
+
 ; --- what the AEAD produces and consumes ------------------------------------
 %define CybouDB_AEAD_TAG_SIZE     16
 %define CybouDB_AEAD_KEY_SIZE     32

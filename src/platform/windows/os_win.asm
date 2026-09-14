@@ -22,6 +22,8 @@ default rel
 
 ; --- Imports from kernel32.dll -----------------------------------------------
 extern GetStdHandle
+extern LoadLibraryA
+extern GetProcAddress
 extern GetSystemTimeAsFileTime
 extern WriteFile
 extern ExitProcess
@@ -58,6 +60,7 @@ global os_arg_to_utf8
 global os_cmdline_ok
 global os_monotonic_ns
 global os_wall_ms
+global os_random
 global os_stdin_isatty, os_read_stdin, os_read_console
 global vfs_create_new, vfs_create_truncate, vfs_open_rw, vfs_open_ro
 global vfs_size, vfs_resize, vfs_map_rw, vfs_map_ro, vfs_unmap
@@ -106,6 +109,13 @@ global os_mem_alloc, os_mem_free, os_utf8_to_wide
 %define U64_DIV10              0x1999999999999999
 
 ; =============================================================================
+section .data
+align 8
+bcrypt_gen_random:  dq 0                ; resolved once, at first use
+bcrypt_tried:       dq 0
+str_bcrypt_dll:     db "bcrypt.dll", 0
+str_bcrypt_fn:      db "BCryptGenRandom", 0
+
 section .bss
     align 8
 hStdOut:    resq 1                      ; standard output handle
@@ -1296,5 +1306,84 @@ os_utf8_to_wide:
     xor     edx, edx                    ; dwFlags = 0
     mov     r9d, -1                     ; cbMultiByte (-1 = null-terminated)
     call    MultiByteToWideChar
+    FRAME_END
+    ret
+
+
+; =============================================================================
+;  os_random(buffer, length) -> EAX: 0 when the buffer was filled
+; =============================================================================
+;  BCryptGenRandom with BCRYPT_USE_SYSTEM_PREFERRED_RNG, which is the system
+;  generator and not one of ours - docs/CRYPTO_BACKEND.md, Decision 1.
+;
+;  It lives in bcrypt.dll, and this platform layer links only kernel32. Rather
+;  than add a second import library to every consumer of the static library -
+;  including the ones that will never encrypt anything - it is loaded at first
+;  use through LoadLibraryA and GetProcAddress, which are themselves kernel32.
+;
+;  So the rule ENCRYPTED_FORMAT.md's Decision 8 gave up is kept after all, in
+;  the form that actually mattered: nothing this build links can be absent. If
+;  bcrypt.dll is missing, this returns non-zero, encryption is unavailable, and
+;  a plaintext database still opens.
+;
+;  The handle is resolved once. A second thread racing here would resolve it
+;  twice and store the same pointer, which is harmless.
+; =============================================================================
+os_random:
+    FRAME_BEGIN 64, 4
+    mov     [rbp - 8], ARG1             ; buffer
+    mov     [rbp - 16], ARG2            ; bytes still wanted
+
+    mov     rax, [rel bcrypt_gen_random]
+    test    rax, rax
+    jnz     .have_it
+
+    cmp     qword [rel bcrypt_tried], 0
+    jne     .failed                     ; asked once, it was not there
+
+    mov     qword [rel bcrypt_tried], 1
+    lea     ARG1, [rel str_bcrypt_dll]
+    call    LoadLibraryA
+    test    rax, rax
+    jz      .failed
+
+    mov     ARG1, rax
+    lea     ARG2, [rel str_bcrypt_fn]
+    call    GetProcAddress
+    test    rax, rax
+    jz      .failed
+    mov     [rel bcrypt_gen_random], rax
+
+.have_it:
+    cmp     qword [rbp - 16], 0
+    je      .filled
+
+    ; cbBuffer is a ULONG, so a very large request is asked for in pieces.
+    mov     rax, [rbp - 16]
+    mov     rcx, 0x40000000
+    cmp     rax, rcx
+    cmovae  rax, rcx
+    mov     [rbp - 24], rax             ; this call's length
+
+    xor     ARG1, ARG1                  ; hAlgorithm: none, use the flag
+    mov     ARG2, [rbp - 8]
+    mov     ARG3d, eax
+    mov     ARG4d, 2                    ; BCRYPT_USE_SYSTEM_PREFERRED_RNG
+    call    qword [rel bcrypt_gen_random]
+    test    eax, eax
+    jnz     .failed                     ; NTSTATUS: zero is success
+
+    mov     rax, [rbp - 24]
+    add     [rbp - 8], rax
+    sub     [rbp - 16], rax
+    jmp     .have_it
+
+.filled:
+    xor     eax, eax
+    FRAME_END
+    ret
+
+.failed:
+    mov     eax, 1
     FRAME_END
     ret
