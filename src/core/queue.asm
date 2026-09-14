@@ -220,11 +220,20 @@ db_queue_segments_valid:
     mov rdx, [r11 + QSV_OWNER]
     cmp [r10 + QSEG_OWNER], rdx
     jne .bad                        ; a segment answers to the object naming it
-    ; Where the segment's claimable summary will go. Zero until an engine
-    ; builds the index; the check becomes conditional on QUEUE_LEASES then,
-    ; the way Q_TIME_FLOOR's did, and is not deleted.
+    ; The segment's claimable summary. Without leases nothing writes it and it
+    ; must be zero; with them it is a timestamp, and what makes it trustworthy
+    ; is not a value but an inequality - lease_summaries_valid requires it to
+    ; be no later than what the slots say, because a summary that is too low
+    ; costs a wasted look and one that is too high hides a claimable message.
+    ;
+    ; Conditional rather than deleted, which is what the commit that named the
+    ; field said would happen here.
+    mov r9, [r11 + QSV_CTX]         ; r11 is the validator's own struct
+    test qword [r9 + DB_FEATURES], CybouDB_FEATURE_QUEUE_LEASES
+    jnz .ready_at_checked
     cmp qword [r10 + QSEG_READY_AT], 0
     jne .bad
+.ready_at_checked:
     cmp qword [r10 + QSEG_RESERVED], 0
     jne .bad
     cmp qword [r10 + QSEG_RESERVED + 8], 0
@@ -515,6 +524,14 @@ queue_page_valid:
 .no_base:
     lea ARG1, [rbp - 160]
     call db_queue_segments_valid
+    test eax, eax
+    jz .q_bad
+
+    ; And the per-segment summaries, which the search trusts to skip whole
+    ; segments unread. A summary that is too high hides a claimable message.
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 24]
+    call lease_summaries_valid
     FRAME_END
     ret
 .q_bad:
@@ -1251,6 +1268,22 @@ db_queue_scan_claimable:
     mov [rbp - 72], rax
     inc qword [rel lease_segments_inspected]
 
+    ; One u64 answers for sixty-two slots. A deadline still ahead means
+    ; nothing in this segment is free and nothing has lapsed, so the walk
+    ; steps over the whole of it without reading a slot.
+    mov r8, rax
+    mov rax, [r8 + QSEG_READY_AT]
+    cmp rax, [rbp - 24]
+    jbe .sc_have_segment
+    mov rax, [rbp - 48]
+    xor edx, edx
+    mov rcx, QUEUE_SEG_SLOTS
+    div rcx
+    inc rax
+    imul rax, QUEUE_SEG_SLOTS
+    mov [rbp - 48], rax
+    jmp .sc_next
+
 .sc_have_segment:
     inc qword [rel lease_slots_inspected]
     mov rdx, [rbp - 80]
@@ -1571,6 +1604,11 @@ db_queue_claim:
     mov [r8 + QMSG_LEASE_UNTIL], rdx
     mov dword [r8 + QMSG_STATE], QMSG_STATE_CLAIMED
 
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 96]
+    mov ARG3, [rbp - 88]
+    mov ARG4, [rbp - 64]
+    call lease_seg_refresh
     mov ARG1, [rbp - 88]
     mov ARG2, [rbp - 8]
     call queue_seg_seal
@@ -1670,6 +1708,202 @@ lease_hold:
     ret
 .lh_state:
     mov eax, CybouDB_E_STATE
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  lease_summaries_valid(ctx, queue page) -> RAX: 1 when every segment's
+;  QSEG_READY_AT is one the search may trust
+;
+;  The rule is an inequality and not an equality, which is the whole of what
+;  the summary has to promise:
+;
+;      stored <= what the slots actually say
+;
+;  A summary that is too low costs a look into a segment with nothing in it. A
+;  summary that is too high **hides a claimable message**, which is a queue
+;  that has silently lost work. Only the second is damage, so only the second
+;  is refused.
+;
+;  That also makes the field safe for any writer that is merely conservative -
+;  a path that leaves a zero where it could have raised it is correct and
+;  slower, which is the direction this format prefers everywhere else.
+; -----------------------------------------------------------------------------
+lease_summaries_valid:
+    FRAME_BEGIN 96, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_QUEUE_LEASES
+    jz .sv_yes                      ; without them the field is checked as zero
+
+    mov r11, ARG2
+    mov rax, [r11 + Q_HEAD]
+    mov [rbp - 24], rax
+    mov rax, [r11 + Q_TAIL]
+    mov [rbp - 32], rax
+    mov rax, [r11 + Q_FIRST_SEG]
+    mov [rbp - 40], rax
+    mov ecx, [r11 + Q_SEGMENTS]
+    mov [rbp - 48], rcx
+    mov qword [rbp - 56], 0         ; the directory entry being looked at
+
+.sv_entry:
+    mov rax, [rbp - 56]
+    cmp rax, [rbp - 48]
+    jae .sv_yes
+    mov r11, [rbp - 16]
+    mov ARG2, [r11 + Q_ENTRIES + rax * 8]
+    mov ARG1, [rbp - 8]
+    call db_queue_seg_addr
+    test rax, rax
+    jz .sv_no
+    mov [rbp - 64], rax             ; the segment page
+
+    ; The live range this segment holds.
+    mov rax, [rbp - 56]
+    add rax, [rbp - 40]
+    imul rax, QUEUE_SEG_SLOTS
+    mov [rbp - 72], rax
+    mov rdx, rax
+    add rdx, QUEUE_SEG_SLOTS
+    mov [rbp - 80], rdx
+    mov rax, [rbp - 24]
+    cmp rax, [rbp - 72]
+    jbe .sv_low_ready
+    mov [rbp - 72], rax
+.sv_low_ready:
+    mov rax, [rbp - 32]
+    cmp rax, [rbp - 80]
+    jae .sv_high_ready
+    mov [rbp - 80], rax
+.sv_high_ready:
+
+    mov rax, -1
+    mov [rbp - 88], rax
+.sv_slot:
+    mov rax, [rbp - 72]
+    cmp rax, [rbp - 80]
+    jae .sv_compare
+    xor edx, edx
+    mov rcx, QUEUE_SEG_SLOTS
+    div rcx
+    shl rdx, 6
+    mov r8, [rbp - 64]
+    lea r8, [r8 + QSEG_SLOTS + rdx]
+    mov ecx, [r8 + QMSG_STATE]
+    cmp ecx, QMSG_STATE_HELD
+    je .sv_floor
+    cmp ecx, QMSG_STATE_CLAIMED
+    jne .sv_slot_next
+    mov rax, [r8 + QMSG_LEASE_UNTIL]
+    cmp rax, [rbp - 88]
+    jae .sv_slot_next
+    mov [rbp - 88], rax
+.sv_slot_next:
+    inc qword [rbp - 72]
+    jmp .sv_slot
+.sv_floor:
+    mov qword [rbp - 88], 0
+.sv_compare:
+    mov r8, [rbp - 64]
+    mov rax, [r8 + QSEG_READY_AT]
+    cmp rax, [rbp - 88]
+    ja .sv_no                       ; it would hide a claimable message
+    inc qword [rbp - 56]
+    jmp .sv_entry
+
+.sv_yes:
+    mov eax, 1
+    FRAME_END
+    ret
+.sv_no:
+    xor eax, eax
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  lease_seg_refresh(ctx, queue page, segment address, position)
+;
+;  Recompute one segment's QSEG_READY_AT from the slots it holds:
+;
+;      0            a free message is in it, and zero is the floor
+;      the least deadline among its claims
+;      UINT64_MAX   it holds neither
+;
+;  Called where the segment page is already being rewritten, which is what
+;  makes it free - see benchmarks/results/2026-09-14-lease-ready-at-tree.md.
+;  The walk stops at the first free message it finds, because nothing below
+;  zero exists.
+;
+;  The live range is [head, tail) clipped to this segment: positions outside it
+;  are not read by anything and must not be summarised, or a segment that had
+;  been half consumed would claim a deadline nobody holds.
+; -----------------------------------------------------------------------------
+lease_seg_refresh:
+    FRAME_BEGIN 64, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2            ; the queue page
+    mov [rbp - 24], ARG3            ; the segment, writable
+    mov [rbp - 32], ARG4            ; a position inside it
+
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_QUEUE_LEASES
+    jz .sr_done                     ; the field stays zero without them
+
+    mov rax, [rbp - 32]
+    xor edx, edx
+    mov rcx, QUEUE_SEG_SLOTS
+    div rcx
+    imul rax, QUEUE_SEG_SLOTS
+    mov [rbp - 40], rax             ; the first position this segment holds
+    mov rdx, rax
+    add rdx, QUEUE_SEG_SLOTS
+    mov [rbp - 48], rdx             ; one past the last
+
+    mov r11, [rbp - 16]
+    mov rax, [r11 + Q_HEAD]
+    cmp rax, [rbp - 40]
+    jbe .sr_low_ready
+    mov [rbp - 40], rax
+.sr_low_ready:
+    mov rax, [r11 + Q_TAIL]
+    cmp rax, [rbp - 48]
+    jae .sr_high_ready
+    mov [rbp - 48], rax
+.sr_high_ready:
+
+    mov rax, -1
+    mov [rbp - 56], rax             ; the least deadline so far
+.sr_slot:
+    mov rax, [rbp - 40]
+    cmp rax, [rbp - 48]
+    jae .sr_store
+    xor edx, edx
+    mov rcx, QUEUE_SEG_SLOTS
+    div rcx
+    shl rdx, 6                      ; QUEUE_SLOT_SIZE
+    mov r8, [rbp - 24]
+    lea r8, [r8 + QSEG_SLOTS + rdx]
+    mov ecx, [r8 + QMSG_STATE]
+    cmp ecx, QMSG_STATE_HELD
+    je .sr_floor
+    cmp ecx, QMSG_STATE_CLAIMED
+    jne .sr_next                    ; ACKED gives nothing
+    mov rax, [r8 + QMSG_LEASE_UNTIL]
+    cmp rax, [rbp - 56]
+    jae .sr_next
+    mov [rbp - 56], rax
+.sr_next:
+    inc qword [rbp - 40]
+    jmp .sr_slot
+.sr_floor:
+    mov qword [rbp - 56], 0
+.sr_store:
+    mov r8, [rbp - 24]
+    mov rax, [rbp - 56]
+    mov [r8 + QSEG_READY_AT], rax
+.sr_done:
     FRAME_END
     ret
 
@@ -1814,6 +2048,7 @@ db_queue_ack:
     FRAME_BEGIN 64, 1
     mov [rbp - 8], ARG1
     mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3            ; the summary below is recomputed for it
     lea rax, [rbp - 64]
     PASS_ARG5 rax
     call lease_hold
@@ -1822,6 +2057,11 @@ db_queue_ack:
     mov r8, [rbp - 64 + LE_SLOT]
     mov dword [r8 + QMSG_STATE], QMSG_STATE_ACKED
     mov qword [r8 + QMSG_LEASE_UNTIL], 0
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 64 + LE_QPAGE]
+    mov ARG3, [rbp - 64 + LE_SEG]
+    mov ARG4, [rbp - 24]
+    call lease_seg_refresh
     mov ARG1, [rbp - 64 + LE_SEG]
     mov ARG2, [rbp - 8]
     call queue_seg_seal
@@ -1878,6 +2118,11 @@ db_queue_nack:
     mov [r8 + QMSG_LEASE_TOKEN], rax
     mov dword [r8 + QMSG_STATE], QMSG_STATE_HELD
     mov qword [r8 + QMSG_LEASE_UNTIL], 0
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 64 + LE_QPAGE]
+    mov ARG3, [rbp - 64 + LE_SEG]
+    mov ARG4, [rbp - 24]
+    call lease_seg_refresh
     mov ARG1, [rbp - 64 + LE_SEG]
     mov ARG2, [rbp - 8]
     call queue_seg_seal
@@ -1935,6 +2180,11 @@ db_queue_renew:
     jc .r_value
     mov r8, [rbp - 128 + LE_SLOT]
     mov [r8 + QMSG_LEASE_UNTIL], rdx
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 128 + LE_QPAGE]
+    mov ARG3, [rbp - 128 + LE_SEG]
+    mov ARG4, [rbp - 24]
+    call lease_seg_refresh
     mov ARG1, [rbp - 128 + LE_SEG]
     mov ARG2, [rbp - 8]
     call queue_seg_seal

@@ -50,6 +50,7 @@ void cyboudb_test_mem_free(void *ptr, size_t size) { (void)size; free(ptr); }
 #define Q_TIME_FLOOR_OFF 120
 #define Q_ENTRIES_OFF   128
 
+#define QSEG_READY_AT_OFF 40
 #define QSEG_SLOTS_OFF  64
 #define QSEG_CRC_OFF    4092
 #define QUEUE_SLOT_SIZE 64
@@ -255,6 +256,77 @@ int main(int argc, char **argv) {
                      same[i].what);
             check(label, !accepted);
         }
+        check("which is otherwise intact", integrity_accepts(plain.path));
+    }
+
+    /* --- the segment summary, whose rule is an inequality ----------------- */
+    /* QSEG_READY_AT is what lets a search skip sixty-two slots unread, and
+       what it has to promise is not a value but a bound: no later than what
+       the slots actually say. Too low costs a look into a segment with nothing
+       in it. Too high hides a claimable message, which is a queue that has
+       quietly lost work. Only the second is damage.
+
+       The queue here holds three free messages, so the truth is zero and any
+       non-zero summary is too high. */
+    {
+        struct { const char *what; uint64_t value; int legal; } summary[] = {
+          { "a summary saying what the slots say",            0, 1 },
+          { "one saying a message is free when one is",       0, 1 },
+          { "one that would skip a segment holding free work", 1700000000000ULL, 0 },
+          { "one that would skip it forever",  0xFFFFFFFFFFFFFFFFull, 0 },
+        };
+        for (i = 0; i < (int)(sizeof summary / sizeof summary[0]); i++) {
+            char label[200];
+            int accepted;
+            put64(leased.seg, QSEG_READY_AT_OFF, summary[i].value);
+            seal_segment(leased.seg);
+            accepted = integrity_accepts(leased.path);
+            put64(leased.seg, QSEG_READY_AT_OFF, 0);
+            seal_segment(leased.seg);
+            snprintf(label, sizeof label, "%s is %s", summary[i].what,
+                     summary[i].legal ? "accepted" : "refused");
+            check(label, accepted == summary[i].legal);
+        }
+
+        /* And with the messages claimed rather than free, a summary at their
+           deadline is exact, one before it is conservative and fine, and one
+           after it is the failure again. */
+        set_slot(&leased, 0, STATE_CLAIMED, 1700000060000ULL, 1);
+        set_slot(&leased, 1, STATE_CLAIMED, 1700000060000ULL, 1);
+        set_slot(&leased, 2, STATE_CLAIMED, 1700000060000ULL, 1);
+        {
+            struct { const char *what; uint64_t value; int legal; } claimed[] = {
+              { "a summary at the earliest deadline", 1700000060000ULL, 1 },
+              { "one before it",                      1700000000000ULL, 1 },
+              { "one after it",                       1700000060001ULL, 0 },
+            };
+            for (i = 0; i < (int)(sizeof claimed / sizeof claimed[0]); i++) {
+                char label[200];
+                int accepted;
+                put64(leased.seg, QSEG_READY_AT_OFF, claimed[i].value);
+                seal_segment(leased.seg);
+                accepted = integrity_accepts(leased.path);
+                snprintf(label, sizeof label, "%s is %s", claimed[i].what,
+                         claimed[i].legal ? "accepted" : "refused");
+                check(label, accepted == claimed[i].legal);
+            }
+        }
+        reset_slot(&leased, 0);
+        reset_slot(&leased, 1);
+        reset_slot(&leased, 2);
+        put64(leased.seg, QSEG_READY_AT_OFF, 0);
+        seal_segment(leased.seg);
+        check("and the queue is intact with it back at zero",
+              integrity_accepts(leased.path));
+
+        /* Without leases the field is not a summary at all, and any value in
+           it is a file this build does not understand. */
+        put64(plain.seg, QSEG_READY_AT_OFF, 1);
+        seal_segment(plain.seg);
+        check("a summary on a database created without leases is refused",
+              !integrity_accepts(plain.path));
+        put64(plain.seg, QSEG_READY_AT_OFF, 0);
+        seal_segment(plain.seg);
         check("which is otherwise intact", integrity_accepts(plain.path));
     }
 

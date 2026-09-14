@@ -1104,8 +1104,9 @@ single page is written with a non-zero lease state:
 7. the summary's bytes     named and required zero until something writes     done
 8. the operations          CLAIM, ACK, NACK, RENEW in the engine               done
 9. head advancement        a run of ACKED at the front, and its retirement    done
-10. the index              built, maintained, and validated
-11. the public surface     SQL and C
+10. the segment summary    QSEG_READY_AT written, used and validated         done
+11. the hierarchy          the sidecar page above the segments
+12. the public surface     SQL and C
 ```
 
 Step 5 is the one that makes the rest true rather than intended, and it is done

@@ -169,6 +169,37 @@ measurement gets published with.
 
 ---
 
+## The segment summary, in the engine
+
+The leaf half of this is now written and maintained by the engine rather than
+by the probe, so these are its numbers and not a model's. `QSEG_READY_AT` lives
+in the segment page, every operation refreshes it where that page is already
+being rewritten, and `db_queue_scan_claimable` skips a segment whose summary
+says nothing there is ready.
+
+| depth | naive slots | with the summary | segments |
+| ----: | ----------: | ---------------: | -------: |
+| 100 | 100 | 38 | 2 |
+| 1,000 | 1,000 | 8 | 17 |
+| 10,000 | 10,000 | 18 | 162 |
+| 29,700 | 29,700 | **2** | 480 |
+
+Slots inspected, on `live`, `stuck` and `lapsed` alike; `front` is one slot at
+every depth and `empty` is now **zero** - the summaries answer *no* without a
+slot being read at all.
+
+This is exactly what the sketch predicted and exactly as far as it goes: the
+slot term is gone and the **segment term is now the linear one**, 480 pages at
+the ceiling. A factor of 62, which is worth having and is not an answer. The
+hierarchy above it is what turns 480 into 8, and it is not in the engine yet -
+the `tree` rows above are still the probe's own model.
+
+A note on how the probe had to change to say this. Its shapes are written by
+hand, and at first they left `QSEG_READY_AT` at zero - so the scan skipped
+nothing and the numbers did not move. A zero summary is always safe and always
+costs a full walk, which is the inequality working, and a probe that left it
+there would have been measuring a queue no engine produces, favourably.
+
 ## What is not decided
 
 The tree is **built** outside the measured search region, because in the engine

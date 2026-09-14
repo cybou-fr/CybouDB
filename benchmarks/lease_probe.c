@@ -52,6 +52,7 @@ void cyboudb_test_mem_free(void *ptr, size_t size) { (void)size; free(ptr); }
 #define Q_FIRST_SEG_OFF 96
 #define Q_ENTRIES_OFF   128
 
+#define QSEG_READY_AT_OFF 40
 #define QSEG_SLOTS_OFF  64
 #define QSEG_CRC_OFF    4092
 #define QUEUE_SLOT_SIZE 64
@@ -122,16 +123,38 @@ static void set_state(uint64_t pos, uint32_t state, uint64_t dl, uint64_t tok) {
     put64(s, QMSG_LEASE_TOKEN_OFF, tok);
 }
 
-/* Every segment the queue names, resealed once after a shape is written. */
+/* Every segment the queue names: its summary written from the slots it now
+   holds, then resealed. The engine maintains QSEG_READY_AT where it is already
+   rewriting the page, so a probe that left it at zero would be measuring a
+   queue no engine produces - and measuring it favourably, since a zero summary
+   is always safe and always costs a full walk. */
 static void seal_all(uint64_t depth) {
+    uint64_t head = u64(qpage, Q_HEAD_OFF), tail = u64(qpage, Q_TAIL_OFF);
     uint64_t segs = (depth + QUEUE_SEG_SLOTS - 1) / QUEUE_SEG_SLOTS;
     for (uint64_t i = 0; i < segs; i++) {
         unsigned char *page = db_queue_seg_addr(ctx, u64(qpage, Q_ENTRIES_OFF
                                                          + (int)i * 8));
-        if (page) {
-            uint32_t c = crc32c(page, QSEG_CRC_OFF);
-            memcpy(page + QSEG_CRC_OFF, &c, 4);
+        uint64_t lo, hi, p, best = UINT64_MAX;
+        uint32_t c;
+        if (!page) continue;
+        lo = i * QUEUE_SEG_SLOTS;
+        hi = lo + QUEUE_SEG_SLOTS;
+        if (lo < head) lo = head;
+        if (hi > tail) hi = tail;
+        for (p = lo; p < hi; p++) {
+            unsigned char *s = page + QSEG_SLOTS_OFF
+                             + (p % QUEUE_SEG_SLOTS) * QUEUE_SLOT_SIZE;
+            uint32_t st;
+            memcpy(&st, s + QMSG_STATE_OFF, 4);
+            if (st == STATE_HELD) { best = 0; break; }
+            if (st == STATE_CLAIMED) {
+                uint64_t d = u64(s, QMSG_LEASE_UNTIL_OFF);
+                if (d < best) best = d;
+            }
         }
+        put64(page, QSEG_READY_AT_OFF, best);
+        c = crc32c(page, QSEG_CRC_OFF);
+        memcpy(page + QSEG_CRC_OFF, &c, 4);
     }
 }
 
@@ -547,7 +570,7 @@ int main(int argc, char **argv) {
         lease_slots_inspected = 0;
         lease_segments_inspected = 0;
         found_naive = db_queue_scan_claimable(ctx, qid, NOW, &pos_naive);
-        printf("| %s | %llu | naive | %s | %llu | %llu | - |\n", scenarios[i],
+        printf("| %s | %llu | segment | %s | %llu | %llu | - |\n", scenarios[i],
                (unsigned long long)depth, found_naive ? "yes" : "no",
                lease_slots_inspected, lease_segments_inspected);
 
