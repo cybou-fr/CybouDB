@@ -16,18 +16,35 @@ moved to [docs/HISTORY.md](docs/HISTORY.md).
 
 ## Where the project is
 
-`v0.5.0-preview.1` is released: Linux x86-64 and Windows x64, on-disk format
+`v0.5.0-preview.2` is released: Linux x86-64 and Windows x64, on-disk format
 v1, tables with secondary indexes, exact vector search, durable queues,
-append-only streams, and one transaction over all of them. Over 18,000
-automated checks run on both platforms in CI on every push.
+append-only streams, and one transaction over all of them.
 
-Five databases written by that build are frozen under
-`tests/compat/v0.5.0-preview.1/` and are never regenerated. They are the
-contract every later release is held to.
+What `preview.2` added is not a feature. A commit proves the transition from
+the generation already validated to the one being published, rather than
+proving the retained graph again - so an `ENQUEUE`, which changes one slot in
+one segment, visits one segment whatever the queue is holding, instead of 163
+at depth 10,000.
 
-One known defect is public and named: **commit cost scales with the retained
-graph rather than the changed one.** Fixing it is the whole of the next
-release.
+Ten databases are frozen under `tests/compat/`, five from each release, and
+are never regenerated. They are the contract every later release is held to,
+and both sets are read by both platforms in CI.
+
+Three things are open and named rather than implied:
+
+* **The flush grows with the size of the file**, and is now the larger term in
+  a commit - about 99% of it on the hardware measured. The instrumentation
+  added in `preview.2` found this; nothing has been done about it, and nothing
+  should be until it is understood.
+* **A retired page with no shared header cannot be attributed to an owner.**
+  The continuation pages of a multi-page run rest on a separate invariant - a
+  run is retired whole, header included - and the negative control for that
+  does not exist yet. See
+  [docs/COMMIT_VALIDATION.md](docs/COMMIT_VALIDATION.md).
+* **The change-set is trusted where it is written.** `cs_leaf_explained` proves
+  the history it tells is consistent with both maps; it cannot prove that
+  `span_mark` handed it the right states to begin with, only that what it
+  recorded adds up.
 
 ---
 
@@ -48,8 +65,9 @@ path and a v1 reader that keeps working — never a quiet break.
 
 | Version | The guarantee it adds | Explicitly not in it |
 | :--- | :--- | :--- |
-| **0.5.0-preview.2** | Predictable commit cost | No new SQL, no new public API |
-| **0.6** | Application-grade embedded workflows | No change to format v1 semantics |
+| ~~**0.5.0-preview.1**~~ | *released* — one file, one transaction | |
+| ~~**0.5.0-preview.2**~~ | *released* — predictable commit cost | |
+| **0.6** | Application-grade embedded workflows | No change to what format v1 means for data already written |
 | **0.7** | ARM64 / Apple Silicon | No rewrite of the portable format |
 | **0.8** | SQL and storage depth | Not becoming PostgreSQL |
 | **0.9** | Vector, index and concurrency depth | Nothing without measurements first |
@@ -57,235 +75,45 @@ path and a v1 reader that keeps working — never a quiet break.
 
 ---
 
-## 0.5.0-preview.2 — Predictable Commit Cost
-
-**The goal in one sentence: the cost of a commit must depend on what the
-transaction changed, not on how much the database has accumulated.**
-
-Today it is the other way round. One `ENQUEUE` changes one slot, and the commit
-visits 2.14 queue segments at depth 0 and 163.41 at depth 10,000 - the whole
-retained directory, re-proved entry by entry. The experiment that skipped CRC
-over old pages showed the cost is the visit and not the checksum, and was
-reverted because it let a damaged old segment through a commit.
-
-The measured baseline is
-[benchmarks/results/2026-09-14-commit-baseline.md](benchmarks/results/2026-09-14-commit-baseline.md),
-and it corrects the claim the preview.1 release notes make. The structural
-defect is real and linear in depth. But on durable storage that walk is 2.4% of
-a commit on Linux and 6.1% on Windows, and **93% of a commit's growth with depth
-is the flush**, whose cost tracks the size of the file. With the flush out of
-the way - the same probe on tmpfs - validation is 72% of a commit at depth
-10,000, which is the honest size of the prize.
-
-So this is an algorithmic fix, stated as one: `O(1)` visits per commit.
-It is not a latency fix, and it is not sold as one.
-
-This release is deliberately narrow. No `CLAIM`/`ACK`, no ARM64, no ANN, no
-`GROUP BY`, no WAL, no encryption, no second writer, no daemon.
-
-### Proof inheritance through COW identity
-
-The commit path today asks *what exists*. It must ask *what changed*:
-
-```text
-now:                                  wanted:
-
-transaction changes one queue slot    published generation already proved
-            ↓                                     ↓
-     candidate generation              transaction change-set
-            ↓                                     ↓
-     walk the retained graph           prove only the changed edges and pages
-            ↓                                     ↓
-  prove every reachable segment        inherit the proof for unchanged,
-            ↓                          immutable subgraphs
-         commit                                   ↓
-                                               commit
-```
-
-The licence to do this is copy-on-write itself. If the previous generation was
-proved valid, and a child page id in the new generation is unchanged, then the
-engine cannot have modified that page — COW forbids in-place mutation. The
-proof is inherited, not skipped.
-
-That distinction is the whole safety argument, and it must stay explicit:
-
-```text
-a normal commit   proves the effects of this transaction,
-                  and inherits proofs of unchanged subgraphs
-
-cyboudb check     proves every reachable page from scratch,
-                  inheriting nothing
-```
-
-`cyboudb check` stays exhaustive. It is the answer to "but what if the file was
-damaged by something that is not the engine", and it is why the engine may
-reason about its own writes without also having to distrust them.
-
-### What the transaction must start knowing
-
-Commit cannot ask what changed until the transaction records it. Centrally —
-no mutation may reach a page without passing through it:
-
-```text
-dirty pages
-dirty objects
-changed catalog entries
-allocation transitions
-retired pages
-changed map leaves
-```
-
-### Incremental object validation
-
-For each object there must be two viewpoints, base and candidate:
-
-```text
-old queue page          new queue page
-        └──── compare ────┘
-                 ↓
-  entries 0..N-1 identical  →  proof inherited
-  tail segment changed      →  validate
-  new segment               →  validate
-```
-
-An `ENQUEUE` at depth 20,000 should do about as much structural work as one at
-depth 20. Streams work the same way, and so does the catalog: an entry whose
-root page id did not change is inherited; one that changed is walked into.
-
-### The allocation map is the hard part
-
-Here the naive rule — *old page, skip it* — is wrong, and the benchmark already
-showed why: `db_bitmap_candidate_payload` tests membership in the **candidate**
-map, which changes on every transaction. The map must be proved as a delta:
-
-```text
-base allocation state  +  this transaction's transitions  =  candidate state
-```
-
-and what gets validated is the legality of each transition:
-
-```text
-FREE     → PAYLOAD
-FREE     → METADATA
-PAYLOAD  → RETIRED
-METADATA → RETIRED
-RETIRED  → FREE
-```
-
-which yields an invariant strong enough to be worth stating on its own:
-
-> The candidate allocation map may differ from the base map only by transitions
-> this transaction registered. An entry that changed for any other reason is a
-> refused commit.
-
-### How success is measured
-
-Not "beat SQLite WAL". That is the wrong target: the two durability barriers
-stay exactly as they are, and nothing here touches them.
-
-| | preview.1 | preview.2 target |
-| :--- | ---: | ---: |
-| Queue segment visits per `ENQUEUE` | grows with depth | **O(1)** |
-| Stream segment visits per `APPEND` | grows with retention | **O(1)** |
-| Validation cost, depth 500 → 10,000 | grows | **near-flat** |
-| Traversal of unchanged graph | present | **none** |
-| Two-sync durability | present | **unchanged** |
-| `cyboudb check` | exhaustive | **exhaustive** |
-| `preview.1` fixtures | read | **must still read** |
-| Format version | 1 | **1** |
-| Public SQL and C API | current | **unchanged** |
-
-Acceptance is counter-based rather than clock-based, because wall time at these
-depths is dominated by a component this work does not touch. Separating
-validation CPU from flush latency needs no unsafe mode in the engine: running
-`benchmarks/commit_probe.c` on tmpfs does it, which is how the 72% figure above
-was obtained.
-
-The design is written out in
-[docs/COMMIT_VALIDATION.md](docs/COMMIT_VALIDATION.md), including the one
-decision that has to be taken before any assembly: proof inheritance narrows
-what a commit catches for queues to the policy every other object type already
-follows, and seven cases in `tests/queue_page_test.c` currently assert the
-opposite.
-
-### The order of work
-
-1. **Contract and roadmap first.** `FORMAT.md`, `CHANGELOG.md` and this file,
-   so the documents agree before the engine moves. *(done)*
-2. **Instrumentation before optimisation.** Counters for visited queue and
-   stream segments, catalog pages, changed map leaves, dirty pages, and
-   validation time. Baseline at depth 0 / 500 / 1,000 / 2,000 / 10,000.
-   *(done - [benchmarks/results/2026-09-14-commit-baseline.md](benchmarks/results/2026-09-14-commit-baseline.md).
-   It confirmed the structural defect and corrected the premise: on durable
-   storage validation is 2.4% of a commit on Linux and 6.1% on Windows, and
-   93% of a commit's growth with depth is the flush, not the walk. So the
-   goal here is algorithmic - O(1) visits - and acceptance is counter-based,
-   not clock-based.)*
-3. **A design document before any assembly.** Base proof, candidate proof,
-   inherited subtree, allocation transition, dirty object, retired page; what a
-   normal commit guarantees and what is left to `cyboudb check`.
-   *(done - [docs/COMMIT_VALIDATION.md](docs/COMMIT_VALIDATION.md). It raises
-   one decision that has to be taken before step 4: inheritance narrows what a
-   commit catches for queues, which is the policy every other object type
-   already follows, but seven cases in `tests/queue_page_test.c` currently
-   assert the opposite.)*
-4. **The transaction change-set.** Every allocate, retire, catalog and object
-   mutation registers centrally. No hidden mutation may bypass it.
-   *(done for allocation transitions - `span_mark` records, `cs_audit` proves
-   the record complete, and `build.sh --audit` arms it so every existing suite
-   becomes that proof. Catalog and object entries follow in step 5, where
-   something first reads them.)*
-5. **Incremental catalog and object walk.** Unchanged root or page id inherits;
-   changed is walked into. Queue and stream compare old and new directories and
-   visit only what moved.
-   *(done - 163.41 segment visits per commit at depth 10,000 became 1.00 at
-   every depth, and validation time 115.7 us became 32.4 us:
-   [benchmarks/results/2026-09-14-commit-inheritance.md](benchmarks/results/2026-09-14-commit-inheritance.md).
-   It landed only after `cyboudb check` was made to report damage instead of
-   recovering from it silently, because the narrowing had nowhere to move the
-   guarantee until then.)*
-6. **Incremental allocation-map proof.** Changed leaves and legal transitions —
-   including the attempt to retire a page still reachable through an inherited
-   subtree.
-   *(done, and measurement changed what it was for: the expensive half was
-   already incremental through `db_bitmap_deep`, and growing a file from
-   60,000 to 4,000,000 pages moves the leaf count from 4 to 249 per commit
-   while validation time stays at 15-18 us. So the work became the invariant
-   rather than the speed - `cs_leaf_explained` requires every entry a touched
-   leaf moved to be one the change-set registered, on every commit, bounded by
-   the change.)*
-7. **Attack the validator.** A corrupt new segment, an illegal map transition, a
-   changed owner, a stale queue entry, a duplicated page, a retired inherited
-   page, a malformed dirty catalog page, rollback, a failure at the first sync,
-   at the second, and a torn publication. Every outcome must be wholly the old
-   generation or wholly the new one.
-   *(done, and it found a real hole: a transaction could retire a page an
-   inherited object still reaches, with the transition registered and every
-   checksum verifying. `tests/validator_attack_test.c` is the regression and
-   it fails on the commit before the fix. `build.sh --cs-overflow` covers the
-   other half - a change-set that cannot be trusted must take the long proof,
-   and with the log forced to overflow the segment visits go back to 33.42 at
-   depth 2,000, which is what says inheritance really did switch itself off.)*
-8. **Only then, benchmark.** The headline chart of preview.2 is not CybouDB
-   against SQLite; it is queue depth against commit validation cost. The line
-   going flat is the deliverable.
-9. **Every existing suite, with no concessions.** Prepared-plan rerun,
-   cross-primitive crash, package consumer, compatibility fixtures, hosted CI on
-   both platforms.
-10. **Freeze `tests/compat/v0.5.0-preview.2/` and release.** The `preview.1`
-    fixtures are not touched.
-
----
-
 ## 0.6 — Application-grade embedded workflows
 
-Two things an embedded database is expected to have, and CybouDB does not.
+**The guarantee: an application can use CybouDB without building SQL by hand,
+and a worker can take a job without holding a transaction open while it does
+the work.**
+
+Two gaps, and they are the two that stop CybouDB being reached for. Everything
+in `0.5` was about the engine being right; this is about it being usable.
+
+Unlike `preview.2`, this release changes the public surface: new C entry
+points, new SQL syntax, and a new incompatible feature bit. It does not change
+what format v1 means for anything already written.
+
+### Before either feature: the debts from preview.2
+
+These come first because they are cheap now and expensive later, and because
+both are load-bearing for a proof the engine already depends on.
+
+1. **A negative control for continuation pages.** An internal hook that retires
+   only the continuation page of a multi-page run, leaving the header
+   `PAYLOAD` and the owning object inherited. The commit must refuse it. If
+   that state cannot be constructed at all, that is an answer too, and the
+   invariant gets written down as enforced by construction rather than by
+   test.
+2. **Measure the flush before proposing anything.** The lesson of `preview.2`
+   was that the assumed cause of a cost was worth 7% and the real one was
+   elsewhere. So: what does `FlushFileBuffers` / `fsync` actually scale with -
+   file size, dirty page count, the extent map, the filesystem? The deliverable
+   is a measurement and a cause, not a fix. Whether a fix belongs in `0.6` at
+   all is a decision that measurement makes, not this document.
 
 ### Parameter binding
 
-The public C API has `prepare`, `step` and `reset` but no `bind`, which leaves
-an application building SQL with `sprintf` — the wrong answer for correctness
-and for safety both. Placeholders in the dialect, and:
+The public C API has `prepare`, `step` and `reset` and no `bind`, which leaves
+an application building SQL with `sprintf`. That is the wrong answer for
+correctness, for performance and for safety, and it is the first thing anyone
+embedding a database looks for.
+
+Placeholders in the dialect, and:
 
 ```text
 cyboudb_bind_null     cyboudb_bind_int32    cyboudb_bind_int64
@@ -293,28 +121,75 @@ cyboudb_bind_float    cyboudb_bind_bool     cyboudb_bind_text
 cyboudb_bind_blob     cyboudb_bind_vector
 ```
 
-This matters more for CybouDB being usable than any further storage feature.
+**The design constraint is already written and already tested.** A prepared
+plan is immutable across executions - `include/sql.inc` says so, and
+`tests/prepared_rerun_test.c` holds the engine to it after a bug where an
+`INSERT` re-run against a grown table silently wrote 154 rows of 205. Bound
+values make that rule load-bearing rather than incidental: a bind writes into
+execution-local state and never into the plan, and a bound statement re-run
+with different values behaves exactly as a freshly prepared one. The re-run
+matrix grows a bound-value axis rather than a new suite beside it.
+
+Gates:
+
+* every type above, bound, re-bound and re-run through the existing re-run
+  matrix - `INT32`, `INT64`, `TEXT`, `BLOB`, `VECTOR`, NULL, empty, multi-row,
+  inside a transaction, after a rollback, with the table grown in between;
+* a bound statement and the equivalent literal statement give identical results
+  and identical counters;
+* the C ABI stays additive: a `0.5` program compiles and links unchanged.
 
 ### Queue leases
 
-`DEQUEUE` inside a transaction is not enough for a worker that takes a job,
-spends a minute on it, and may die in the middle: see
-[docs/QUEUE.md](docs/QUEUE.md). `CLAIM`, `ACK`, `NACK` and `RENEW` turn a
-transactional FIFO into a work queue.
+`DEQUEUE` takes a message inside the transaction that commits the work. That
+is the right shape when the work is a row; it is the wrong shape when the work
+takes a minute and the worker can die in the middle. `CLAIM`, `ACK`, `NACK`
+and `RENEW` turn a transactional FIFO into a work queue.
+[docs/QUEUE.md](docs/QUEUE.md) already says why, and what the format reserves
+for it.
 
-The format already reserves per-message state, a deadline and a lease token —
-but reserving bytes is not enough, because `preview.1` *requires those bytes to
-be zero*. A file with live leases must therefore carry a new incompatible
-feature bit, the next free one:
+Reserving bytes is not enough. `preview.1` and `preview.2` *require* the
+per-message state, the deadline and the lease token to be zero, and
+`queue_page_valid` refuses a queue whose claim cursor has moved ahead of its
+head. A file with live leases is therefore one those builds must refuse -
+cleanly, saying *unsupported feature* rather than *corrupt queue* - which is
+what the next free incompatible bit is for:
 
 | Bit | Name | Requires |
 | --- | --- | --- |
 | 65536 | `QUEUE_LEASES` | `QUEUE` |
 
-so that a `preview.1` binary says *unsupported feature* rather than *corrupt
-queue*. That is the format's own philosophy applied to its first real test: new
-capability → new `flags_incompat` bit → old reader refuses cleanly → new reader
-reads both.
+This is the format's own philosophy meeting its first real test: a new
+capability becomes a new `flags_incompat` bit, an older reader refuses what it
+does not understand, a newer reader reads both. A database that never claims a
+message never sets the bit and stays readable by `0.5`.
+
+**The first question is the clock, and it is a design question.** A lease
+deadline has to survive a crash and a restart, so it cannot be monotonic time -
+a reboot resets that. It cannot be naive wall-clock either: a clock that jumps
+backwards extends every lease and one that jumps forward expires them all at
+once. What a deadline means when the file is opened on another machine, or a
+year later, has to be answered in `docs/QUEUE.md` before any of it is assembly.
+
+Gates:
+
+* a claimed message is invisible to another claimant until its deadline passes
+  or it is `NACK`ed;
+* a crash between `CLAIM` and `ACK` leaves the message claimable again once the
+  deadline passes, and leaves no other trace;
+* `ACK` and the work it acknowledges commit together or not at all - which is
+  the whole reason the queue lives in the same file;
+* a `0.5` build refuses a leases file with *unsupported feature*, held to by a
+  frozen fixture rather than asserted;
+* the compatibility fixtures from both `0.5` releases still read.
+
+### Explicitly not in 0.6
+
+No change to what format v1 means for data already written. No ARM64 - that is
+`0.7` and a whole release of its own. No WAL, no second writer, no encryption,
+no ANN index, no daemon. No further commit-path optimisation unless the flush
+measurement says otherwise, and then as its own release rather than folded
+into this one.
 
 ---
 
@@ -383,7 +258,9 @@ part of the architecture for the weakest reason.
 * [ ] the double-free guard is a heuristic and will need a real allocation
       bitmap once pages carry data
 * [ ] `cyboudb --help` still describes the engine as an "mmap-backed storage
-      engine", which is the positioning the README has since moved away from
+      engine", which is the positioning the README has since moved away from.
+      Left alone through two releases because changing a usage banner during a
+      freeze is exactly the sort of harmless edit that turns out not to be
 
 The full list, including everything already closed, is at the end of
 [docs/HISTORY.md](docs/HISTORY.md).
