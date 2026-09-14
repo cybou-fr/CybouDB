@@ -187,6 +187,165 @@ static void shape(const char *name, uint64_t depth) {
     seal_all(depth);
 }
 
+
+/* --- the challenger: a ready-at tree -----------------------------------------
+ *
+ * One u64 per segment answers the only question a search asks:
+ *
+ *     ready_at = 0            the segment holds a HELD message
+ *                min(deadline of its CLAIMED messages)
+ *                UINT64_MAX   it holds neither
+ *
+ *     ready_at <= now   <=>   this segment has something claimable
+ *
+ * Expiry needs no write, which is what makes this fit the design: a deadline
+ * recorded in the past is exactly what says the segment may now have
+ * something, so time passing changes the answer without anything touching the
+ * page. That was the property a forward-only cursor could not have.
+ *
+ * Internal nodes are the minimum of their children, fanout 8 over 512 leaves:
+ * 64 + 8 + 1 = 73 u64, 584 bytes, which is a corner of one page. The search
+ * descends taking the *first* child with ready_at <= now rather than the
+ * smallest, so FIFO order among claimable messages is preserved: a segment
+ * with a lapsed deadline is taken before a later segment full of fresh ones.
+ *
+ * Leaves are a ring - leaf = absolute segment & 511 - because the directory
+ * shifts entries down when leading segments retire, and a tree indexed by
+ * directory position would have to shift with it, which is a new O(backlog)
+ * operation hiding inside the fix for one. A queue holds at most 495 segments
+ * at once, so two live segments never share a leaf.
+ *
+ * What is counted: an internal node read is a summary node, a leaf read is a
+ * segment page (that is where ready_at would live - QSEG_RESERVED has room),
+ * and the slots of the chosen segment are slots. Building the tree is not
+ * counted, because in the engine the summary is maintained where the segment
+ * page is already being rewritten; it is not work a claim does.
+ */
+#define TREE_LEAVES 512
+static uint64_t t_leaf[TREE_LEAVES];
+static uint64_t t_l2[64];       /* each over 8 leaves */
+static uint64_t t_l1[8];        /* each over 64 */
+static uint64_t t_l0;           /* the root, over 512 */
+
+static unsigned long long summary_nodes_inspected;
+static unsigned long long tree_segments_inspected;
+static unsigned long long tree_slots_inspected;
+
+/* The summary a segment page would carry, computed from the slots it holds. */
+static uint64_t segment_ready_at(uint64_t seg, uint64_t head, uint64_t tail) {
+    uint64_t lo = seg * QUEUE_SEG_SLOTS, hi = lo + QUEUE_SEG_SLOTS, p;
+    uint64_t best = UINT64_MAX;
+    if (lo < head) lo = head;
+    if (hi > tail) hi = tail;
+    for (p = lo; p < hi; p++) {
+        unsigned char *s = slot_at(p);
+        uint32_t st;
+        if (!s) continue;
+        memcpy(&st, s + QMSG_STATE_OFF, 4);
+        if (st == STATE_HELD) return 0;
+        if (st == STATE_CLAIMED) {
+            uint64_t d = u64(s, QMSG_LEASE_UNTIL_OFF);
+            if (d < best) best = d;
+        }
+    }
+    return best;
+}
+
+static void tree_build(uint64_t head, uint64_t tail) {
+    uint64_t first, last, s;
+    int i, c;
+    for (i = 0; i < TREE_LEAVES; i++) t_leaf[i] = UINT64_MAX;
+    if (head != tail) {
+        first = head / QUEUE_SEG_SLOTS;
+        last = (tail - 1) / QUEUE_SEG_SLOTS;
+        for (s = first; s <= last; s++)
+            t_leaf[s & (TREE_LEAVES - 1)] = segment_ready_at(s, head, tail);
+    }
+    for (i = 0; i < 64; i++) {
+        uint64_t m = UINT64_MAX;
+        for (c = 0; c < 8; c++) if (t_leaf[i * 8 + c] < m) m = t_leaf[i * 8 + c];
+        t_l2[i] = m;
+    }
+    for (i = 0; i < 8; i++) {
+        uint64_t m = UINT64_MAX;
+        for (c = 0; c < 8; c++) if (t_l2[i * 8 + c] < m) m = t_l2[i * 8 + c];
+        t_l1[i] = m;
+    }
+    t_l0 = UINT64_MAX;
+    for (i = 0; i < 8; i++) if (t_l1[i] < t_l0) t_l0 = t_l1[i];
+}
+
+/* level 0 root, 1 -> t_l1, 2 -> t_l2, 3 -> leaves. */
+static uint64_t node_value(int level, int idx) {
+    switch (level) {
+    case 0: return t_l0;
+    case 1: return t_l1[idx];
+    case 2: return t_l2[idx];
+    default: return t_leaf[idx];
+    }
+}
+
+/* The first leaf in [lo, hi] whose ready_at is not in the future, or -1.
+   Children are tried in order, so the answer is the leftmost one. */
+static long node_search(int level, int idx, int lo, int hi, uint64_t now) {
+    int span = 1 << (3 * (3 - level));
+    int base = idx * span;
+    int c;
+    if (base > hi || base + span - 1 < lo) return -1;
+    if (level == 3) tree_segments_inspected++;
+    else summary_nodes_inspected++;
+    if (node_value(level, idx) > now) return -1;
+    if (level == 3) return base;
+    for (c = 0; c < 8; c++) {
+        long r = node_search(level + 1, idx * 8 + c, lo, hi, now);
+        if (r >= 0) return r;
+    }
+    return -1;
+}
+
+/* The same question db_queue_scan_claimable answers, asked of the tree. */
+static int tree_scan(uint64_t now, uint64_t *out_position) {
+    uint64_t head = u64(qpage, Q_HEAD_OFF), tail = u64(qpage, Q_TAIL_OFF);
+    uint64_t first, last, seg, lo, hi, p;
+    int a, b;
+    long leaf = -1;
+    if (head == tail) return 0;
+    first = head / QUEUE_SEG_SLOTS;
+    last = (tail - 1) / QUEUE_SEG_SLOTS;
+    a = (int)(first & (TREE_LEAVES - 1));
+    b = (int)(last & (TREE_LEAVES - 1));
+    /* The live segments are contiguous in absolute order and may wrap the
+       ring, in which case they are two contiguous leaf ranges, searched in
+       the order the positions run. */
+    if (a <= b) {
+        leaf = node_search(0, 0, a, b, now);
+    } else {
+        leaf = node_search(0, 0, a, TREE_LEAVES - 1, now);
+        if (leaf < 0) leaf = node_search(0, 0, 0, b, now);
+    }
+    if (leaf < 0) return 0;
+    seg = first + (((uint64_t)leaf - (uint64_t)a) & (TREE_LEAVES - 1));
+    if (seg > last) return 0;
+
+    lo = seg * QUEUE_SEG_SLOTS;
+    hi = lo + QUEUE_SEG_SLOTS;
+    if (lo < head) lo = head;
+    if (hi > tail) hi = tail;
+    for (p = lo; p < hi; p++) {
+        unsigned char *s = slot_at(p);
+        uint32_t st;
+        if (!s) continue;
+        tree_slots_inspected++;
+        memcpy(&st, s + QMSG_STATE_OFF, 4);
+        if (st == STATE_HELD ||
+            (st == STATE_CLAIMED && u64(s, QMSG_LEASE_UNTIL_OFF) <= now)) {
+            if (out_position) *out_position = p;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     cyboudb_db *db = NULL;
     static unsigned char image[4096];
@@ -225,20 +384,47 @@ int main(int argc, char **argv) {
     if (db_catalog_get(ctx, qid, &page) != 0 || !page) return 2;
     qpage = db_queue_seg_addr(ctx, page);
 
-    printf("| scenario | depth | found | slots inspected | segments |\n");
-    printf("| :--- | ---: | :--- | ---: | ---: |\n");
+    printf("| scenario | depth | strategy | found | slots | segments | summary |\n");
+    printf("| :--- | ---: | :--- | :--- | ---: | ---: | ---: |\n");
     for (i = 0; i < 5; i++) {
-        uint64_t pos = 0;
-        int found;
+        uint64_t pos_naive = 0, pos_tree = 0;
+        int found_naive, found_tree;
         if (strcmp(want, "all") && strcmp(want, scenarios[i])) continue;
         shape(scenarios[i], depth);
+
         lease_slots_inspected = 0;
         lease_segments_inspected = 0;
-        found = db_queue_scan_claimable(ctx, qid, NOW, &pos);
-        printf("| %s | %llu | %s | %llu | %llu |\n", scenarios[i],
-               (unsigned long long)depth,
-               found ? "yes" : "no",
+        found_naive = db_queue_scan_claimable(ctx, qid, NOW, &pos_naive);
+        printf("| %s | %llu | naive | %s | %llu | %llu | - |\n", scenarios[i],
+               (unsigned long long)depth, found_naive ? "yes" : "no",
                lease_slots_inspected, lease_segments_inspected);
+
+        /* Built outside the measured region: in the engine the summary is
+           maintained where the segment page is already being rewritten, so it
+           is not work a claim does. */
+        tree_build(u64(qpage, Q_HEAD_OFF), u64(qpage, Q_TAIL_OFF));
+        summary_nodes_inspected = 0;
+        tree_segments_inspected = 0;
+        tree_slots_inspected = 0;
+        found_tree = tree_scan(NOW, &pos_tree);
+        printf("| %s | %llu | tree | %s | %llu | %llu | %llu |\n", scenarios[i],
+               (unsigned long long)depth, found_tree ? "yes" : "no",
+               tree_slots_inspected, tree_segments_inspected,
+               summary_nodes_inspected);
+
+        /* The comparison is worth nothing unless both answer the same
+           question. A strategy that is fast and wrong is not a candidate, and
+           this is the check that would have caught the ring's order if the
+           rotation had been got wrong. */
+        if (found_naive != found_tree ||
+            (found_naive && pos_naive != pos_tree)) {
+            printf("MISMATCH: naive %s at %llu, tree %s at %llu\n",
+                   found_naive ? "found" : "none",
+                   (unsigned long long)pos_naive,
+                   found_tree ? "found" : "none",
+                   (unsigned long long)pos_tree);
+            return 1;
+        }
     }
     cyboudb_close(db);
     return 0;

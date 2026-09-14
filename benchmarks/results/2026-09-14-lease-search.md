@@ -85,6 +85,10 @@ segments. That is a factor of 62 and not an answer on its own: at the ceiling it
 turns 29,700 into 480, which is better and still linear. What sits above the
 segments is the open part, and it now has a baseline to beat.
 
+**It has since been beaten**, by a hierarchy over those summaries:
+[2026-09-14-lease-ready-at-tree.md](2026-09-14-lease-ready-at-tree.md). 29,700
+slots became 2, and the `empty` shape became one summary node.
+
 ---
 
 ## Reproducing

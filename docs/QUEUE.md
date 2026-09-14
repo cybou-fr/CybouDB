@@ -746,19 +746,50 @@ fresh message is at the head, and the whole queue for every other shape - 100,
 1,000, 10,000, 29,700 slots inspected, exactly linear in what is retained. The
 `stuck` shape needs one slow worker and nothing else to produce it.
 
-**The shape an answer probably has.** What can be written cheaply is a summary
-per segment, because every operation that changes a slot already writes that
-slot's segment page: whether the segment holds any `HELD` slot, and the
-earliest deadline among its `CLAIMED` ones. Both are facts as of the last
-write, and both are enough to *skip* a segment without reading it - a segment
-with no `HELD` slot and an earliest deadline in the future has nothing to give.
-Crucially, skipping stays correct without any write at expiry: a deadline
-recorded in the past is exactly what says the segment may now have something.
+**The shape an answer has, now measured.** What can be written cheaply is a
+summary per segment, because every operation that changes a slot already writes
+that slot's segment page. One `u64` carries it:
 
-That reduces the walk from slots to segments, which is a factor of 62 and not
-an answer on its own - a million-deep queue is sixteen thousand segments. What
-sits above that, and whether it needs the second directory level the queue page
-already reserves bytes for, is the part to decide with a measurement in hand.
+```text
+ready_at = 0                              a HELD message is in this segment
+           min(deadline of its CLAIMED)   only claims, none free yet
+           UINT64_MAX                      neither
+
+ready_at <= now   <=>   something here is claimable
+```
+
+Crucially, skipping stays correct **without any write at expiry**: a deadline
+recorded in the past is exactly what says the segment may now have something.
+That is the property a forward-only cursor could not have.
+
+Segments alone are a factor of 62 and not an answer, so the summaries carry a
+hierarchy - internal nodes are the minimum of their children, fanout 8 over 512
+leaves, which is 73 `u64` in a corner of one page. The descent takes the
+*first* child whose `ready_at` is not in the future rather than the smallest,
+so FIFO order survives; a min-heap would answer the wrong question, because the
+earliest deadline is not the earliest position. Leaves are a ring keyed by
+`absolute segment & 511`, so retiring leading segments does not shift the tree
+the way it shifts the directory.
+
+Measured against the baseline on the same fixtures -
+[benchmarks/results/2026-09-14-lease-ready-at-tree.md](../benchmarks/results/2026-09-14-lease-ready-at-tree.md):
+
+| depth | naive slots | tree slots | segments | summary nodes |
+| ----: | ----------: | ---------: | -------: | ------------: |
+| 100 | 100 | 38 | 2 | 3 |
+| 1,000 | 1,000 | 8 | 1 | 5 |
+| 10,000 | 10,000 | 18 | 2 | 9 |
+| 29,700 | 29,700 | 2 | 8 | 13 |
+
+and `empty` - nothing claimable anywhere - answers from the root alone: one
+summary node, no segment pages, no slots.
+
+**It is still a candidate.** What the summary costs to *maintain* at `ENQUEUE`,
+`CLAIM`, `ACK` and `NACK` is unmeasured, and a summary that is cheap to read
+and expensive to keep is not a win. Nothing on disk is decided: `ready_at`
+would sit in `QSEG_RESERVED`, and a root pointer would want part of
+`Q_RESERVED2` - which is reserved for a second directory level and cannot be
+taken on a benchmark's say-so.
 
 **So the order is the one `preview.2` established: instrument first.** Two
 counters, before any strategy is chosen:
