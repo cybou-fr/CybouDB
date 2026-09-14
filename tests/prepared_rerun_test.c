@@ -350,6 +350,139 @@ int main(int argc, char **argv) {
           count(db, "SELECT COUNT(*) FROM literal") &&
           every_text_is(db, "SELECT t FROM literal WHERE a = 2", "row-2", 1));
 
+    /* --- the mutation half of the bound matrix -----------------------------
+       The INSERT case above is the easy one: a bound INSERT writes what it is
+       given. A bound UPDATE or DELETE is where this file's own bug class meets
+       parameters, because both read the table before they change it, and both
+       used to read it as it was when the plan was made. So the table is grown
+       between executions on purpose, and what is checked is the number of rows
+       the statement reached rather than that it returned DONE. */
+    check("a table to mutate repeatedly",
+          cyboudb_exec(db, "CREATE TABLE bmut (k INT64, v INT64, t TEXT NULL)")
+              == CybouDB_OK);
+    {
+        int i, made = 1;
+        for (i = 0; i < 6; i++) {
+            char z[160];
+            sprintf(z, "INSERT INTO bmut VALUES (%d, 0, NULL)", i % 3);
+            if (cyboudb_exec(db, z) != CybouDB_OK) made = 0;
+        }
+        check("six rows, two of each key", made &&
+              count(db, "SELECT COUNT(*) FROM bmut") == 6);
+    }
+
+    check("a prepared bound UPDATE",
+          cyboudb_prepare(db, "UPDATE bmut SET v = ? WHERE k = ?", &st)
+              == CybouDB_OK);
+    if (st) {
+        check("first execution reaches both rows with key 0",
+              cyboudb_bind_int64(st, 0, 11) == CybouDB_OK &&
+              cyboudb_bind_int64(st, 1, 0) == CybouDB_OK &&
+              cyboudb_step(st) == CybouDB_DONE &&
+              cyboudb_reset(st) == CybouDB_OK &&
+              count(db, "SELECT COUNT(*) FROM bmut WHERE v = 11") == 2);
+
+        /* Sixty more rows, twenty of each key, after the plan was made. */
+        for (i = 0; i < 60; i++) {
+            char z[160];
+            sprintf(z, "INSERT INTO bmut VALUES (%d, 0, NULL)", i % 3);
+            if (cyboudb_exec(db, z) != CybouDB_OK) break;
+        }
+        check("sixty more rows arrive", count(db, "SELECT COUNT(*) FROM bmut") == 66);
+
+        check("the second execution reaches every row its key names now, "
+              "not the number the table had when it was prepared",
+              cyboudb_bind_int64(st, 0, 22) == CybouDB_OK &&
+              cyboudb_bind_int64(st, 1, 1) == CybouDB_OK &&
+              cyboudb_step(st) == CybouDB_DONE &&
+              cyboudb_reset(st) == CybouDB_OK &&
+              count(db, "SELECT COUNT(*) FROM bmut WHERE v = 22") == 22);
+
+        check("and the third writes its own value, leaving the second's alone",
+              cyboudb_bind_int64(st, 0, 33) == CybouDB_OK &&
+              cyboudb_bind_int64(st, 1, 2) == CybouDB_OK &&
+              cyboudb_step(st) == CybouDB_DONE &&
+              count(db, "SELECT COUNT(*) FROM bmut WHERE v = 33") == 22 &&
+              count(db, "SELECT COUNT(*) FROM bmut WHERE v = 22") == 22 &&
+              count(db, "SELECT COUNT(*) FROM bmut WHERE v = 11") == 2);
+    }
+    cyboudb_finalize(st);
+    st = NULL;
+
+    /* The varlen case, which is the one that crashed. A bound TEXT assignment
+       carries a pointer into the engine's own copy buffer; re-executing used to
+       be where a pointer that had been overwritten with an extent root was read
+       as an address. The caller's buffer is destroyed after each bind so that
+       nothing but the engine's copy can be what lands in the row. */
+    check("a prepared bound TEXT assignment, three executions",
+          cyboudb_prepare(db, "UPDATE bmut SET t = ? WHERE k = 0", &st)
+              == CybouDB_OK);
+    if (st) {
+        int ok = 1;
+        for (i = 0; i < 3; i++) {
+            char *scratch = malloc(64);
+            int n = sprintf(scratch, "pass-%d", i);
+            if (cyboudb_bind_text(st, 0, scratch, n) != CybouDB_OK) ok = 0;
+            memset(scratch, '!', 64);
+            free(scratch);
+            if (cyboudb_step(st) != CybouDB_DONE) ok = 0;
+            if (cyboudb_reset(st) != CybouDB_OK) ok = 0;
+        }
+        check("all three executed", ok);
+        check("and every row with that key holds the last value bound, "
+              "readable rather than a page id",
+              every_text_is(db, "SELECT t FROM bmut WHERE k = 0", "pass-2",
+                            (int)count(db, "SELECT COUNT(*) FROM bmut "
+                                           "WHERE k = 0")));
+    }
+    cyboudb_finalize(st);
+    st = NULL;
+
+    check("a prepared bound DELETE",
+          cyboudb_prepare(db, "DELETE FROM bmut WHERE k = ?", &st)
+              == CybouDB_OK);
+    if (st) {
+        check("removes every row its key names",
+              cyboudb_bind_int64(st, 0, 0) == CybouDB_OK &&
+              cyboudb_step(st) == CybouDB_DONE &&
+              cyboudb_reset(st) == CybouDB_OK &&
+              count(db, "SELECT COUNT(*) FROM bmut") == 44 &&
+              count(db, "SELECT COUNT(*) FROM bmut WHERE k = 0") == 0);
+        check("a second execution with another key removes that one",
+              cyboudb_bind_int64(st, 0, 1) == CybouDB_OK &&
+              cyboudb_step(st) == CybouDB_DONE &&
+              cyboudb_reset(st) == CybouDB_OK &&
+              count(db, "SELECT COUNT(*) FROM bmut") == 22);
+        check("and a third naming nothing removes nothing",
+              cyboudb_bind_int64(st, 0, 999) == CybouDB_OK &&
+              cyboudb_step(st) == CybouDB_DONE &&
+              count(db, "SELECT COUNT(*) FROM bmut") == 22);
+    }
+    cyboudb_finalize(st);
+    st = NULL;
+
+    /* And the same statements written with literals, to the same table shape,
+       have to leave the same thing behind. A bound mutation that had drifted
+       from its literal twin would still report DONE. */
+    check("a literal twin of the mutation matrix",
+          cyboudb_exec(db, "CREATE TABLE lmut (k INT64, v INT64)")
+              == CybouDB_OK);
+    {
+        int made = 1;
+        for (i = 0; i < 6; i++) {
+            char z[160];
+            sprintf(z, "INSERT INTO lmut VALUES (%d, 0)", i % 3);
+            if (cyboudb_exec(db, z) != CybouDB_OK) made = 0;
+        }
+        check("six rows in it", made &&
+              cyboudb_exec(db, "UPDATE lmut SET v = 11 WHERE k = 0")
+                  == CybouDB_OK &&
+              cyboudb_exec(db, "DELETE FROM lmut WHERE k = 1") == CybouDB_OK);
+        check("and the literal form left what the bound form left",
+              count(db, "SELECT COUNT(*) FROM lmut WHERE v = 11") == 2 &&
+              count(db, "SELECT COUNT(*) FROM lmut") == 4);
+    }
+
     check("the file is still coherent", cyboudb_close(db) == CybouDB_OK);
 
     printf("prepared re-run suite: %d passed, %d failed\n", checks - failures,

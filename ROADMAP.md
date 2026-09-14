@@ -216,13 +216,15 @@ notices be the thing that is missing. The promise stays; the work finishes:
 2. UPDATE SET values                done
 3. UPDATE predicate                 done
 4. DELETE predicate                 done
-5. the prepared re-run matrix x parameters
+5. the prepared re-run matrix x parameters   done
 ```
 
 Steps 3 and 4 cost nothing: every predicate in the dialect is built by the same
 `bind_expr`, so teaching it about placeholders taught `UPDATE` and `DELETE` at
 the same time as `SELECT`. They still get tests - a thing that works by
 accident is a thing that can stop working by accident.
+
+**Parameter binding is closed.** What remains in `0.6` is queue leases.
 
 The CRUD path, not parameters everywhere. `?` in a projection list, in an
 `ORDER BY`, in a `LIMIT` or as a table name is not part of this and is not
