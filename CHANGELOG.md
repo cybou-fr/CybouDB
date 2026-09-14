@@ -28,6 +28,102 @@ earlier one.
 A change to the format version itself would be announced on its own, with a
 migration path, and is not something a minor release does quietly.
 
+## [0.5.0-preview.2] - 2026-09-14
+
+One thing, and it is not a feature: **a commit proves the transition from the
+generation already validated to the one being published, instead of proving
+the retained graph again.**
+
+The on-disk format is unchanged and still version 1. Databases written by
+`0.5.0-preview.1` open and are written to; `tests/compat_tests.py` holds this
+release to that against the fixtures that release froze. No SQL changed, no C
+ABI changed, nothing was added to the command line.
+
+### The change
+
+An `ENQUEUE` changes one slot in one segment. The commit used to walk every
+retained segment to prove what it published - 2.14 segment visits at queue
+depth 0 and 163.41 at depth 10,000. It now visits **one, at every depth**,
+and does the same for a stream `APPEND`.
+
+The licence to skip is copy-on-write: a page the engine did not rewrite has
+the content it had when the commit that published it proved it. An object
+whose directory entry has not moved is inherited whole; inside an object the
+transaction did touch, entries that name the same page at the same position
+are inherited and the rest are validated. `cyboudb check` inherits nothing and
+still proves every page.
+
+Validation time at depth 10,000 went from 115.7 us to 31.7 us on Linux. That
+is the honest size of it, and the honest limit is this: the two durability
+barriers are 99% of a commit on the hardware measured, they were not touched,
+and a deep queue is still slow to commit. What this removes is the part of the
+cost that grew with what the database had kept, not the cost.
+[benchmarks/results/2026-09-14-preview2-final.md](benchmarks/results/2026-09-14-preview2-final.md)
+has the numbers, both platforms, with the previous behaviour beside them.
+
+### Changed: what `cyboudb check` answers
+
+**`cyboudb check` now exits non-zero on a file it used to call `Status: OK`.**
+
+It was an ordinary open with deep verification, and an ordinary open recovers:
+when the newest generation did not validate it fell back to the one before and
+reported success. So a damaged newest generation was reported as healthy -
+exactly the case where someone needs to be told, since the database keeps
+working on the older state.
+
+`check` now asks about integrity rather than recoverability. A superblock
+whose own checksum verifies while the graph it published does not is reported
+as damage. A torn superblock is not: it fails its own checksum, it is the
+ordinary residue of an interrupted publication, and it still reports `OK`.
+
+**Nothing about an ordinary open changed.** It still selects the newest valid
+generation, still falls back, still reports success. Scripts that treat a
+non-zero `check` as "this file is unusable" should read it as "this file is
+damaged, and an ordinary open would quietly use an older generation" - which
+is a different and more useful statement. See
+[docs/RECOVERY.md](docs/RECOVERY.md).
+
+### Changed: what a commit catches
+
+A commit no longer reads into an object it did not touch, so damage to a page
+an earlier generation wrote is no longer refused at commit time. That was the
+queue's behaviour alone; every other object type has worked this way since
+`db_bitmap_deep`. `cyboudb check` is what reports that damage now, and the
+change was only made after `check` was able to.
+
+### Fixed
+
+- A commit could retire a page that an inherited object still reached, with
+  the transition registered and every checksum verifying - the candidate then
+  said both "this object reaches page X" and "page X is retired". Introduced
+  by proof inheritance during this cycle and found by
+  `tests/validator_attack_test.c`, which attacks the reasoning rather than the
+  bytes.
+- An overflowed change-set no longer permits inheritance anywhere. It is the
+  record of what a transaction did; an incomplete one proves nothing, and the
+  commit takes the long proof instead.
+- `tools/package.bat` wrote its checksum line with CRLF, so `sha256sum -c`
+  looked for a file whose name ended in a carriage return. The sums were
+  right; only verifying them was broken.
+
+### Testing
+
+Over 18,000 automated checks on Linux and Windows, and three builds of the
+engine in CI rather than one: the ordinary build, `--audit` (every commit
+proves the change-set complete against an exhaustive map walk), and
+`--cs-overflow` (a change-set too small to hold a transaction, so the fallback
+taken when the log cannot be trusted is a path the suites walk). New suites:
+`tests/validator_attack_test.c` and `tests/integrity_tests.py`. The manifest
+is [docs/TESTING.md](docs/TESTING.md); the design and its limits are
+[docs/COMMIT_VALIDATION.md](docs/COMMIT_VALIDATION.md).
+
+### Still open
+
+The flush grows with the size of the file, and is now the larger term in a
+commit - found by the instrumentation this cycle added, and not addressed.
+No ARM64, no WAL, no second writer, no encryption, no ANN index, no queue
+leases, no daemon.
+
 ## [0.5.0-preview.1] - 2026-09-14
 
 The first release. What follows is what exists rather than what changed, since
@@ -93,6 +189,9 @@ an index covers one column.
 
 ### Known performance limitation
 
+*(Fixed in 0.5.0-preview.2. Kept as written, because a release note is a record
+of what was true when it shipped.)*
+
 Commit validation scales with the number of retained queue and stream segments.
 Enqueueing one message per transaction costs 812 us at a queue depth of 500 and
 1,193 us at 2,000, where every SQLite configuration measured stays flat.
@@ -105,6 +204,10 @@ Two workarounds, both effective: batch, which takes a message from 1,120 us to
 [benchmarks/results/2026-09-13-queue.md](benchmarks/results/2026-09-13-queue.md),
 cause located, and the proper fix - incremental validation - is the first engine
 work after this preview.
+
+The measurement that followed corrected one thing in this paragraph: the walk
+is a real term and removing it is a real change, but it was 2.4% of a commit on
+Linux and 6.1% on Windows. 93% of a commit's growth with depth was the flush.
 
 ### Testing
 

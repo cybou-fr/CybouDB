@@ -4,7 +4,7 @@
 #
 # Build the Linux release archive and its checksum.
 #
-#   sh tools/package.sh 0.5.0-preview.1
+#   sh tools/package.sh 0.5.0-preview.2
 #
 # The library is rebuilt with --lib immediately before it is copied, and that
 # is not a formality: `--c-tests` writes the same build/libcyboudb.a with

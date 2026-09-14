@@ -4,7 +4,7 @@ rem SPDX-License-Identifier: Apache-2.0
 rem
 rem Build the Windows release archive and its checksum.
 rem
-rem   tools\package.bat 0.5.0-preview.1
+rem   tools\package.bat 0.5.0-preview.2
 rem
 rem The library is rebuilt with --lib immediately before it is copied, and that
 rem is not a formality: --c-tests writes the same build\cyboudb.lib with

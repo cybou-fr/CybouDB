@@ -27,7 +27,7 @@ CybouDB is implemented from scratch in x86-64 assembly. On Linux it talks to the
 kernel through raw system calls; on Windows it uses kernel32. There is no libc,
 no CRT and no third-party runtime.
 
-Current release **[`v0.5.0-preview.1`](https://github.com/cybou-fr/CybouDB/releases/tag/v0.5.0-preview.1)** · Linux x86-64 · Windows x64 · Apache-2.0
+Current release **[`v0.5.0-preview.2`](https://github.com/cybou-fr/CybouDB/releases/tag/v0.5.0-preview.2)** · Linux x86-64 · Windows x64 · Apache-2.0
 
 **Preview software. Not production-ready.**
 
@@ -192,13 +192,26 @@ plan uses an index for an equality or a range over an indexed column and for
 nothing else. Compression exists for CONST/FOR runs inside fixed-size slots but
 does not yet reduce the file size on disk.
 
-**Known performance limitation:** commit validation currently scales with the
-number of retained queue and stream segments, so a deep queue makes each commit
-more expensive — 812 us a message at depth 500 against 1,193 us at depth 2,000.
-Correctness, crash safety and corruption detection are unaffected; the
-workarounds are batching and keeping retained depth bounded with `DEQUEUE` or
-`TRIM`. It is measured, the cause is located, and fixing it properly is the
-first engine work after this preview.
+**What `preview.2` changed:** a commit used to prove the whole retained graph
+again, so an `ENQUEUE` visited 163 queue segments at depth 10,000 and 2 at
+depth 0. It now proves the transition from the generation already validated to
+the one being published, and visits **one segment at every depth**. Measured in
+[benchmarks/results/2026-09-14-preview2-final.md](benchmarks/results/2026-09-14-preview2-final.md).
+
+That is an algorithmic change and is reported as one. It does not make a deep
+queue fast to commit: the two durability barriers dominate the clock — 99% of a
+commit on this hardware — and they were not touched. What it removes is the
+part of the cost that grew with what the database had kept.
+
+**`cyboudb check` changed what it answers.** It used to be an ordinary open
+with deep verification, and an ordinary open recovers: a damaged newest
+generation reported `Status: OK` because an older one was intact. It now
+reports damage and exits non-zero in that case. Ordinary opens still recover,
+silently, as before. See [docs/RECOVERY.md](docs/RECOVERY.md).
+
+**Still open:** the flush itself grows with the size of the file, which is now
+the larger term in a commit. No ARM64, no WAL, no second writer, no encryption,
+no ANN index, no queue leases, no daemon.
 
 **CybouDB is not production-ready**, and a preview is a thing to read and try
 rather than a thing to run a business on.
