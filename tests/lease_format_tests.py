@@ -15,7 +15,7 @@ what every released 0.5 binary is. So this suite runs two binaries against the
 same files and checks that each one is right about them, instead of asserting
 that a binary nobody here can run would have been.
 
-Four things:
+Five things:
 
  1. A leases database is refused by the reader that does not know the bit, and
     refused with the feature message rather than a damage one.
@@ -23,9 +23,22 @@ Four things:
     and not about the build being broken.
  3. The build that does know the bit opens both - the promise runs one way, and
     this is the other direction of it.
- 4. `QUEUE_LEASES` without `QUEUE` is refused by *both*, because a dependent bit
-    without its prerequisite is a malformed file rather than a newer one. That
-    case is made by hand: no creator produces it, which is the point.
+ 4. A leases database is *exactly* the default database plus one bit. Not "the
+    same sort of thing" - the same mask, compared between two files the two
+    creators actually wrote. The comment on the creator claimed create-large
+    plus leases and the code said default plus leases, which is a different set
+    by one capability; a test that only looked for the leases bit being present
+    would not have noticed, and did not.
+ 5. `QUEUE_LEASES` without `QUEUE` is refused by *both*. That case is made by
+    hand: no creator produces it, which is the point.
+
+    The two refusals carry the same message, and this suite does not pretend
+    otherwise. Internally the reasons differ - one build knows the bit and
+    finds its prerequisite missing, the other does not know the bit at all -
+    but the format deliberately answers both with *incompatible features*, and
+    four other suites assert exactly that for other dependency violations.
+    Splitting the diagnostic is a change to what the format says to everyone,
+    not a test improvement.
 
     Usage: python tests/lease_format_tests.py <cyboudb> <cyboudb_nolease>
 """
@@ -118,6 +131,13 @@ def main():
         check("and an ordinary database does not carry it", ok and
               features_of(plain) & FEATURE_QUEUE_LEASES == 0, out)
 
+        # The invariant, not the presence check. A creator that quietly gained
+        # or lost any other capability fails here, which is how the drift this
+        # suite was extended for would have been caught.
+        check("a leases database is the default database plus exactly one bit",
+              features_of(leased) == features_of(plain) | FEATURE_QUEUE_LEASES,
+              f"default={features_of(plain):#x} leased={features_of(leased):#x}")
+
         # 1. The refusal, and what it says.
         code, out = run(old, "info", leased)
         check("a reader that does not know the bit refuses the file",
@@ -138,7 +158,7 @@ def main():
         code, out = run(new, "check", plain)
         check("and still reads one without it", code == 0, out)
 
-        # 4. A dependent bit with no prerequisite is malformed, not newer.
+        # 5. A dependent bit with no prerequisite is refused by both.
         ok, out = create(new, "create", orphan)
         check("a database to make malformed by hand", ok, out)
         base = features_of(orphan)
@@ -149,6 +169,8 @@ def main():
               code != 0, out)
         code, out = run(old, "info", orphan)
         check("and by the one that knows neither", code != 0, out)
+        check("both calling it a capability problem, which is what it is",
+              "incompatible features" in out.lower(), out)
 
     print(f"\nLease format suite: {passed} passed, {failed} failed")
     return 0 if failed == 0 else 1

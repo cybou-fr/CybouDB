@@ -171,6 +171,20 @@
 ; See docs/QUEUE.md for the semantics and docs/FORMAT.md for the promise.
 %define CybouDB_FEATURE_QUEUE_LEASES 65536
 
+; --- What a creator writes ---------------------------------------------------
+; The profile a caller who was not asked gets, spelled once. It was spelled
+; twice - db_create_tombstones and db_create_leases each carried the list - and
+; the second drifted from its own comment within a day of being written: it
+; claimed to be create-large plus leases and was actually the default profile
+; plus leases, which is a different set by one capability. Two copies of a
+; feature mask is one copy too many, so there is one.
+%define CybouDB_FEATURES_DEFAULT (CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR | CybouDB_FEATURE_TOMBSTONES | CybouDB_FEATURE_INDEX | CybouDB_FEATURE_QUEUE | CybouDB_FEATURE_STREAM)
+
+; The same thing with the one capability that has to be chosen when the file is
+; made. Defined from the default rather than beside it, so the two cannot
+; disagree about anything except the bit that is the point.
+%define CybouDB_FEATURES_LEASES (CybouDB_FEATURES_DEFAULT | CybouDB_FEATURE_QUEUE_LEASES)
+
 ; What this build understands. Every bit above, unless the build was made to
 ; pretend otherwise: --no-leases drops the leases bit so that a reader from
 ; before it existed can be tested rather than described. A file carrying a bit

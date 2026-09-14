@@ -105,7 +105,7 @@ being right; this is about it being usable.
 ```text
 0.6
  ├─ flush investigation    done
- ├─ parameter binding      INSERT done, predicate binding to go
+ ├─ parameter binding      done
  └─ queue leases
 ```
 
@@ -261,6 +261,38 @@ Two gates, both counter-based and both guarded against being vacuous, in
 Both would pass trivially on a small table, so the fixtures are four thousand
 rows and two thousand rows respectively. That is the counter comparison the
 INSERT gates only half made, arriving where it is load-bearing.
+
+### Before the release: asking for a capability from C
+
+`cyboudb create-leases` makes a database with leases. `cyboudb_create` does
+not, and there is no public way to ask for one - the C API documents a single
+canonical profile and takes no options.
+
+That is fine while leases have no behaviour and it is a blocker for the
+release, because `0.6` is the release about embedded workflows and an embedded
+application should not shell out to a command line to create the file it needs.
+
+The answer is not `cyboudb_create_leases`. `0.7` brings encryption, which is
+also decided when the file is made, and a function per creation-time capability
+is a surface that grows without bound. One additive entry point instead, with
+room to grow:
+
+```c
+typedef struct cyboudb_create_options {
+    uint32_t struct_size;
+    uint32_t flags;
+} cyboudb_create_options;
+
+#define CybouDB_CREATE_QUEUE_LEASES 0x0001
+
+int cyboudb_create_with_options(const char *path, uint64_t pages,
+                                const cyboudb_create_options *options,
+                                cyboudb_db **out_db);
+```
+
+`cyboudb_create` stays forever as the shorthand for the canonical default, so
+nothing that exists has to change. `struct_size` is what lets `0.7` add fields
+without a third function.
 
 ### Queue leases
 

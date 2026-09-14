@@ -117,11 +117,17 @@ db_create_pax:
 db_create_large:
     mov eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR | CybouDB_FEATURE_INDEX | CybouDB_FEATURE_QUEUE | CybouDB_FEATURE_STREAM
     jmp create_common
-; Everything create-large has, plus leases. A separate creator and not a flag
-; on another one, because the bit can only be set at creation - see
-; docs/QUEUE.md - and a creator is the honest place to say so.
+; The profile a caller who was not asked gets, plus the one capability that
+; cannot be added afterwards. A separate creator and not a flag on another one,
+; because the bit can only be set at creation - see docs/QUEUE.md - and a
+; creator is the honest place to say so.
+;
+; Defined from CybouDB_FEATURES_DEFAULT rather than listed again, so that a
+; leases database is exactly the default database plus one bit and cannot
+; quietly become anything else. tests/lease_format_tests.py asserts that
+; equality against the two files rather than against the source.
 db_create_leases:
-    mov eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR | CybouDB_FEATURE_TOMBSTONES | CybouDB_FEATURE_INDEX | CybouDB_FEATURE_QUEUE | CybouDB_FEATURE_STREAM | CybouDB_FEATURE_QUEUE_LEASES
+    mov eax, CybouDB_FEATURES_LEASES
     jmp create_common
 db_create_compressed:
     mov eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_COMPRESSION
@@ -140,7 +146,7 @@ db_create_compressed:
 ; user should get.
 db_create_default:
 db_create_tombstones:
-    mov eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR | CybouDB_FEATURE_TOMBSTONES | CybouDB_FEATURE_INDEX | CybouDB_FEATURE_QUEUE | CybouDB_FEATURE_STREAM
+    mov eax, CybouDB_FEATURES_DEFAULT
     jmp create_common
 create_common:
     FRAME_BEGIN 64 + CybouDB_DB_SIZE, 0
