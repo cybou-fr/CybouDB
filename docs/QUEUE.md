@@ -112,6 +112,7 @@ then:
 | 64 | 32 | Name, NUL-padded, sharing the table namespace |
 | 96 | 8 | First segment index the directory names |
 | 104 | 16 | Reserved, zero: room for a second level of directory |
+| 120 | 8 | `Q_TIME_FLOOR`: the largest time this queue has used. Reserved, zero |
 | 128 | 8 per entry | Segment page ids, in segment order |
 | 4092 | 4 | CRC-32C over bytes `[0, 4092)` |
 
@@ -288,6 +289,168 @@ None of this is a promise that leases will look exactly like that. It is a
 promise that adding them will not move a byte that a released file already
 depends on, which is the only part that has to be decided before the first
 `ENQUEUE`.
+
+## The clock a lease deadline is measured on
+
+This is the first question leases ask, and it is a design question rather than
+an implementation one, so it is answered here before any of it is assembly.
+
+A deadline is a promise about the future written into a file. The file
+outlives the process that wrote it, the machine it was written on, and any
+clock either of them had. So the question is not "which clock is most
+accurate" but **what a stored deadline still means after the thing that wrote
+it is gone.**
+
+### What it has to survive
+
+Four situations, and a deadline has to mean something in all of them:
+
+* **A crash and a restart.** The worker holding the lease is gone; the
+  deadline is the only thing that says the message is free again.
+* **A reboot.** Same, with every in-memory clock reset.
+* **The file opened a year later.** Every worker that held a lease is long
+  gone. Every lease should be expired.
+* **The file opened on another machine**, whose clock may disagree with the
+  one that wrote the deadline - by seconds, or by years.
+
+### Why each obvious clock fails
+
+**Monotonic time** - `CLOCK_MONOTONIC`, `QueryPerformanceCounter` - is the
+clock this kind of code usually reaches for, because it cannot jump. It is
+useless here: it counts from an arbitrary origin that resets at reboot, so a
+deadline stored in it means nothing after the event the deadline exists to
+survive. It also cannot be compared between two processes, let alone two
+machines.
+
+**A logical counter** internal to the database - expire a lease after N
+commits, or N enqueues - survives everything and needs no clock at all. It
+fails for the opposite reason: **it only advances when something happens.** The
+case leases exist for is a worker that stopped, on a queue that has therefore
+gone quiet. A logical clock stops exactly when the failure it should detect
+occurs, and the message is never reclaimed. It is a clock that cannot measure
+absence, and absence is the whole subject.
+
+**Wall-clock UTC** survives reboots, is comparable across machines and is
+meaningful a year later. It has one flaw, and it is the famous one: it jumps.
+NTP steps it, an operator sets it, a VM resumes from a snapshot into the past,
+a machine with a dead RTC boots at 1970. A backwards jump extends every lease;
+a forward jump expires them all at once.
+
+Wall-clock is the only candidate that can answer the four situations at all.
+So the design is wall-clock, and the work is in bounding what its jumps cost.
+
+### The answer
+
+**A deadline is stored as milliseconds since the Unix epoch, UTC, as an
+unsigned 64-bit integer. The engine never reads the system clock alone.**
+
+The queue carries the largest time it has ever used, and every operation reads
+
+    q_now = max(wall_clock_now, the queue's high-water)
+
+and writes `q_now` back as the new high-water. That single line is the whole
+mechanism, and what it buys is that **the clock a queue uses never runs
+backwards**, whatever the machine's clock does.
+
+Milliseconds because a lease is tens of seconds and a renewal margin is
+fractions of one; seconds are too coarse to renew against and nanoseconds buy
+nothing and overflow in 2554. The unit is part of the format and is not a
+preference a build gets to have.
+
+The *API* takes a duration - `CLAIM ... FOR 30000` - and the engine computes
+the deadline. The *format* stores the absolute time. A caller should not be
+made to know what clock the file is on, and a file should not store something
+that only means anything relative to when it was written.
+
+### The high-water only ever raises the floor
+
+It is a lower bound on the clock, not the clock. When the machine's time is
+correct, `q_now` is the machine's time and the high-water trails behind doing
+nothing. It only takes effect when the system clock is behind what the queue
+has already seen.
+
+This matters for a quiet queue: expiry is evaluated against a `q_now` read at
+the moment of the check, so a queue nothing has touched for a week still
+expires its leases on time. The high-water does not have to be advanced by
+traffic to work, which is what separates it from a logical clock.
+
+### What the token does, and why the clock is not the safety argument
+
+The engine's habit of keeping guarantees apart applies here, and it is the
+part of this design worth stating loudest:
+
+> **The deadline decides *when* a message becomes claimable again. The token
+> decides *whose* acknowledgement counts. They are separate, and only the
+> second one is a correctness argument.**
+
+Each claim of a slot raises that slot's lease token. A worker acknowledges
+with the token its claim gave it, and an `ACK` whose token does not match the
+slot's is refused - because that lease was taken away and handed to someone
+else. A token only ever needs to be unique against the other claims of the
+same message, so a counter in the slot is enough; it needs no randomness and
+no second field.
+
+The consequence is what makes a wall clock survivable here: **no clock error,
+of any size or direction, can cause a message to be acknowledged twice or
+acknowledged by a worker whose lease was reclaimed.** A wrong clock costs
+liveness or duplicated work. It cannot cost the queue's integrity, and it
+cannot make the queue lie about what was acknowledged.
+
+### What each clock failure costs
+
+| What the clock does | What the queue does | The cost |
+| :--- | :--- | :--- |
+| Keeps correct time | `q_now` is the system time | Nothing |
+| Steps backwards by Δ | Freezes at the high-water until real time catches up | Leases expire up to Δ **late**. Nothing expires early; a dead worker's message is reclaimed late |
+| Steps forwards by Δ | Jumps with it, permanently | Leases expire up to Δ **early**. A live worker's message is reclaimed and may be worked twice; its `ACK` is refused by the token |
+| Is never set at all (dead RTC, boots at epoch) | Freezes at the high-water | Nothing expires. `CLAIM`, `ACK` and `NACK` keep working; only reclamation stops |
+
+The asymmetry is deliberate. A lease that expires late leaves a message stuck
+until someone notices; a lease that expires early hands the same job to two
+workers at once. The first is a delay and the second is a duplicate, so where
+the design gets a choice it takes the delay.
+
+**The forward jump is the one with a permanent cost, and it is not solvable
+here.** Once the queue has seen a timestamp from the future it will not go
+back to real time, because going back is the thing the high-water exists to
+prevent, and nothing inside the file can tell a bogus future timestamp from
+time genuinely having passed - which it must not, since a machine suspended
+for an hour *should* expire its leases. What can be done is to notice it:
+a high-water far ahead of the current wall clock is a diagnosable state, and
+`cyboudb check` should report it. Reporting a condition it cannot prevent is
+the same line the integrity check already walks.
+
+### Where it lives
+
+Eight bytes in the queue page at offset 120, `Q_TIME_FLOOR`, required to be
+zero in a queue without leases.
+
+Per queue rather than per database, for two reasons. The bytes are there, and
+a queue is the only object in this format that has deadlines - but mainly,
+a single database-wide clock would spread one poisoned queue's forward jump to
+every other queue in the file. Confining the damage to the object that took it
+is worth more than sharing the high-water between objects that are otherwise
+unrelated.
+
+Reading the wall clock is the one new platform primitive leases need:
+`clock_gettime(CLOCK_REALTIME)` on Linux and `GetSystemTimeAsFileTime` on
+Windows, each converted to milliseconds since the Unix epoch. Both are already
+reachable the way the rest of the platform layer reaches things, so this adds
+a call to `os_posix.asm` and `os_win.asm` and nothing else.
+
+### What this does not answer
+
+Not a distributed clock, and not a claim on accuracy. Two machines sharing a
+file through this design agree about deadlines only as well as their clocks
+agree, and nothing here improves that - the high-water keeps a queue from
+going backwards, it does not synchronise anything.
+
+Not the shape of `CLAIM`, `ACK`, `NACK` and `RENEW` themselves: what a claim
+returns, whether a token is visible to the caller or carried by a handle, and
+what happens to a claimed message when the database is reopened. Those are the
+next document, and they are an API question rather than a format one - which
+is the right order, because the format is the part that cannot be changed
+afterwards and it is now decided.
 
 ## What version 1 does not do
 

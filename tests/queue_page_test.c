@@ -38,6 +38,7 @@ void cyboudb_test_mem_free(void *ptr, size_t size) { (void)size; free(ptr); }
 #define Q_NAME_OFF      64
 #define Q_FIRST_SEG_OFF 96
 #define Q_RESERVED2_OFF 104
+#define Q_TIME_FLOOR_OFF 120
 #define Q_ENTRIES_OFF   128
 
 /* A segment page, and a slot inside one. */
@@ -214,6 +215,11 @@ int main(int argc, char **argv) {
             { "a first segment the head is not in", Q_FIRST_SEG_OFF, 8, 1 },
             { "a claim cursor ahead of the head", Q_CLAIM_OFF,     8, 1 },
             { "a second reserved field",           Q_RESERVED2_OFF, 8, 1 },
+            /* Where a lease clock's high-water will go. A version without
+               leases must refuse a queue that has put something there, or the
+               version that adds them cannot tell a file that left the field
+               alone from one that meant something by it. */
+            { "a lease clock on a queue with no leases", Q_TIME_FLOOR_OFF, 8, 1 },
             { "a page type nothing defines",       CAT_TYPE_OFF,    4, 9 },
         };
         for (size_t i = 0; i < sizeof damage / sizeof damage[0]; i++) {

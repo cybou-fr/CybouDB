@@ -29,6 +29,21 @@
 ; 16 bytes, zero. Room for what a second level of segment directory would need
 ; when 495 segments stops being enough, which is the road PAX already took.
 %define Q_RESERVED2 104
+; The largest time this queue has ever used, in milliseconds since the Unix
+; epoch. Reserved and zero until leases exist. A lease deadline is wall-clock
+; time, because it is the only clock that still means anything after the crash
+; it exists to survive - and a wall clock jumps. Every operation would take
+; max(now, this) and write it back, so the clock a queue uses never runs
+; backwards whatever the machine's does. See docs/QUEUE.md, "The clock a lease
+; deadline is measured on", for what each direction of jump costs and why the
+; lease token rather than the deadline is what keeps an ACK honest.
+;
+; These eight bytes were unnamed and unchecked through preview.1 and
+; preview.2. Every file either of them wrote has them zero - a queue page is
+; allocated zeroed and nothing ever wrote here - but validation did not say so,
+; and eight bytes nothing requires to be zero are eight bytes a later release
+; cannot use.
+%define Q_TIME_FLOOR 120
 %define Q_ENTRIES 128                    ; u64 segment page ids, in order
 %define Q_CRC 4092
 %define Q_MAX_SEGMENTS 495               ; (4092 - 128) / 8

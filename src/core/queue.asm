@@ -360,6 +360,12 @@ queue_page_valid:
     jne .q_bad
     cmp qword [r11 + Q_RESERVED2 + 8], 0
     jne .q_bad
+    ; Where a lease clock's high-water would go. Checked for the same reason
+    ; the reserved directory bytes are: a field nothing requires to be zero is
+    ; a field a later release cannot start writing, because it cannot tell a
+    ; file that left it alone from one that meant something by it.
+    cmp qword [r11 + Q_TIME_FLOOR], 0
+    jne .q_bad
     ; A version 1 DEQUEUE hands out and acknowledges in one step, so the claim
     ; cursor is the head. The field is where a lease would keep it; until there
     ; is a capability bit saying a build writes leases, a file whose claim has

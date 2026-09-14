@@ -196,6 +196,26 @@ python3 tests/queue_sql_tests.py ./build/cyboudb_audit      # and the rest
 
 See [COMMIT_VALIDATION.md](COMMIT_VALIDATION.md).
 
+## The eight bytes a lease clock will want
+
+`tests/queue_page_test.c` gained one damage case, and it is there for a reason
+that has nothing to do with today's engine: a queue page whose bytes at offset
+120 are not zero is refused.
+
+Nothing writes there. The field is where a lease clock's high-water will go -
+see [docs/QUEUE.md](QUEUE.md), *The clock a lease deadline is measured on* -
+and until `QUEUE_LEASES` exists it must be zero. The check is not defending
+against a failure that happens; it is making a later release possible. A field
+that nothing *requires* to be zero is a field the version that starts writing
+it cannot use, because it has no way to tell a file that left the field alone
+from one that meant something by it.
+
+These eight bytes were unnamed and unchecked through both `0.5` previews. Every
+file either of them wrote has them zero - a queue page is allocated zeroed -
+which is why the check can be added now without breaking anything, and the
+frozen fixtures from both releases are what says so rather than the argument.
+A year from now that would not have been true.
+
 ## Values that arrive after prepare
 
 `tests/bind_test.c`, 39 checks, built with `--c-tests` and run against a
