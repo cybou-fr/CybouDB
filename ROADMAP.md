@@ -596,7 +596,7 @@ the release, not after it.
 
 ```text
  1. Threat model                     docs/ENCRYPTION.md          done
- 2. Format design                    a v1 extension, or format v2
+ 2. Format design                    docs/ENCRYPTED_FORMAT.md    done
  3. Reference crypto backend         ML-KEM, ML-DSA candidate, AEAD, KDF,
                                      against official known-answer vectors
  4. Root key hierarchy
@@ -619,10 +619,22 @@ the release, not after it.
 21. Release
 ```
 
-Step 2 decides whether this is format v1 with new incompatible bits or format
-v2 with a migration. Either is allowed by
-[the compatibility promise](#the-compatibility-promise); what is not allowed is
-changing what v1 means for a file already written.
+Step 2 decided it: **format v1 with one new incompatible bit**, 131072, because
+the structure does not change - page 0, the superblocks, the allocation map and
+every page layout stay where they are, and what changes is a transformation
+applied to a page's bytes between the file and the engine. v2 would have been
+the answer if page bodies had to shrink to hold a tag; a seal directory in
+pages of its own avoids that, at a flat 2% of the file. The reasoning, the
+rejected alternatives and what each field of the authenticated data prevents
+are in [docs/ENCRYPTED_FORMAT.md](docs/ENCRYPTED_FORMAT.md).
+
+It also found the expensive part of this release, and it is not the
+cryptography: the engine reads every page as a pointer into one shared mapping,
+and plaintext in a shared mapping is plaintext on the disk. An encrypted
+database needs explicit I/O the platform layer does not have and a plaintext
+page cache under the engine's hottest operation. **That measurement comes
+before step 7, not at step 19**, because if it is unacceptable the shape of the
+release changes.
 
 **A note on size.** This is larger than `0.5` and `0.6` together, and the
 project has one measurement-driven habit worth keeping here: nothing in the
