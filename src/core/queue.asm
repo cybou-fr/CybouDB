@@ -21,6 +21,7 @@ extern catalog_entry_in
 global db_queue_push, db_queue_pop, db_queue_peek, db_queue_depth
 global db_queue_retire_all
 global db_queue_scan_claimable
+global db_queue_claim, db_queue_ack, db_queue_nack, db_queue_renew
 global db_stream_append
 global queue_slot_at, queue_slot_copy, queue_retire_chain
 global db_stream_retire_all
@@ -1283,6 +1284,532 @@ db_queue_scan_claimable:
 
 .sc_none:
     xor eax, eax
+    FRAME_END
+    ret
+
+
+; -----------------------------------------------------------------------------
+;  The lease operations.
+;
+;  Each of the four is a short transaction: the queue page and the one segment
+;  page the message lives in, copy-on-written like anything else, and nothing
+;  else touched. What the deadline is measured on and why the token rather than
+;  the deadline decides an acknowledgement is in docs/QUEUE.md; this is where
+;  that becomes code.
+;
+;  `now` is an argument rather than a clock read here. The platform primitive
+;  belongs at the edge where the caller is, and a core that takes the time it
+;  is given is a core whose tests do not depend on what o'clock it is.
+;
+;  None of these moves the head. A run of acknowledged messages at the front is
+;  a valid queue - the state table says so - and advancing over it is
+;  retirement machinery rather than lease machinery. It is the next commit, and
+;  until it lands a queue reclaims nothing it acknowledges.
+; -----------------------------------------------------------------------------
+
+; -----------------------------------------------------------------------------
+;  lease_find_slot(ctx, id, position) -> RAX: the slot, read-only, or 0
+;
+;  Where a refusal is decided. Nothing is copied and nothing is stamped, which
+;  is what makes a refused operation leave the file exactly as it found it -
+;  the first version of these operations made the slot writable first and
+;  discovered the refusal afterwards, which left a queue page stamped with a
+;  new generation and never sealed, and the next commit refused the whole
+;  transaction over an operation that had already said no.
+; -----------------------------------------------------------------------------
+lease_find_slot:
+    FRAME_BEGIN 48, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    call db_catalog_page
+    test rax, rax
+    jz .lf_no
+    cmp dword [rax + CAT_TYPE], CAT_QUEUE
+    jne .lf_no
+    mov r11, rax
+    mov rax, [rbp - 24]
+    cmp rax, [r11 + Q_HEAD]
+    jb .lf_no
+    cmp rax, [r11 + Q_TAIL]
+    jae .lf_no
+    xor edx, edx
+    mov rcx, QUEUE_SEG_SLOTS
+    div rcx
+    mov [rbp - 32], rdx
+    sub rax, [r11 + Q_FIRST_SEG]
+    mov ecx, [r11 + Q_SEGMENTS]
+    cmp rax, rcx
+    jae .lf_no
+    mov ARG2, [r11 + Q_ENTRIES + rax * 8]
+    mov ARG1, [rbp - 8]
+    call db_queue_seg_addr
+    test rax, rax
+    jz .lf_no
+    mov rdx, [rbp - 32]
+    shl rdx, 6
+    lea rax, [rax + QSEG_SLOTS + rdx]
+    FRAME_END
+    ret
+.lf_no:
+    xor eax, eax
+    FRAME_END
+    ret
+
+%define LE_QPAGE 0
+%define LE_SEG   8
+%define LE_SLOT  16
+
+; -----------------------------------------------------------------------------
+;  lease_edit_slot(ctx, id, position, out[3]) -> EAX: 0, or an error
+;
+;  The writable queue page, the writable segment page the position lives in,
+;  and the slot inside it. The directory is re-pointed at the copy here, so a
+;  caller only has to seal what it wrote.
+; -----------------------------------------------------------------------------
+lease_edit_slot:
+    FRAME_BEGIN 96, 0
+    mov [rbp - 8], ARG1             ; ctx
+    mov [rbp - 16], ARG2            ; queue id
+    mov [rbp - 24], ARG3            ; position
+    mov [rbp - 32], ARG4            ; out
+
+    ; Head, tail and the claim cursor are read before the edit and written
+    ; back after it, because db_catalog_edit stamps the page it hands over and
+    ; stamping clears the reserved span - which is exactly where a queue keeps
+    ; those three. db_queue_push restores them the same way, for the same
+    ; reason; a caller that forgets gets a queue whose tail is zero and whose
+    ; every position is therefore out of range.
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    call db_catalog_page
+    test rax, rax
+    jz .le_state
+    cmp dword [rax + CAT_TYPE], CAT_QUEUE
+    jne .le_state
+    mov rdx, [rax + Q_HEAD]
+    mov [rbp - 72], rdx
+    mov rdx, [rax + Q_TAIL]
+    mov [rbp - 80], rdx
+    mov rdx, [rax + Q_CLAIM]
+    mov [rbp - 88], rdx
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    lea ARG3, [rbp - 40]
+    call db_catalog_edit
+    test eax, eax
+    jnz .le_done
+    mov r11, [rbp - 40]
+    mov rdx, [rbp - 72]
+    mov [r11 + Q_HEAD], rdx
+    mov rdx, [rbp - 80]
+    mov [r11 + Q_TAIL], rdx
+    mov rdx, [rbp - 88]
+    mov [r11 + Q_CLAIM], rdx
+    mov r10, [rbp - 32]
+    mov [r10 + LE_QPAGE], r11
+
+    mov rax, [rbp - 24]
+    cmp rax, [r11 + Q_HEAD]
+    jb .le_range
+    cmp rax, [r11 + Q_TAIL]
+    jae .le_range
+
+    xor edx, edx
+    mov rcx, QUEUE_SEG_SLOTS
+    div rcx                         ; rax = segment, rdx = slot within it
+    mov [rbp - 48], rdx
+    sub rax, [r11 + Q_FIRST_SEG]
+    mov [rbp - 56], rax
+    mov ecx, [r11 + Q_SEGMENTS]
+    cmp rax, rcx
+    jae .le_range                   ; a directory that does not reach its own
+
+    mov ARG2, [r11 + Q_ENTRIES + rax * 8]
+    mov ARG1, [rbp - 8]
+    lea ARG3, [rbp - 64]
+    call queue_copy_seg
+    test eax, eax
+    jnz .le_done
+
+    mov r11, [rbp - 40]
+    mov rax, [rbp - 56]
+    mov rdx, [rbp - 64]
+    mov [r11 + Q_ENTRIES + rax * 8], rdx
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 64]
+    call db_queue_seg_addr
+    test rax, rax
+    jz .le_state
+    mov r10, [rbp - 32]
+    mov [r10 + LE_SEG], rax
+    mov rdx, [rbp - 48]
+    shl rdx, 6                      ; QUEUE_SLOT_SIZE
+    lea rdx, [rax + QSEG_SLOTS + rdx]
+    mov [r10 + LE_SLOT], rdx
+    xor eax, eax
+.le_done:
+    FRAME_END
+    ret
+.le_range:
+    mov eax, CybouDB_E_VALUE
+    FRAME_END
+    ret
+.le_state:
+    mov eax, CybouDB_E_STATE
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  lease_now(ctx, id, now, out q_now) -> EAX: 0, or an error
+;
+;  The clock a queue uses never runs backwards, whatever the machine's does:
+;  max(the time given, the largest this queue has used). docs/QUEUE.md, "The
+;  clock a lease deadline is measured on".
+; -----------------------------------------------------------------------------
+lease_now:
+    FRAME_BEGIN 48, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov [rbp - 32], ARG4
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_QUEUE_LEASES
+    jz .ln_state
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    call db_catalog_page
+    test rax, rax
+    jz .ln_state
+    cmp dword [rax + CAT_TYPE], CAT_QUEUE
+    jne .ln_state
+    mov rdx, [rax + Q_TIME_FLOOR]
+    mov rcx, [rbp - 24]
+    cmp rcx, rdx
+    jae .ln_ready
+    mov rcx, rdx
+.ln_ready:
+    mov r10, [rbp - 32]
+    mov [r10], rcx
+    xor eax, eax
+    FRAME_END
+    ret
+.ln_state:
+    mov eax, CybouDB_E_STATE
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  db_queue_claim(ctx, id, now, duration, out position, out token) -> EAX
+;
+;  Takes the first claimable message and gives it a deadline and a token.
+; -----------------------------------------------------------------------------
+db_queue_claim:
+    FRAME_BEGIN 128, 2
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3            ; now
+    mov [rbp - 32], ARG4            ; how long the lease runs
+    mov rax, IN_ARG5
+    mov [rbp - 40], rax             ; where the position goes
+    mov rax, IN_ARG6
+    mov [rbp - 48], rax             ; and the token
+
+    cmp qword [rbp - 32], 0
+    je .c_value                     ; a lease that has already expired
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 24]
+    lea ARG4, [rbp - 56]
+    call lease_now
+    test eax, eax
+    jnz .c_done
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 56]
+    lea ARG4, [rbp - 64]
+    call db_queue_scan_claimable
+    test eax, eax
+    jz .c_empty
+
+    ; The token only goes up, and at the end it stops rather than wrapping: a
+    ; wrapped token could equal a stale one, which is the single thing the
+    ; token exists to prevent. Asked before anything is copied, so that the
+    ; refusal leaves the file alone.
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 64]
+    call lease_find_slot
+    test rax, rax
+    jz .c_value
+    cmp qword [rax + QMSG_LEASE_TOKEN], -1
+    je .c_exhausted
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 64]
+    lea ARG4, [rbp - 96]
+    call lease_edit_slot
+    test eax, eax
+    jnz .c_done
+
+    mov r8, [rbp - 80]              ; the slot
+    mov rax, [r8 + QMSG_LEASE_TOKEN]
+    inc rax
+    mov [r8 + QMSG_LEASE_TOKEN], rax
+    mov [rbp - 72], rax
+
+    mov rdx, [rbp - 56]
+    add rdx, [rbp - 32]
+    jc .c_value                     ; a deadline past the end of the clock
+    mov [r8 + QMSG_LEASE_UNTIL], rdx
+    mov dword [r8 + QMSG_STATE], QMSG_STATE_CLAIMED
+
+    mov ARG1, [rbp - 88]
+    mov ARG2, [rbp - 8]
+    call queue_seg_seal
+
+    ; The cursor is one past the highest position ever handed out, so it moves
+    ; only when this claim is the highest - a reclaimed message is behind it.
+    mov r11, [rbp - 96]
+    mov rax, [rbp - 64]
+    inc rax
+    cmp rax, [r11 + Q_CLAIM]
+    jbe .c_cursor_ok
+    mov [r11 + Q_CLAIM], rax
+.c_cursor_ok:
+    mov rax, [rbp - 56]
+    mov [r11 + Q_TIME_FLOOR], rax
+    mov ARG1, r11
+    call db_catalog_seal
+
+    mov r10, [rbp - 40]
+    test r10, r10
+    jz .c_no_position
+    mov rax, [rbp - 64]
+    mov [r10], rax
+.c_no_position:
+    mov r10, [rbp - 48]
+    test r10, r10
+    jz .c_ok
+    mov rax, [rbp - 72]
+    mov [r10], rax
+.c_ok:
+    xor eax, eax
+.c_done:
+    FRAME_END
+    ret
+.c_empty:
+    mov eax, CybouDB_E_NOTFOUND
+    FRAME_END
+    ret
+.c_exhausted:
+    mov eax, CybouDB_E_VALUE        ; claimed 2^64 times, and saying so
+    FRAME_END
+    ret
+.c_value:
+    mov eax, CybouDB_E_VALUE
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  lease_hold(ctx, id, position, token, out[3]) -> EAX
+;
+;  What ACK, NACK and RENEW all need first: the slot, writable, and the proof
+;  that this caller still holds it. **The deadline is never consulted.** A
+;  lapsed lease means somebody else may take the message; the token is what
+;  says somebody else did, and only that refuses anything.
+; -----------------------------------------------------------------------------
+lease_hold:
+    FRAME_BEGIN 64, 1
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov [rbp - 32], ARG4            ; the token the caller was given
+    mov rax, IN_ARG5
+    mov [rbp - 40], rax             ; out
+
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_QUEUE_LEASES
+    jz .lh_state
+
+    ; Decided first, on the page as it stands. A refusal copies nothing.
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 24]
+    call lease_find_slot
+    test rax, rax
+    jz .lh_value
+    mov r8, rax
+    cmp dword [r8 + QMSG_STATE], QMSG_STATE_CLAIMED
+    jne .lh_value                   ; nobody holds it, or it is already done
+    mov rax, [rbp - 32]
+    cmp [r8 + QMSG_LEASE_TOKEN], rax
+    jne .lh_value                   ; the lease was reclaimed and handed on
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 24]
+    mov ARG4, [rbp - 40]
+    call lease_edit_slot
+    test eax, eax
+    jnz .lh_done
+    xor eax, eax
+.lh_done:
+    FRAME_END
+    ret
+.lh_value:
+    mov eax, CybouDB_E_VALUE
+    FRAME_END
+    ret
+.lh_state:
+    mov eax, CybouDB_E_STATE
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  db_queue_ack(ctx, id, position, token) -> EAX
+;
+;  Done. The slot keeps the token that finished it, which is what makes a
+;  ticket presented against it visibly stale.
+; -----------------------------------------------------------------------------
+db_queue_ack:
+    FRAME_BEGIN 64, 1
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    lea rax, [rbp - 64]
+    PASS_ARG5 rax
+    call lease_hold
+    test eax, eax
+    jnz .a_done
+    mov r8, [rbp - 64 + LE_SLOT]
+    mov dword [r8 + QMSG_STATE], QMSG_STATE_ACKED
+    mov qword [r8 + QMSG_LEASE_UNTIL], 0
+    mov ARG1, [rbp - 64 + LE_SEG]
+    mov ARG2, [rbp - 8]
+    call queue_seg_seal
+    mov ARG1, [rbp - 64 + LE_QPAGE]
+    call db_catalog_seal
+    xor eax, eax
+.a_done:
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  db_queue_nack(ctx, id, position, token) -> EAX
+;
+;  Handed back. The token goes up, because otherwise a worker could give a
+;  message back, watch another take it, and then acknowledge it.
+; -----------------------------------------------------------------------------
+db_queue_nack:
+    FRAME_BEGIN 64, 1
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov [rbp - 32], ARG4
+    ; A nack raises the token, so it has the same end as a claim does, and the
+    ; same reason for stopping there rather than wrapping. Asked on the page as
+    ; it stands, because a refusal copies nothing.
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 24]
+    call lease_find_slot
+    test rax, rax
+    jz .n_value
+    cmp qword [rax + QMSG_LEASE_TOKEN], -1
+    je .n_value
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 24]
+    mov ARG4, [rbp - 32]
+    lea rax, [rbp - 64]
+    PASS_ARG5 rax
+    call lease_hold
+    test eax, eax
+    jnz .n_done
+    mov r8, [rbp - 64 + LE_SLOT]
+    mov rax, [r8 + QMSG_LEASE_TOKEN]
+    inc rax
+    mov [r8 + QMSG_LEASE_TOKEN], rax
+    mov dword [r8 + QMSG_STATE], QMSG_STATE_HELD
+    mov qword [r8 + QMSG_LEASE_UNTIL], 0
+    mov ARG1, [rbp - 64 + LE_SEG]
+    mov ARG2, [rbp - 8]
+    call queue_seg_seal
+    mov ARG1, [rbp - 64 + LE_QPAGE]
+    call db_catalog_seal
+    xor eax, eax
+.n_done:
+    FRAME_END
+    ret
+.n_value:
+    mov eax, CybouDB_E_VALUE
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  db_queue_renew(ctx, id, position, token, now, duration) -> EAX
+;
+;  A longer lease on the same token. A lapsed deadline is not a refusal: if
+;  another worker had taken the message the token would say so.
+; -----------------------------------------------------------------------------
+db_queue_renew:
+    FRAME_BEGIN 128, 2
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov [rbp - 24], ARG3
+    mov [rbp - 32], ARG4
+    mov rax, IN_ARG5
+    mov [rbp - 40], rax             ; now
+    mov rax, IN_ARG6
+    mov [rbp - 48], rax             ; how much longer
+
+    cmp qword [rbp - 48], 0
+    je .r_value
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 40]
+    lea ARG4, [rbp - 56]
+    call lease_now
+    test eax, eax
+    jnz .r_done
+
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, [rbp - 24]
+    mov ARG4, [rbp - 32]
+    lea rax, [rbp - 128]
+    PASS_ARG5 rax
+    call lease_hold
+    test eax, eax
+    jnz .r_done
+
+    mov rdx, [rbp - 56]
+    add rdx, [rbp - 48]
+    jc .r_value
+    mov r8, [rbp - 128 + LE_SLOT]
+    mov [r8 + QMSG_LEASE_UNTIL], rdx
+    mov ARG1, [rbp - 128 + LE_SEG]
+    mov ARG2, [rbp - 8]
+    call queue_seg_seal
+    mov r11, [rbp - 128 + LE_QPAGE]
+    mov rax, [rbp - 56]
+    mov [r11 + Q_TIME_FLOOR], rax
+    mov ARG1, r11
+    call db_catalog_seal
+    xor eax, eax
+.r_done:
+    FRAME_END
+    ret
+.r_value:
+    mov eax, CybouDB_E_VALUE
     FRAME_END
     ret
 

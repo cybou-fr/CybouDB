@@ -154,6 +154,8 @@ jobs:
           ./cyboudb create-leases build/test_ci_leased.cdb 4000 --force
           ./cyboudb create-large build/test_ci_plainq.cdb 4000 --force
           ./build/lease_state_test build/test_ci_leased.cdb build/test_ci_plainq.cdb
+          ./cyboudb create-leases build/test_ci_ops.cdb 4000 --force
+          ./build/lease_ops_test build/test_ci_ops.cdb
           sh build.sh --vector-example
           ./build/vector_search_example
           sh build.sh --worker-example
@@ -374,6 +376,10 @@ jobs:
           cyboudb.exe create-large build\test_ci_plainq.cdb 4000 --force
           if errorlevel 1 exit /b 1
           build\lease_state_test.exe build\test_ci_leased.cdb build\test_ci_plainq.cdb
+          if errorlevel 1 exit /b 1
+          cyboudb.exe create-leases build\test_ci_ops.cdb 4000 --force
+          if errorlevel 1 exit /b 1
+          build\lease_ops_test.exe build\test_ci_ops.cdb
           if errorlevel 1 exit /b 1
           call build.bat --vector-example
           if errorlevel 1 exit /b 1

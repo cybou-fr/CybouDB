@@ -196,6 +196,30 @@ python3 tests/queue_sql_tests.py ./build/cyboudb_audit      # and the rest
 
 See [COMMIT_VALIDATION.md](COMMIT_VALIDATION.md).
 
+## The four lease operations
+
+`tests/lease_ops_test.c`, 47 checks, against a `create-leases` database. The
+first code in the engine that writes a lease, so every check asks two things:
+what the operation returned, and whether the file it left behind still passes
+an integrity check. An operation that writes a state the format forbids fails
+the second even when it returns success.
+
+What it defends, in the order it matters: the token is the only authority, so a
+worker whose lease lapsed still gets its acknowledgement on a message nobody
+re-claimed; a reclaim raises the token and the check is made from the *loser's*
+side, that the stale ticket is refused rather than merely losing a race; `NACK`
+raises it too, which is what stops a worker handing a message back and then
+acknowledging it; expiry is a predicate, so the queue that had nothing claimable
+has two again once the clock passes without anything running.
+
+**The group worth knowing about is the last one.** Five refusals, each followed
+immediately by a commit with nothing in between. The first version of these
+operations made the slot writable and discovered the refusal afterwards, which
+left the queue page stamped with a new generation and never sealed - so the
+next commit refused the whole transaction over an operation that had already
+said no. A refusal has to leave the file exactly as it found it, and that is
+only visible if nothing else happens before the commit.
+
 ## The cost of finding a claimable message
 
 Not a test - a probe, `benchmarks/lease_probe.c`, built with
