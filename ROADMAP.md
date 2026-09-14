@@ -37,9 +37,9 @@ Three things are open and named rather than implied:
   added in `preview.2` found this; nothing has been done about it, and nothing
   should be until it is understood.
 * **A retired page with no shared header cannot be attributed to an owner.**
-  The continuation pages of a multi-page run rest on a separate invariant - a
-  run is retired whole, header included - and the negative control for that
-  does not exist yet. See
+  A continuation page of a multi-page run, retired on its own, is accepted by
+  the commit and refused by `cyboudb check`. No engine path produces it - a
+  run is retired whole, header included - and both halves are now tested. See
   [docs/COMMIT_VALIDATION.md](docs/COMMIT_VALIDATION.md).
 * **The change-set is trusted where it is written.** `cs_leaf_explained` proves
   the history it tells is consistent with both maps; it cannot prove that
@@ -93,12 +93,15 @@ what format v1 means for anything already written.
 These come first because they are cheap now and expensive later, and because
 both are load-bearing for a proof the engine already depends on.
 
-1. **A negative control for continuation pages.** An internal hook that retires
-   only the continuation page of a multi-page run, leaving the header
-   `PAYLOAD` and the owning object inherited. The commit must refuse it. If
-   that state cannot be constructed at all, that is an answer too, and the
-   invariant gets written down as enforced by construction rather than by
-   test.
+1. ~~**A negative control for continuation pages.**~~ *(done.* The state is
+   constructible, and the answer turned out to be the second half of the
+   question rather than the first: the commit accepts it, and `cyboudb check`
+   refuses the result - the same narrowing the queue's historical damage went
+   through. What bounds it is that no engine path retires a continuation
+   without its header. `tests/validator_attack_test.c` asserts both halves;
+   [docs/COMMIT_VALIDATION.md](docs/COMMIT_VALIDATION.md) says why, including
+   the rule that was tried and rejected because a legitimate harness retires
+   bare pages on purpose.*)
 2. **Measure the flush before proposing anything.** The lesson of `preview.2`
    was that the assumed cause of a cost was worth 7% and the real one was
    elsewhere. So: what does `FlushFileBuffers` / `fsync` actually scale with -

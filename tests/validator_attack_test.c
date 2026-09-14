@@ -33,6 +33,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #define CAT_OWNER_OFF   24
 #define CAT_TYPE_OFF    32
@@ -54,6 +57,25 @@ extern unsigned char *db_queue_seg_addr(void *ctx, uint64_t page);
 extern int db_commit(void *ctx);
 extern int db_rollback(void *ctx);
 extern int db_bitmap_retire(void *ctx, uint64_t page);
+extern int db_bitmap_is_payload(void *ctx, uint64_t page);
+extern int db_open(const void *path, void *ctx, uint64_t writable,
+                   uint64_t verify);
+extern int db_close(void *ctx);
+
+/* `cyboudb check`: deep, and asking about integrity rather than
+ * recoverability. docs/RECOVERY.md. */
+static int integrity_check_refuses(const char *path) {
+    uint64_t vctx[64] = {0};
+    const void *p = path;
+#ifdef _WIN32
+    static wchar_t wide[32768];
+    if (!MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, 32768)) return 0;
+    p = wide;
+#endif
+    if (db_open(p, vctx, 0, 3) != 0) return 1;
+    db_close(vctx);
+    return 0;
+}
 /* The change-set, written directly. Nothing outside the engine can reach this
  * - the point is not that a user could forge a transition, but that an engine
  * bug recording the wrong one must be refused rather than believed. The
@@ -236,6 +258,64 @@ int main(int argc, char **argv) {
            the case above would be refusing the drop rather than the lie. */
         check("the same drop, with nothing forged, commits",
               cyboudb_exec(db, "DROP QUEUE gamma") == CybouDB_OK);
+    }
+
+    /* --- the page of a run that cannot say who owns it -------------------- */
+    /* A leaf is a run of contiguous pages. The first carries the shared header
+       - a magic, its own id, its owner - and the rest are row data all the way
+       down, so a continuation page retired on its own cannot be attributed to
+       an object and the commit cannot refuse it for reaching an inherited one.
+       That is a real gap and it is bounded rather than closed:
+       db_cow_copy_run retires a run in a loop over every page it holds, so no
+       engine path retires a continuation without its header, and the header is
+       attributed. Getting into this state needs db_bitmap_retire called on one
+       page by hand, which is what this does.
+
+       So the two halves are asserted separately: the commit may accept it, and
+       the integrity check must refuse the result. The same place the queue's
+       historical damage went when inheritance landed.
+
+       Eight INT64 columns put 256 rows in 16 KiB, so a leaf is a four-page run
+       and three of its pages are continuations. */
+    {
+        uint64_t p, header = 0, cont = 0;
+        int i;
+        char sql[256];
+
+        check("a table whose leaves are multi-page runs",
+              cyboudb_exec(db, "CREATE TABLE wide (a INT64, b INT64, c INT64, "
+                           "d INT64, e INT64, f INT64, g INT64, h INT64)")
+              == CybouDB_OK);
+        for (i = 0; i < 300; i++) {
+            snprintf(sql, sizeof sql,
+                     "INSERT INTO wide VALUES (%d,%d,%d,%d,%d,%d,%d,%d)",
+                     i, i, i, i, i, i, i, i);
+            if (cyboudb_exec(db, sql) != CybouDB_OK) break;
+        }
+        check("filled past one run", i == 300);
+
+        /* A payload page that does not name itself is a continuation page.
+           Take the first one that follows a page which does. */
+        for (p = 3; p < 8000; p++) {
+            unsigned char *a;
+            if (!db_bitmap_is_payload(ctx, p)) continue;
+            a = db_queue_seg_addr(ctx, p);
+            if (u64(a, 8) == p) { header = p; continue; }
+            if (header && p == header + 1) { cont = p; break; }
+        }
+        check("a continuation page to retire", cont != 0);
+
+        if (cont) {
+            check("a transaction that touches something else",
+                  cyboudb_exec(db, "BEGIN") == CybouDB_OK &&
+                  cyboudb_exec(db, "INSERT INTO elsewhere VALUES (9)")
+                  == CybouDB_OK &&
+                  db_bitmap_retire(ctx, cont) == 0);
+            check("the commit cannot attribute it, and accepts",
+                  db_commit(ctx) == CybouDB_OK);
+            check("but the integrity check refuses the result",
+                  integrity_check_refuses(argv[1]));
+        }
     }
 
     /* --- and after all of that the database is still usable --------------- */

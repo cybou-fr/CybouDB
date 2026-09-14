@@ -502,13 +502,43 @@ refused commit rather than a published one.
 hook, and has the same drop without the forged entry beside it - otherwise the
 refusal could be about the drop.
 
+### The pages that cannot say who owns them
+
+A leaf is a run of contiguous pages. The first carries the shared header - a
+magic, its own id, its owner - and the rest are row data all the way down. So
+a continuation page retired on its own cannot be attributed to an object, and
+the check above cannot refuse it for reaching an inherited one.
+
+That state **is** constructible, which was the open question. Retiring one
+continuation page by hand, in a transaction that touches something else, is
+accepted by the commit. What bounds it is that no engine path does that:
+`db_cow_copy_run` retires a run in a loop over every page it holds, so a
+continuation is only ever retired alongside its header, and the header is
+attributed. Nothing in pax, varlen or zonemap retires a page at all; index,
+queue and stream retire single pages that carry headers.
+
+So the gap is the same narrowing the queue's historical damage went through
+when inheritance landed, and it ends in the same place: the commit accepts,
+and `cyboudb check` refuses the result. `tests/validator_attack_test.c`
+asserts both halves, because asserting only the first would be recording that
+the commit does not catch it, which proves nothing.
+
+A rule was tried and rejected on the way: refuse a headerless retire unless
+the page before it is retired too. It catches the run case and refuses a
+legitimate one - `db_cow_alloc_page` hands out bare pages with no header at
+all, and `tests/varlen_fragmentation_harness.asm` retires alternating ones on
+purpose to make holes. That harness is what noticed.
+
+What did come out of it is the magic. Attribution used to rest on a page
+naming itself at offset 8, and a row can hold its own page id by accident;
+every page shape in the format also opens with a magic whose low three bytes
+are `ASQ`, so both are required now. The allocation map's own pages are
+skipped outright: they are reached from the superblock rather than from any
+catalog object, and `MAP_TOTAL` sits where an owner id would be read.
+
 ### Still open
 
-A retired page with no shared header cannot be attributed to an owner, so the
-continuation pages of a multi-page run rest on a separate invariant: a run is
-retired whole, header included, and the header is what gets attributed. Making
-a continuation page retire on its own - if an internal hook can construct that
-state at all - is the negative control this does not yet have.
+Nothing else named here. The question this section used to ask has an answer.
 
 Every outcome must be wholly the base generation or wholly the candidate. There
 is no third state a reader can observe, and that is unchanged by any of this.

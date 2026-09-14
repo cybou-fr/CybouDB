@@ -1112,14 +1112,27 @@ cs_retires_are_unreachable:
     shl     rax, CybouDB_PAGE_SHIFT
     add     rax, [r10 + DB_BASE]
     ; Only a page carrying the shared header can say who owns it. Every page
-    ; shape in the format writes its own id at offset 8 - CAT_PAGE_ID,
-    ; PAX_PAGE_ID, QSEG_PAGE_ID, IDX_PAGE_ID, VAR_PAGE_ID, ZONE_PAGE_ID are
-    ; all 8 - so a page that names itself has a header and one that does not
-    ; is the continuation of a multi-page run, where offset 24 is row data.
-    ; Reading that as an owner id is how this check first refused an ordinary
-    ; 128-row INSERT.
+    ; shape in the format opens with a magic whose low three bytes are 'ASQ' -
+    ; ASQP, ASQD, ASQC, ASQV, ASQI, ASQZ, ASQQ - and writes its own id at
+    ; offset 8. A page that does both has a header; one that does not is the
+    ; continuation of a multi-page run, where offset 24 is row data. Reading
+    ; that as an owner id is how this check first refused an ordinary 128-row
+    ; INSERT, and the magic is here because self-naming alone is a value a row
+    ; can hold by accident.
+    ; The allocation map's own pages are reached from the superblock and not
+    ; from any catalog object, so "is the owner inherited" is not a question
+    ; about them, and the map is proved structurally on every commit anyway.
+    ; They are also the reason this needs a magic at all: MAP_TOTAL sits at
+    ; offset 24, so a map leaf read as an owner id gives the page count of the
+    ; file.
+    cmp     dword [rax + MAP_MAGIC], CybouDB_MAP_MAGIC
+    je      .next
+    mov     ecx, [rax + CAT_MAGIC]
+    and     ecx, 0x00ffffff
+    cmp     ecx, 0x00515341             ; 'ASQ', whatever the fourth byte is
+    jne     .continuation
     cmp     [rax + CAT_PAGE_ID], rdx
-    jne     .next
+    jne     .continuation
     mov     rax, [rax + CAT_OWNER]      ; the one offset every header shares
     test    rax, rax
     jz      .next                       ; nothing claims it
@@ -1143,6 +1156,31 @@ cs_retires_are_unreachable:
     cmp     rax, [rbp - 56]
     je      .bad                        ; the same page: inherited, and it
                                         ; still reaches what was just retired
+    jmp     .next                       ; the owner moved, or is gone: allowed
+.continuation:
+    ; A page with no header cannot say who owns it, so this cannot answer for
+    ; it, and the honest thing is to say why that is not a hole rather than to
+    ; guess from its neighbours.
+    ;
+    ; Such a page is either inside a multi-page run or was allocated and never
+    ; written - db_cow_alloc_page hands out bare pages, and the varlen
+    ; fragmentation harness retires alternating ones on purpose. A rule that
+    ; refuses a headerless retire unless the page before it is retired too
+    ; catches the first and refuses the second, which was tried and is what
+    ; that harness exists to notice.
+    ;
+    ; What makes the gap bounded is that no engine path produces it.
+    ; db_cow_copy_run retires a run in a loop over every page it holds, so a
+    ; continuation page is only ever retired alongside its header - and the
+    ; header is attributed above. Nothing in pax, varlen or zonemap retires a
+    ; page at all; index, queue and stream retire single pages that carry
+    ; headers. A lone continuation retire needs db_bitmap_retire called on one
+    ; by hand.
+    ;
+    ; Constructed by hand, the commit accepts it and `cyboudb check` refuses
+    ; the result - which is the same place the queue's historical damage went
+    ; when inheritance landed, and for the same reason.
+    ; tests/validator_attack_test.c holds both halves of that.
 .next:
     inc     qword [rbp - 24]
     jmp     .entry

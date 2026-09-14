@@ -132,6 +132,12 @@ Built with `--c-tests`:
   reaches any more must still commit - because a rule that refuses everything
   is not a rule.
 
+  And the page that cannot say who owns it: a continuation page of a
+  multi-page run, retired on its own. Both halves are asserted - the commit
+  accepts it, the integrity check refuses the result - because asserting only
+  that the commit does not catch it would be recording a gap rather than
+  testing a guarantee.
+
   It also forges the change-set itself through `cs_record`, which is the
   only way to attack a structure nothing outside the engine can reach. That
   is the point: the log is part of what a commit trusts now, so a mutation
