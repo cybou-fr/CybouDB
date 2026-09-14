@@ -30,6 +30,7 @@ extern db_create, db_open, db_alloc_page, db_free_page, db_commit, db_close
 extern db_create_cow
 extern db_create_catalog, db_create_pax, db_create_pax_multi
 extern db_create_large, db_create_compressed, db_create_tombstones
+extern db_create_leases
 ; --- SQL ---------------------------------------------------------------------
 extern sql_arena_init, sql_arena_alloc, sql_parse, sql_bind, sql_execute
 
@@ -57,6 +58,7 @@ str_cmd_create_pax_multi: db "create-pax-multi", 0
 str_cmd_create_pax: db "create-pax", 0
 str_cmd_create_large: db "create-large", 0
 str_cmd_create_tomb: db "create-tombstones", 0
+str_cmd_create_leases: db "create-leases", 0
 str_cmd_create_compressed: db "create-compressed", 0
 str_cmd_info:    db "info", 0
 str_cmd_check:   db "check", 0
@@ -359,6 +361,12 @@ cyboudb_main:
     jnz     .cmd_create_tomb
 
     mov     ARG1, [rbp - 16]
+    lea     ARG2, [str_cmd_create_leases]
+    call    os_str_eq_ascii
+    test    rax, rax
+    jnz     .cmd_create_leases
+
+    mov     ARG1, [rbp - 16]
     lea     ARG2, [str_cmd_check]
     call    os_str_eq_ascii
     test    rax, rax
@@ -563,6 +571,9 @@ cyboudb_main:
 .cmd_create_tomb:
     mov     qword [rbp - 56], 7
     jmp     .create_args
+.cmd_create_leases:
+    mov     qword [rbp - 56], 8
+    jmp     .create_args
 .create_args:
     cmp     qword [rbp - 8], 4
     jb      .usage
@@ -617,6 +628,8 @@ cyboudb_main:
     je      .create_tomb
     cmp     qword [rbp - 56], 6
     je      .create_compressed
+    cmp     qword [rbp - 56], 8
+    je      .create_leases
     cmp     qword [rbp - 56], 5
     je      .create_large
     cmp     qword [rbp - 56], 4
@@ -629,6 +642,9 @@ cyboudb_main:
     jmp     .create_result
 .create_tomb:
     call    db_create_tombstones
+    jmp     .create_result
+.create_leases:
+    call    db_create_leases
     jmp     .create_result
 .create_compressed:
     call    db_create_compressed

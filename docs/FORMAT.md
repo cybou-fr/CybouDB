@@ -164,6 +164,7 @@ rather than opened in a half-understood state.
 | 8192 | `INDEX` | `PAX` |
 | 16384 | `QUEUE` | `CATALOG` |
 | 32768 | `STREAM` | `QUEUE` |
+| 65536 | `QUEUE_LEASES` | `QUEUE` |
 
 Bit 1 is unassigned and unsupported.
 
@@ -177,6 +178,31 @@ either of them.
 oversight: a queue stores no rows, so it needs no PAX table, no leaf and no
 directory of its own beyond the catalog's. A database may therefore carry
 queues and no tables at all.
+
+`QUEUE_LEASES` is the clearest example of why this mechanism exists. A queue
+without it has one state for a message - held, or gone - and `0.5.0-preview.1`
+and `preview.2` *validate* that: they require every slot's state, deadline and
+lease token to be zero, and refuse a queue whose claim cursor has run ahead of
+its head. A file with live leases is therefore one those builds cannot read,
+and the useful question is not whether they refuse it but **what they say**. The
+bit is what makes the answer *this file needs a capability I do not have* rather
+than *this queue is damaged* - the first sends someone to a newer build, the
+second to a backup.
+
+It is set when the database is created and never afterwards. `flags_incompat`
+lives in the file header, which is written once; a first `CLAIM` that promoted a
+file in place would be a format change disguised as an operation. So `cyboudb
+create-leases` makes a database that has them, `cyboudb create` makes one that
+does not, and the second stays readable by `0.5` forever rather than until
+somebody claims a message.
+
+`tests/lease_format_tests.py` holds this to something that runs. `build.sh
+--no-leases` produces a reader with the bit dropped from the mask of what it
+understands - which is what every released `0.5` binary is - and the suite
+checks that it refuses a leases database with the feature message, opens an
+ordinary one, and that the current build reads both. A dependent bit without
+its prerequisite is refused by both as malformed rather than newer, which is a
+file no creator produces and therefore one the suite makes by hand.
 
 What it does need, when a message is longer than a slot holds, is the varlen
 extent machinery - the same chains a TEXT cell uses, owned by the queue's id

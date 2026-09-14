@@ -58,6 +58,7 @@ extern db_bitmap_leaves, db_bitmap_recount
 
 global db_create, db_open, db_alloc_page, db_free_page, db_commit, db_rollback, db_close
 global db_create_tombstones
+global db_create_leases
 global db_create_default
 global db_create_cow
 global db_create_catalog
@@ -115,6 +116,12 @@ db_create_pax:
     jmp     create_common
 db_create_large:
     mov eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR | CybouDB_FEATURE_INDEX | CybouDB_FEATURE_QUEUE | CybouDB_FEATURE_STREAM
+    jmp create_common
+; Everything create-large has, plus leases. A separate creator and not a flag
+; on another one, because the bit can only be set at creation - see
+; docs/QUEUE.md - and a creator is the honest place to say so.
+db_create_leases:
+    mov eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR | CybouDB_FEATURE_TOMBSTONES | CybouDB_FEATURE_INDEX | CybouDB_FEATURE_QUEUE | CybouDB_FEATURE_STREAM | CybouDB_FEATURE_QUEUE_LEASES
     jmp create_common
 db_create_compressed:
     mov eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_COMPRESSION
@@ -572,7 +579,7 @@ db_open:
     ; A feature bit we do not know about may change the meaning of anything
     ; below, so refuse rather than guess.
     mov     rax, [r10 + HDR_FLAGS_INCOMPAT]
-    test    rax, ~(CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_COMPRESSION | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR | CybouDB_FEATURE_TOMBSTONES | CybouDB_FEATURE_INDEX | CybouDB_FEATURE_QUEUE | CybouDB_FEATURE_STREAM)
+    test    rax, ~(CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_COMPRESSION | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR | CybouDB_FEATURE_TOMBSTONES | CybouDB_FEATURE_INDEX | CybouDB_FEATURE_QUEUE | CybouDB_FEATURE_STREAM | CybouDB_FEATURE_LEASES_KNOWN)
     jne     .e_features
 
     ; Leaf runs are a choice about the multi-page PAX layout, so the bit means
@@ -649,6 +656,17 @@ db_open:
     jz      .e_features
     and     rax, ~CybouDB_FEATURE_STREAM
 .stream_checked:
+    ; Leases are a property of a queue, so the bit means nothing without the
+    ; bit that defines one. Asked here for the same reason STREAM is: the queue
+    ; bit is still here to be seen, and a moment later it has been taken out.
+%if CybouDB_FEATURE_LEASES_KNOWN != 0
+    test    rax, CybouDB_FEATURE_QUEUE_LEASES
+    jz      .leases_checked
+    test    rax, CybouDB_FEATURE_QUEUE
+    jz      .e_features
+    and     rax, ~CybouDB_FEATURE_QUEUE_LEASES
+.leases_checked:
+%endif
     test    rax, CybouDB_FEATURE_QUEUE
     jz      .queue_checked
     test    rax, CybouDB_FEATURE_CATALOG

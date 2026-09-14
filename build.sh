@@ -32,6 +32,14 @@ if [ "${1:-}" = "--cs-overflow" ]; then
     OBJDIR=build/cs-overflow
 fi
 
+# A build that does not know the queue-leases bit, which is what every released
+# 0.5 binary is. It exists so that "an older reader refuses a newer file" is
+# something a test runs rather than something this repository asserts.
+if [ "${1:-}" = "--no-leases" ]; then
+    OUT=build/cyboudb_nolease
+    OBJDIR=build/no-leases
+fi
+
 if [ "${1:-}" = "--core-tests" ]; then
     OUT=build/cow_harness
     OBJDIR=build/core-tests
@@ -224,6 +232,10 @@ for f in $SOURCES; do
     # must switch itself off and the commit must prove the long way.
     if [ "${1:-}" = "--cs-overflow" ]; then
         defs="$defs -DCybouDB_CS_CAPACITY=1"
+    fi
+    # Pretend the leases bit was never assigned, the way a 0.5 build has it.
+    if [ "${1:-}" = "--no-leases" ]; then
+        defs="$defs -DCybouDB_NO_QUEUE_LEASES=1"
     fi
     nasm -f elf64 $INC $defs "$f" -o "$o"
     OBJS="$OBJS $o"

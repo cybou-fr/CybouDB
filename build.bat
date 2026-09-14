@@ -29,6 +29,14 @@ if "%~1"=="--cs-overflow" (
     set OBJDIR=build\cs-overflow
 )
 
+rem A build that does not know the queue-leases bit, which is what every
+rem released 0.5 binary is. It exists so that "an older reader refuses a newer
+rem file" is something a test runs rather than something this repository says.
+if "%~1"=="--no-leases" (
+    set OUT=build\cyboudb_nolease.exe
+    set OBJDIR=build\no-leases
+)
+
 if "%~1"=="--core-tests" (
     set OUT=build\cow_harness.exe
     set OBJDIR=build\core-tests
@@ -202,6 +210,7 @@ for %%F in (%SOURCES%) do (
     rem A change-set too small to hold a transaction, so the path taken when
     rem the log cannot be trusted is one the suites actually walk.
     if "%~1"=="--cs-overflow" set DEFS=-DCybouDB_CS_CAPACITY=1
+    if "%~1"=="--no-leases" set DEFS=-DCybouDB_NO_QUEUE_LEASES=1
     if "%~1"=="--lib" set DEFS=-DCybouDB_LIBRARY=1
     if "%~1"=="--c-api-bench" set DEFS=-DCybouDB_LIBRARY=1
     if "%~1"=="--vector-bench" set DEFS=-DCybouDB_LIBRARY=1

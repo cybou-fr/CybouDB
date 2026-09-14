@@ -153,6 +153,35 @@
 ; One storage shape, two objects, one validator. See docs/STREAM.md.
 %define CybouDB_FEATURE_STREAM 32768
 
+; Queue leases - requires COW, the catalog and QUEUE. A message may be claimed
+; with a deadline rather than taken, so a slot carries a state, a deadline and
+; a lease token, and the queue page carries a claim cursor that has run ahead
+; of its head and a clock high-water. Every one of those is a field that
+; preview.1 and preview.2 *require* to be zero: they validate a queue by
+; checking that nothing is claimed, so a file with live leases is one they must
+; refuse rather than misread. This bit is what makes that refusal say
+; unsupported feature instead of corrupt queue.
+;
+; **It is set when the database is created and never afterwards.** flags_incompat
+; lives in the file header, which is written once; a first CLAIM that promoted a
+; file in place would be a format change disguised as an operation. So a
+; database is created with leases or without them, and one created without them
+; stays readable by 0.5 forever rather than until someone claims a message.
+;
+; See docs/QUEUE.md for the semantics and docs/FORMAT.md for the promise.
+%define CybouDB_FEATURE_QUEUE_LEASES 65536
+
+; What this build understands. Every bit above, unless the build was made to
+; pretend otherwise: --no-leases drops the leases bit so that a reader from
+; before it existed can be tested rather than described. A file carrying a bit
+; that is not in here is refused, which is the whole of the compatibility
+; promise in one mask.
+%ifdef CybouDB_NO_QUEUE_LEASES
+    %define CybouDB_FEATURE_LEASES_KNOWN 0
+%else
+    %define CybouDB_FEATURE_LEASES_KNOWN CybouDB_FEATURE_QUEUE_LEASES
+%endif
+
 ; Column compression codecs (stored in bits 8..15 of leaf column flags):
 %define PAX_CODEC_RAW       0
 %define PAX_CODEC_CONST     1
