@@ -243,6 +243,16 @@ backwards extends every lease and one that jumps forward expires them all at
 once. What a deadline means when the file is opened on another machine, or a
 year later, has to be answered in `docs/QUEUE.md` before any of it is assembly.
 
+**Both design questions are now answered there**, in *The clock a lease
+deadline is measured on* and *The shape of CLAIM, ACK, NACK and RENEW*: a
+deadline is wall-clock milliseconds floored by a high-water the queue carries,
+so its clock never runs backwards; the lease token rather than the deadline is
+what keeps an acknowledgement honest, so no clock error can cost the queue's
+integrity; expiry is a predicate rather than an event, so a dead worker's
+message costs zero writes to recover; and a reopen clears nothing, because the
+engine does not know whether a lease holder is alive and guessing runs in the
+dangerous direction. What is left is the assembly and the measurements.
+
 Gates:
 
 * a claimed message is invisible to another claimant until its deadline passes

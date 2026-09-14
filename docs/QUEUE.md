@@ -448,9 +448,203 @@ going backwards, it does not synchronise anything.
 Not the shape of `CLAIM`, `ACK`, `NACK` and `RENEW` themselves: what a claim
 returns, whether a token is visible to the caller or carried by a handle, and
 what happens to a claimed message when the database is reopened. Those are the
-next document, and they are an API question rather than a format one - which
-is the right order, because the format is the part that cannot be changed
+next section, and they are an API question rather than a format one - which is
+the right order, because the format is the part that cannot be changed
 afterwards and it is now decided.
+
+## The shape of CLAIM, ACK, NACK and RENEW
+
+The clock is decided above. This is the other half of the design, and it is
+still a document rather than an implementation: what the operations are, what a
+claim hands back, what survives a reopen, and what each refusal means. It is
+written first because the awkward questions here are the ones that are cheap to
+answer now and expensive to discover halfway through the assembly.
+
+### A claim ticket is data the caller holds, not statement state
+
+The obvious design is to let the statement remember what it claimed, so that
+`ACK` means *acknowledge what I just took*. It does not survive contact with
+what a worker actually is: a worker claims a message, spends thirty seconds
+doing something outside the database, and acknowledges from a different
+transaction - possibly a different thread, possibly after the process has
+reopened the file. A prepared statement is the wrong lifetime for that, and
+tying the two together would make the claim unusable for exactly the work it
+exists for.
+
+So a claim hands back a **ticket the caller keeps**: the message's position and
+its lease token. Two 64-bit values, which are the two the format already keeps
+in the slot.
+
+They stay two values rather than being packed into one opaque handle. Packing
+a position and a token into a single 64-bit word means splitting the bits, and
+the token half then wraps after some number of re-claims of the same message.
+That number would be large and the argument for it would be *practically never*
+- which is not a sentence this format gets to use about a field that decides
+whether an acknowledgement is honoured.
+
+```sql
+CLAIM FROM jobs FOR 30000;
+ACK   FROM jobs AT 41 TOKEN 3;
+NACK  FROM jobs AT 41 TOKEN 3;
+RENEW FROM jobs AT 41 TOKEN 3 FOR 30000;
+```
+
+`FOR` is a duration in milliseconds and the engine turns it into a deadline;
+see the clock section for why the caller states a duration and the file stores
+an absolute time.
+
+In C, a `CLAIM` behaves like a `DEQUEUE` and reuses its shape rather than
+inventing a second one: stepping it answers `CybouDB_ROW` when it took a
+message and `CybouDB_DONE` when there was nothing claimable, the payload comes
+out through `cyboudb_message`, and one new call hands back the ticket.
+
+```c
+int cyboudb_claim_ticket(cyboudb_stmt *stmt, uint64_t *position,
+                         uint64_t *token);
+```
+
+The payload is copied out at the claim for the same reason a take copies it:
+the page it is in may be retired by a later operation, and handing back a
+pointer into a page that is about to leave the generation is how a zero-copy
+read stops being a read.
+
+### Expiry is a predicate, not an event
+
+Nothing is written when a lease expires. A slot is claimable when
+
+    state is HELD, or (state is CLAIMED and deadline <= q_now)
+
+and that is evaluated at the moment somebody asks, against a `q_now` read then.
+There is no sweep, no timer, no background pass, and no transaction that has to
+run for a dead worker's message to come back.
+
+This is not a performance note, it is the reason the design works at all. The
+case leases exist for is a worker that stopped - and very often the process
+that would have run the sweep is the one that stopped. An expiry that needed a
+write would need the failed component to recover from its own failure.
+
+It also means the cost of a crashed worker is zero writes. The message is
+claimable again the instant its deadline passes, whether or not anything is
+running, and the next `CLAIM` simply finds it.
+
+### What a reopen does to a claimed message: nothing
+
+A file opened with live leases keeps them. They expire by their deadlines and
+by nothing else.
+
+The tempting alternative is to clear every lease on open, reasoning that
+storage is single-writer, so whoever held them is gone. It is wrong, and it is
+wrong in the dangerous direction. The engine does not know whether a lease
+holder is alive - a worker is not the writer, it is something the writer serves,
+and it may well have outlived a reopen of the file. Clearing leases on open
+would turn *one worker holds this* into *two workers hold this*, which is the
+one outcome the whole mechanism exists to prevent.
+
+Not guessing costs a delay: after a crash, messages that were claimed stay
+claimed until their deadlines pass. That is the delay-over-duplicate rule the
+clock section already committed to, applied to the same question from the other
+end.
+
+### The state a slot is in
+
+`QMSG_STATE` gets three values rather than two, and the third is what lets
+acknowledgement arrive out of order:
+
+| State | Meaning |
+| :--- | :--- |
+| `HELD` | Enqueued, nobody has it. The only state version 1 has |
+| `CLAIMED` | Handed out, with a deadline and a token |
+| `ACKED` | Done. The slot is finished and waiting for `head` to pass it |
+
+`head` is the oldest position not acknowledged, and it advances over a **run**
+of `ACKED` messages, not over each one as it is acknowledged. Message 5
+finishing before message 3 leaves `head` at 3 with 5 already `ACKED`, and both
+move when 3 is acknowledged. That is the reason `head` and the claim cursor
+stopped being the same number, which is what the reserved `Q_CLAIM` field was
+for.
+
+A segment is retired when `head` has passed all of it, exactly as now.
+
+### What CLAIM scans, and the cost that is honest about
+
+`CLAIM` walks forward from `head` and takes the first claimable slot: skipping
+what is `ACKED`, skipping what is `CLAIMED` with a deadline still in the
+future, taking the first thing that is `HELD` or whose lease has lapsed.
+
+So the scan is bounded by the number of messages **in flight** - claimed but
+not acknowledged, plus acknowledged out of order and waiting for `head` - and
+not by the depth of the queue. A healthy work queue keeps that number near the
+worker count. A queue with a thousand live claims makes every `CLAIM` walk a
+thousand slots, and that is a real cost that belongs in a measurement rather
+than in a promise here.
+
+`Q_CLAIM` becomes *one past the highest position ever handed out*. It is not
+where the scan starts - it cannot be, since an expired message behind it has to
+be reclaimable - and it is not required for correctness. It is what lets the
+validator state an invariant (`head <= claim <= tail`) and what bounds the walk
+from the other end.
+
+### What each refusal means
+
+The token is what makes every one of these answerable without consulting a
+clock, which is the separation the clock section argues for.
+
+| Call | Refused when | Why it is a refusal and not a repair |
+| :--- | :--- | :--- |
+| `ACK` | The slot's token is not the one presented | The lease was reclaimed and handed to somebody else. Acknowledging now would erase work that another worker is currently doing |
+| `ACK` | The slot is `HELD` or `ACKED` | Acknowledging something nobody holds, or twice |
+| `NACK` | Same two conditions | Same reasons |
+| `RENEW` | Token mismatch | As `ACK` |
+| `RENEW` | The deadline has already passed | Below |
+
+**`RENEW` on a lease that has already lapsed is refused even when nobody has
+taken the message yet.** The alternative - let it through, since no harm has
+happened - makes the guarantee depend on a race: whether the renewal or another
+worker's claim arrived first in a window the caller cannot see. Refusing is the
+answer that means the same thing every time, and the worker's correct response
+is simple, because it is the same one it needs for every other lost lease:
+stop, and claim again.
+
+`NACK` raises the token, exactly as a claim does. Without that, a worker could
+hand a message back, watch another worker take it, and then acknowledge it.
+
+### Why ACK belongs in the caller's transaction
+
+This is the part a queue inside the database can do and a broker beside it
+cannot:
+
+```sql
+BEGIN;
+  INSERT INTO results VALUES (...);
+  ACK FROM jobs AT 41 TOKEN 3;
+COMMIT;
+```
+
+The record of the work and the acknowledgement of the job commit together or
+not at all. A crash between them is not a state the file can be in. With a
+broker in another process the two are separate systems and the gap between them
+is the caller's problem forever.
+
+`CLAIM` is its own short transaction - microseconds, not the length of the work
+- which is the whole argument for leases from the section above.
+
+### What is still open
+
+**Whether `CLAIM` may take more than one message.** A worker that wants a batch
+would otherwise pay a transaction per message. Nothing in the format prevents
+it and nothing in this design assumes it; it is an API question that should be
+answered with a measurement of what a single claim costs, not before one.
+
+**The failure count.** A message that is claimed, lapses, is claimed again and
+lapses again is a poison message, and the queue currently has no way to say so.
+A count in the slot's remaining reserved `u32` would be the field a dead-letter
+rule wants. It is reserved and it stays reserved until there is a rule to write
+against it - which is the same discipline the lease fields themselves got.
+
+**The measurements.** What a claim costs against queue depth and against the
+number of live claims, and what the clock read adds to an operation that
+previously did not make a syscall. Those come before the release and not after,
+the way the commit work did.
 
 ## What version 1 does not do
 
