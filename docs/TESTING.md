@@ -198,7 +198,7 @@ See [COMMIT_VALIDATION.md](COMMIT_VALIDATION.md).
 
 ## The four lease operations
 
-`tests/lease_ops_test.c`, 47 checks, against a `create-leases` database. The
+`tests/lease_ops_test.c`, 66 checks, against a `create-leases` database. The
 first code in the engine that writes a lease, so every check asks two things:
 what the operation returned, and whether the file it left behind still passes
 an integrity check. An operation that writes a state the format forbids fails
@@ -211,6 +211,27 @@ side, that the stale ticket is refused rather than merely losing a race; `NACK`
 raises it too, which is what stops a worker handing a message back and then
 acknowledging it; expiry is a predicate, so the queue that had nothing claimable
 has two again once the clock passes without anything running.
+
+**Two groups are about what comes back rather than what happens.** The head
+moves over a *run* of acknowledged messages, and what it passes is what the
+queue gives back - segment pages and the extent chains of the messages on them.
+Each is proved separately because each fails separately, and the first two
+attempts at proving either were worth less than they looked:
+
+* asking whether a particular segment page is still payload answers *yes* for
+  the wrong reason, because copy-on-write retires the page a claim rewrote
+  whether or not the head ever passes it. The check that works is **headroom** -
+  ten segments' worth of inline messages drained in one go, and the file must
+  have ten pages more reusable afterwards.
+* the endurance run - sixty rounds of forty messages in a file too small to
+  hold what they allocate between them - proves the chains, but only once the
+  payload is twelve kilobytes. At two hundred bytes the chains came to 2,400
+  pages, the four-thousand-page file swallowed them, and leaking every one of
+  them passed.
+
+Both were confirmed by breaking them: the retirement loop disabled fails the
+headroom check and nothing else, and the chain retirement disabled fails the
+endurance run and nothing else.
 
 **The group worth knowing about is the last one.** Five refusals, each followed
 immediately by a commit with nothing in between. The first version of these

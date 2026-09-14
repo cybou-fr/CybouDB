@@ -1674,6 +1674,137 @@ lease_hold:
     ret
 
 ; -----------------------------------------------------------------------------
+;  lease_advance_head(ctx, the writable queue page) -> EAX: 0
+;
+;  The head is the oldest position not acknowledged, and acknowledgement can
+;  arrive out of order - so it moves over a *run* of ACKED messages rather than
+;  one at a time. Message 5 finishing before 3 leaves the head at 3 with 5
+;  already done, and both move when 3 is acknowledged.
+;
+;  This is retirement machinery rather than lease machinery, and it is the same
+;  machinery db_queue_pop has: the bytes each message owned are given back as
+;  the head passes it, the segments left entirely behind are retired, and what
+;  is left of the directory moves down to entry zero.
+;
+;  The extents are retired here and not at the acknowledgement, which is the
+;  part worth knowing. An ACKED message still inside [head, tail) is one the
+;  validator walks, and it would walk the chain the slot names - so a chain
+;  retired at ACK would be a chain the next commit reads as damage. The head
+;  passing the message is the moment nothing reads it again.
+; -----------------------------------------------------------------------------
+lease_advance_head:
+    FRAME_BEGIN 96, 0
+    mov [rbp - 8], ARG1
+    mov [rbp - 16], ARG2
+    mov r11, ARG2
+    mov rax, [r11 + Q_HEAD]
+    mov [rbp - 24], rax             ; where the head started
+    mov [rbp - 32], rax             ; and where it is getting to
+    mov rax, [r11 + Q_TAIL]
+    mov [rbp - 40], rax
+
+.ah_step:
+    mov rax, [rbp - 32]
+    cmp rax, [rbp - 40]
+    jae .ah_moved
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    mov ARG3, Q_ENTRIES
+    mov ARG4, [rbp - 32]
+    call queue_slot_at
+    test rax, rax
+    jz .ah_moved
+    cmp dword [rax + QMSG_STATE], QMSG_STATE_ACKED
+    jne .ah_moved                   ; the run ends at the first unfinished one
+
+    mov ecx, [rax + QMSG_FLAGS]
+    test ecx, QMSG_FLAG_EXTENT
+    jz .ah_no_chain
+    mov ARG2, [rax + QMSG_EXTENT]
+    mov ARG1, [rbp - 8]
+    call queue_retire_chain
+.ah_no_chain:
+    inc qword [rbp - 32]
+    jmp .ah_step
+
+.ah_moved:
+    mov rax, [rbp - 32]
+    cmp rax, [rbp - 24]
+    je .ah_done                     ; nothing at the front was finished
+
+    mov r11, [rbp - 16]
+    mov [r11 + Q_HEAD], rax
+    xor edx, edx
+    mov rcx, QUEUE_SEG_SLOTS
+    div rcx
+    mov [rbp - 48], rax             ; the segment the new head is in
+
+    mov rdx, [rbp - 32]
+    cmp rdx, [rbp - 40]
+    jne .ah_keeping
+    mov ecx, [r11 + Q_SEGMENTS]
+    mov [rbp - 56], rcx             ; drained: every entry goes
+    mov qword [rbp - 64], 0
+    jmp .ah_counted
+.ah_keeping:
+    mov rax, [rbp - 48]
+    sub rax, [r11 + Q_FIRST_SEG]
+    mov [rbp - 56], rax             ; entries the head has left behind
+    mov ecx, [r11 + Q_SEGMENTS]
+    sub rcx, rax
+    mov [rbp - 64], rcx
+.ah_counted:
+
+    mov qword [rbp - 72], 0
+.ah_retire:
+    mov rax, [rbp - 72]
+    cmp rax, [rbp - 56]
+    jae .ah_retired
+    mov r11, [rbp - 16]
+    mov ARG2, [r11 + Q_ENTRIES + rax * 8]
+    mov ARG1, [rbp - 8]
+    call db_bitmap_retire
+    inc qword [rbp - 72]
+    jmp .ah_retire
+.ah_retired:
+    cmp qword [rbp - 56], 0
+    je .ah_fields                   ; nothing moved, so nothing to shift
+
+    mov r11, [rbp - 16]
+    mov rcx, [rbp - 56]
+    xor edx, edx
+.ah_move:
+    cmp rdx, [rbp - 64]
+    jae .ah_cleared
+    mov r9, rdx
+    add r9, rcx
+    mov r8, [r11 + Q_ENTRIES + r9 * 8]
+    mov [r11 + Q_ENTRIES + rdx * 8], r8
+    inc rdx
+    jmp .ah_move
+.ah_cleared:
+    ; And what used to be beyond them is zero, as every tail here is.
+    mov rax, [rbp - 64]
+    mov ecx, [r11 + Q_SEGMENTS]
+.ah_clear:
+    cmp rax, rcx
+    jae .ah_fields
+    mov qword [r11 + Q_ENTRIES + rax * 8], 0
+    inc rax
+    jmp .ah_clear
+
+.ah_fields:
+    mov r11, [rbp - 16]
+    mov rax, [rbp - 64]
+    mov [r11 + Q_SEGMENTS], eax
+    mov rax, [rbp - 48]
+    mov [r11 + Q_FIRST_SEG], rax
+.ah_done:
+    xor eax, eax
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
 ;  db_queue_ack(ctx, id, position, token) -> EAX
 ;
 ;  Done. The slot keeps the token that finished it, which is what makes a
@@ -1694,6 +1825,14 @@ db_queue_ack:
     mov ARG1, [rbp - 64 + LE_SEG]
     mov ARG2, [rbp - 8]
     call queue_seg_seal
+
+    ; The head moves over whatever is finished at the front, which may be this
+    ; message, may be a run of them that were waiting for it, and may be
+    ; nothing at all.
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 64 + LE_QPAGE]
+    call lease_advance_head
+
     mov ARG1, [rbp - 64 + LE_QPAGE]
     call db_catalog_seal
     xor eax, eax

@@ -1103,7 +1103,7 @@ single page is written with a non-zero lease state:
 6. conditional validation  the state table above, behind the bit            done
 7. the summary's bytes     named and required zero until something writes     done
 8. the operations          CLAIM, ACK, NACK, RENEW in the engine               done
-9. head advancement        a run of ACKED at the front, and its retirement
+9. head advancement        a run of ACKED at the front, and its retirement    done
 10. the index              built, maintained, and validated
 11. the public surface     SQL and C
 ```
