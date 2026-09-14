@@ -47,7 +47,11 @@ Only in a database created for it - `cyboudb create-leases`, incompatible bit
 65536, decided when the file is made and never afterwards. A `0.5` build
 refuses such a file saying *unsupported feature* rather than *corrupt queue*,
 which is what the bit is for; one created without it is unchanged and stays
-readable by `0.5` forever.
+readable by `0.5` forever. That is not an intention: the published
+`0.5.0-preview.1` and `0.5.0-preview.2` binaries were run against a lease file
+on Linux and Windows before this release was tagged, and all four refuse it by
+name, still read an ordinary database, and leave the file byte-identical. The
+run is frozen in [docs/RELEASE-GATE-0.6.md](docs/RELEASE-GATE-0.6.md).
 
 **The deadline decides when a message becomes claimable again. The token
 decides whose acknowledgement counts.** They are separate, and only the second
@@ -62,6 +66,21 @@ has already used, so a queue's clock never runs backwards whatever the
 machine's does. Expiry is a predicate rather than an event: nothing is written
 when a lease lapses, which matters because the process that would have run a
 sweep is usually the one that stopped.
+
+**Finding the next claimable message costs a scan, and this release bounds it
+with a per-segment summary rather than an index.** Each segment records when it
+next has something claimable, so a claim skips whole segments instead of
+walking every retained slot: measured on a queue of 29,700 messages, a naive
+walk inspected all of them and the summary brought it to 2 - never more than 38
+slots at any depth, and none at all on an empty queue - leaving the segment
+count, 480 at that size, as the linear term. A hierarchy over those summaries
+would take that 480 to eight, and is designed and modelled but **not in this
+release** - what ships is the summary. The baseline is in
+[2026-09-14-lease-search.md](benchmarks/results/2026-09-14-lease-search.md) and
+what each step bought in
+[2026-09-14-lease-ready-at-tree.md](benchmarks/results/2026-09-14-lease-ready-at-tree.md).
+A queue page names at most 495 segments, so the linear term has a ceiling
+rather than growing with the queue.
 
 `cyboudb_errmsg` now explains execution-time failures, which it did not: a
 failed statement set a code and left the message saying `ok`, the same thing a
