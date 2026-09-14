@@ -36,6 +36,13 @@ void cyboudb_poly1305(const uint8_t *key, const uint8_t *msg, uint64_t len,
 void cyboudb_chacha20_xor(const uint8_t *key, uint32_t counter,
                           const uint8_t *nonce, uint8_t *buf, uint64_t len);
 
+/* The streaming form the AEAD needs: it authenticates the associated data, the
+   ciphertext and the two lengths, which are three pieces that are not next to
+   each other. 352 bytes of context, from include/crypto.inc. */
+void cyboudb_poly1305_init(void *ctx, const uint8_t *key);
+void cyboudb_poly1305_update(void *ctx, const uint8_t *msg, uint64_t len);
+void cyboudb_poly1305_finish(void *ctx, uint8_t *mac);
+
 static int checks, failures;
 
 static void check(const char *what, int ok) {
@@ -282,6 +289,40 @@ int main(void) {
         t = now_seconds() - t;
         printf("\n     4096-byte page: %.0f ns, %.2f GB/s\n",
                t * 1e9 / 20000.0, 4096.0 * 20000.0 / t / 1e9);
+    }
+
+    /* Split updates must equal one update, at every split point. This is the
+       property the AEAD rests on, and it is the one a one-shot test cannot
+       see: the group boundary is 64 bytes and the buffer between calls is
+       what carries a partial group across. */
+    {
+        int ok = 1, split, bad = -1;
+        unsigned char ctx[512];
+        for (split = 0; split <= 200 && ok; split++) {
+            uint8_t one[16], many[16];
+            cyboudb_poly1305(key, msg, 200, one);
+            cyboudb_poly1305_init(ctx, key);
+            cyboudb_poly1305_update(ctx, msg, (uint64_t)split);
+            cyboudb_poly1305_update(ctx, msg + split, (uint64_t)(200 - split));
+            cyboudb_poly1305_finish(ctx, many);
+            if (memcmp(one, many, 16) != 0) { ok = 0; bad = split; }
+        }
+        if (!ok) printf("     first disagreement at split %d\n", bad);
+        check("two updates equal one, split at every byte from 0 to 200", ok);
+    }
+
+    /* Three pieces, which is what the AEAD actually does. */
+    {
+        uint8_t one[16], three[16];
+        unsigned char ctx[512];
+        cyboudb_poly1305(key, msg, 300, one);
+        cyboudb_poly1305_init(ctx, key);
+        cyboudb_poly1305_update(ctx, msg, 13);
+        cyboudb_poly1305_update(ctx, msg + 13, 179);
+        cyboudb_poly1305_update(ctx, msg + 192, 108);
+        cyboudb_poly1305_finish(ctx, three);
+        check("and three updates do too, on lengths that are not multiples "
+              "of anything", memcmp(one, three, 16) == 0);
     }
 
     /* And the whole seal: encrypt the page, then authenticate the ciphertext.

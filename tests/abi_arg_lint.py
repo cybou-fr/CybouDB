@@ -62,7 +62,20 @@ ALIASES = {
 BARE = re.compile(r"^(r[a-z0-9]+)$")
 BASE = re.compile(r"\[\s*(r[a-z0-9]+)")
 
-WRITE = re.compile(r"^\s*mov\s+(ARG[1-6])\s*,\s*(.+?)\s*(?:;.*)?$")
+# Setting an argument is not always a MOV. LEA is how a pointer into the
+# frame is passed, and XOR ARGn, ARGn is how a zero is - and for a long time
+# this pattern only matched MOV, so `lea ARG1, [rbp - X]` did not mark the
+# register it lands in as taken. That let this through, in src/crypto/aead.asm:
+#
+#     mov rcx, 16                 ; the pad length
+#     sub rcx, rax
+#     lea ARG1, [rbp - AE_CTX]    ; ARG1 is RCX on Win64 - the length is gone
+#     mov ARG3, rcx               ; ...and this passes a context pointer
+#
+# which worked on System V, crashed on Windows, and is exactly what this file
+# exists to find.
+WRITE = re.compile(r"^\s*(?:mov|lea|xor|add|sub|movzx|movsx)\s+"
+                   r"(ARG[1-6])\s*,\s*(.+?)\s*(?:;.*)?$")
 PASS = re.compile(r"^\s*PASS_(ARG[56])\s+(.+?)\s*(?:;.*)?$")
 CALL = re.compile(r"^\s*call\s")
 RET = re.compile(r"^\s*(?:ret|hlt|syscall)\b")
@@ -173,6 +186,8 @@ def scan(path):
             continue
         arg, operand = match.group(1), match.group(2)
         for register in sources(operand):
+            if register in ALIASES[arg]:
+                continue            # `xor ARGn, ARGn` reads only itself
             if register in taken:
                 where, by = taken[register]
                 findings.append((number, register, arg, where, by,

@@ -178,6 +178,7 @@ jobs:
           sh build.sh --crypto-tests
           ./build/chacha20_test
           ./build/poly1305_test
+          ./build/aead_test
 
       - name: Interactive REPL and pipe tests
         run: python3 tests/repl_tests.py ./cyboudb
@@ -401,6 +402,7 @@ jobs:
           call build.bat --crypto-tests
           build\chacha20_test.exe
           build\poly1305_test.exe
+          build\aead_test.exe
           if errorlevel 1 exit /b 1
 
       # Split the way the other two-binary steps are: the build under cmd, the

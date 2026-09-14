@@ -29,11 +29,13 @@ What this reads:
     made the decision consciously;
   * routines are top-level labels; `.local` labels belong to the routine above
     them, which is how a jump target that shares a body is handled;
-  * a `%macro` body is not a routine. Its writes are charged to whatever
-    routine invokes it, because that is where the saving has to happen - the
-    crypto code keeps its accumulators in callee-saved registers inside macros
-    defined above the routine that uses them, and reading those bodies as
-    stray code reported five bugs that were not there;
+  * a `%macro` body is not a routine. Its writes *and its saves* are charged
+    to whatever routine invokes it, because that is where both have to happen.
+    The crypto code keeps its accumulators in callee-saved registers inside
+    macros defined above the routine that uses them - and saves those registers
+    in a macro too. Reading macro bodies as stray code reported five bugs that
+    were not there; reading their writes but not their saves reported another
+    seventeen;
   * RDI and RSI are only the caller's on Windows, so code that cannot be
     assembled for Windows is exempt: `src/platform/linux/` entirely, and any
     `%ifdef CybouDB_LINUX` / `%ifndef CybouDB_WINDOWS` region elsewhere. RBX
@@ -91,9 +93,9 @@ ENDMACRO_RE = re.compile(r"^\s*%endmacro", re.I)
 INVOKE_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\b")
 
 
-def macro_writes(path):
-    """Which callee-saved registers each macro in this file writes."""
-    writes, current = {}, None
+def macro_effects(path):
+    """Per macro: which callee-saved registers it writes, and which it saves."""
+    writes, saves, current = {}, {}, None
     with open(path, encoding="utf-8", errors="replace") as fh:
         for raw in fh:
             line = raw.split(";")[0].rstrip()
@@ -101,12 +103,18 @@ def macro_writes(path):
             if m:
                 current = m.group(1)
                 writes[current] = set()
+                saves[current] = set()
                 continue
             if ENDMACRO_RE.match(line):
                 current = None
                 continue
             if current is None:
                 continue
+
+            m = PUSH_RE.match(line) or STORE_RE.match(line)
+            if m and m.group(1) in CANON:
+                saves[current].add(CANON[m.group(1)])
+
             m = WRITE_RE.match(line)
             if not m:
                 continue
@@ -116,13 +124,13 @@ def macro_writes(path):
             reg = CANON.get(dst)
             if reg is not None:
                 writes[current].add(reg)
-    return writes
+    return writes, saves
 
 
 def scan(path):
     """Report (routine, register, line) for each unsaved write."""
     findings = []
-    macros = macro_writes(path)
+    macro_w, macro_s = macro_effects(path)
     in_macro = False
     routine, first_line = os.path.basename(path), 0
     saved, written = set(), {}
@@ -166,8 +174,9 @@ def scan(path):
                 continue                # charged to the caller, below
 
             m = INVOKE_RE.match(line)
-            if m and m.group(1) in macros:
-                for reg in macros[m.group(1)]:
+            if m and m.group(1) in macro_w:
+                saved.update(macro_s[m.group(1)])
+                for reg in macro_w[m.group(1)]:
                     if reg in WINDOWS_ONLY and not windows[-1]:
                         continue
                     written.setdefault(reg, n)

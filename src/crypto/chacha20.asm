@@ -40,6 +40,7 @@ BITS 64
 default rel
 
 global cyboudb_chacha20_xor
+global cyboudb_hchacha20
 
 section .rodata
 align 16
@@ -423,6 +424,65 @@ cyboudb_chacha20_xor:
     movdqa  [rbp - ST_KS + 48], xmm0
 
 .done:
+    FRAME_END
+    ret
+
+; =============================================================================
+;  cyboudb_hchacha20(key, nonce, out)
+;
+;  ARG1  const uint8_t key[32]
+;  ARG2  const uint8_t nonce[16]
+;  ARG3  uint8_t       out[32]
+;
+;  draft-irtf-cfrg-xchacha section 2.2. The same permutation as ChaCha20 with
+;  the sixteen nonce bytes where the counter and the twelve-byte nonce usually
+;  sit, and **no final addition of the original state** - the output is rows
+;  zero and three as the rounds left them.
+;
+;  That last difference is the whole of it, and it is why this cannot be a flag
+;  on the cipher above: adding the original state back would make the result
+;  invertible, and HChaCha20's job is to derive a subkey that does not give the
+;  key away.
+;
+;  It is what turns a 24-byte nonce into something ChaCha20 can use: the first
+;  sixteen bytes pick a subkey, the last eight become the nonce, and a random
+;  192-bit nonce per page becomes safe to draw - docs/CRYPTO_BACKEND.md,
+;  Decision 2.
+; =============================================================================
+cyboudb_hchacha20:
+    FRAME_BEGIN 64, 0
+
+    mov     r10, ARG3                   ; out
+    mov     r11, ARG2                   ; nonce
+    mov     r9, ARG1                    ; key
+
+    movdqa  xmm0, [chacha_sigma]
+    movdqu  xmm1, [r9]
+    movdqu  xmm2, [r9 + 16]
+    movdqu  xmm3, [r11]                 ; all sixteen nonce bytes
+
+    mov     ecx, 10
+.hround:
+    QUARTER_ROUND xmm0, xmm1, xmm2, xmm3, xmm4
+    pshufd  xmm1, xmm1, 0x39
+    pshufd  xmm2, xmm2, 0x4E
+    pshufd  xmm3, xmm3, 0x93
+    QUARTER_ROUND xmm0, xmm1, xmm2, xmm3, xmm4
+    pshufd  xmm1, xmm1, 0x93
+    pshufd  xmm2, xmm2, 0x4E
+    pshufd  xmm3, xmm3, 0x39
+    dec     ecx
+    jnz     .hround
+
+    movdqu  [r10], xmm0                 ; rows zero and three, unadded
+    movdqu  [r10 + 16], xmm3
+
+    pxor    xmm0, xmm0
+    pxor    xmm1, xmm1
+    pxor    xmm2, xmm2
+    pxor    xmm3, xmm3
+    pxor    xmm4, xmm4
+
     FRAME_END
     ret
 
