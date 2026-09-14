@@ -415,10 +415,21 @@ here.** Once the queue has seen a timestamp from the future it will not go
 back to real time, because going back is the thing the high-water exists to
 prevent, and nothing inside the file can tell a bogus future timestamp from
 time genuinely having passed - which it must not, since a machine suspended
-for an hour *should* expire its leases. What can be done is to notice it:
-a high-water far ahead of the current wall clock is a diagnosable state, and
-`cyboudb check` should report it. Reporting a condition it cannot prevent is
-the same line the integrity check already walks.
+for an hour *should* expire its leases. What can be done is to notice it, and where the
+notice goes matters.
+
+**It is not an integrity finding.** `cyboudb check` means one thing here - the
+structure is or is not what it claims to be - and a high-water ahead of the
+system clock is not a structural fact about the file. It is what a correct file
+looks like after a wrong RTC, a resumed VM snapshot, an operator moving the
+clock, or a file that genuinely arrived from a machine in another state of
+time. None of those is corruption, and answering them with the same exit code
+as a broken checksum would undo exactly the separation `preview.2` was spent
+establishing.
+
+So it is reported as an operational anomaly and not a damage report:
+`cyboudb info` says it, and `check` may say it as a warning that leaves the
+integrity verdict and the exit code alone.
 
 ### Where it lives
 
@@ -565,48 +576,148 @@ for.
 
 A segment is retired when `head` has passed all of it, exactly as now.
 
-### What CLAIM scans, and the cost that is honest about
+### The open problem: finding a claimable message
 
-`CLAIM` walks forward from `head` and takes the first claimable slot: skipping
-what is `ACKED`, skipping what is `CLAIMED` with a deadline still in the
-future, taking the first thing that is `HELD` or whose lease has lapsed.
+**This, and not the clock, is the hard part of leases**, and it is left open
+here on purpose rather than answered with a guess.
 
-So the scan is bounded by the number of messages **in flight** - claimed but
-not acknowledged, plus acknowledged out of order and waiting for `head` - and
-not by the depth of the queue. A healthy work queue keeps that number near the
-worker count. A queue with a thousand live claims makes every `CLAIM` walk a
-thousand slots, and that is a real cost that belongs in a measurement rather
-than in a promise here.
+A FIFO without leases has no search. `head` is the next message, and taking it
+moves `head`. Leases put holes in the middle:
+
+```text
+position 100   CLAIMED, deadline in the future
+position 101   ACKED
+position 102   CLAIMED, lapsed          <- claimable
+position 103   HELD                     <- claimable
+position 104   ACKED
+```
+
+The obvious rule - walk forward from `head` and take the first claimable slot -
+is the one an earlier draft of this section stated, along with the claim that
+its cost is bounded by the messages in flight. **That claim is false**, and the
+counterexample is ordinary rather than exotic:
+
+```text
+head = 3, claimed by a worker that is slow or dead
+positions 4 .. 10003 all ACKED, out of order, waiting for head
+```
+
+`head` cannot advance past 3, so every `CLAIM` walks ten thousand `ACKED` slots
+to reach anything. That is `claim cost ∝ retained queue` - precisely the
+disease `preview.2` was spent curing on the commit path, reintroduced on the
+claim path by one slow worker. A design that can be talked into it by a single
+stuck message has not answered the question.
+
+**Why a cursor alone does not fix it.** The natural repair is a hint that
+remembers how far the last scan got and starts there. It does not close the
+case, because the hint has to be pulled *backwards* whenever a slot behind it
+becomes claimable again - and expiry, by the decision two sections above,
+writes nothing. There is no event to hang the pull-back on. `NACK` can pull it
+back because `NACK` writes; a lease lapsing cannot, and lapsing is the common
+case. A hint plus a full rescan when the hint finds nothing just moves the
+linear walk to the moment the queue is out of fresh messages, which is when a
+work queue is most likely to be scanning for a lapsed one.
+
+**The shape an answer probably has.** What can be written cheaply is a summary
+per segment, because every operation that changes a slot already writes that
+slot's segment page: whether the segment holds any `HELD` slot, and the
+earliest deadline among its `CLAIMED` ones. Both are facts as of the last
+write, and both are enough to *skip* a segment without reading it - a segment
+with no `HELD` slot and an earliest deadline in the future has nothing to give.
+Crucially, skipping stays correct without any write at expiry: a deadline
+recorded in the past is exactly what says the segment may now have something.
+
+That reduces the walk from slots to segments, which is a factor of 62 and not
+an answer on its own - a million-deep queue is sixteen thousand segments. What
+sits above that, and whether it needs the second directory level the queue page
+already reserves bytes for, is the part to decide with a measurement in hand.
+
+**So the order is the one `preview.2` established: instrument first.** Two
+counters, before any strategy is chosen:
+
+```text
+lease slots inspected per CLAIM
+segments inspected per CLAIM
+```
+
+and the acceptance criterion is stated against them rather than against a
+wall-clock time, for the same reason the commit work was:
+
+| Queue depth | An ordinary `CLAIM` must |
+| ---: | :--- |
+| 100 | not scan the retained queue |
+| 10,000 | not scan the retained queue |
+| 1,000,000 | not scan the retained queue |
+
+*Ordinary* means: fresh messages available, some claims live, some
+acknowledgements out of order. The number that must stay flat across those
+three rows is slots inspected per claim - the same shape as the 2.14 → 163.41
+→ 1.00 table `preview.2` closed with, and the same reason for preferring a
+counter to a timing: a counter says whether the cost follows the work or the
+backlog, and a timing says what the machine was doing that afternoon.
 
 `Q_CLAIM` becomes *one past the highest position ever handed out*. It is not
-where the scan starts - it cannot be, since an expired message behind it has to
-be reclaimable - and it is not required for correctness. It is what lets the
-validator state an invariant (`head <= claim <= tail`) and what bounds the walk
-from the other end.
+where the scan starts - it cannot be, since a lapsed message behind it has to
+be reclaimable - and it is not required for correctness. It is what bounds the
+walk from the other end and what lets the validator state an invariant
+(`head <= claim <= tail`).
 
 ### What each refusal means
 
 The token is what makes every one of these answerable without consulting a
 clock, which is the separation the clock section argues for.
 
+**The deadline is never consulted.** It decides when a slot becomes claimable
+and nothing else; whether an operation by a lease holder is honoured is decided
+by the token alone.
+
 | Call | Refused when | Why it is a refusal and not a repair |
 | :--- | :--- | :--- |
-| `ACK` | The slot's token is not the one presented | The lease was reclaimed and handed to somebody else. Acknowledging now would erase work that another worker is currently doing |
+| `ACK` | The slot's token is not the one presented | The lease was reclaimed and handed to somebody else. Acknowledging now would erase work another worker is currently doing |
 | `ACK` | The slot is `HELD` or `ACKED` | Acknowledging something nobody holds, or twice |
 | `NACK` | Same two conditions | Same reasons |
 | `RENEW` | Token mismatch | As `ACK` |
-| `RENEW` | The deadline has already passed | Below |
 
-**`RENEW` on a lease that has already lapsed is refused even when nobody has
-taken the message yet.** The alternative - let it through, since no harm has
-happened - makes the guarantee depend on a race: whether the renewal or another
-worker's claim arrived first in a window the caller cannot see. Refusing is the
-answer that means the same thing every time, and the worker's correct response
-is simple, because it is the same one it needs for every other lost lease:
-stop, and claim again.
+**A lapsed deadline is not itself a refusal.** A worker whose lease expired at
+12:00:00 and finished at 12:00:01, on a message nobody has re-claimed, gets its
+`ACK`. Refusing it would be refusing correct work for something that did not
+happen: the harm a deadline guards against is another worker holding the same
+message, and if that had occurred the token would say so. An earlier draft of
+this section refused a lapsed `RENEW` on the grounds that letting it through
+makes the guarantee depend on a race. That was wrong, and it was wrong about
+its own mechanism - the race does not exist, because the reclaim that would
+lose it is exactly the event that raises the token. Refusing on the clock
+alone only manufactures duplicate work that nothing required.
+
+So the rule, and it is the whole rule:
+
+> A lapsed lease means somebody else **may** take the message. The token is
+> what says somebody else **did**. Only the second one refuses anything.
+
+This is what makes the wall clock survivable. Every decision that could be
+wrong is made against a counter that cannot be, and the clock is left deciding
+only availability - where being wrong costs a delay or a duplicate, and never
+an incorrect answer.
 
 `NACK` raises the token, exactly as a claim does. Without that, a worker could
 hand a message back, watch another worker take it, and then acknowledge it.
+
+### The token's one arithmetic limit
+
+A token is a per-slot counter and each claim raises it. A counter needs an
+answer at its end, and the answer is not to wrap:
+
+    token == UINT64_MAX  ->  the message refuses another CLAIM
+
+Wrapping to zero would let a stale token from long ago equal a fresh one, which
+is the single thing the token exists to prevent - so the one case where the
+mechanism could silently fail is closed by refusing rather than by arithmetic.
+
+A message would have to be claimed 2^64 times to reach it, so this is not a
+limit anyone meets. It is here because "practically never" is not an answer a
+storage format is allowed to give about the field that decides whether an
+acknowledgement is honoured, and because a refusal that is impossible to
+trigger costs one comparison.
 
 ### Why ACK belongs in the caller's transaction
 
@@ -627,6 +738,67 @@ is the caller's problem forever.
 
 `CLAIM` is its own short transaction - microseconds, not the length of the work
 - which is the whole argument for leases from the section above.
+
+### What a crash leaves behind
+
+Every lease operation is an ordinary transaction, so the crash story is the
+engine's existing one and this table is what it *means* for a queue rather than
+a second mechanism. Each row is a crash at that instant.
+
+| Crash point | The file afterwards | What a worker should do |
+| :--- | :--- | :--- |
+| During `CLAIM`'s own transaction | Nothing happened. The message is still `HELD`, the token unchanged | Claim again; it gets the same message |
+| Between `CLAIM` and the work | The message is `CLAIMED` with a deadline nobody will renew | Nothing. The deadline passes and the message is claimable, at a cost of zero writes |
+| During the work | As above | As above |
+| Between the work and `ACK` | Same, and the work's own record is not in the file either - it was in the transaction that was going to carry the `ACK` | The message comes back and the work runs again. This is at-least-once, chosen by where the caller put the commit |
+| During the transaction carrying the work and the `ACK` | Neither the record nor the acknowledgement. They are one transaction; a state with one and not the other does not exist | Nothing |
+| After that transaction commits | Both. The message is `ACKED` | Nothing |
+| During `NACK` | The `NACK` did not happen; the lease stands | Retry the `NACK`, or let the deadline do it |
+| During `RENEW` | The old deadline stands | Retry, or accept the lapse |
+
+The line worth stating on its own is the fourth: **the record of the work and
+the acknowledgement of the job are one transaction, so there is no crash that
+separates them.** That is what a queue inside the database gives that a broker
+beside it cannot, and it is unchanged by leases - leases only make the window
+before the commit safe to be long.
+
+Reopening a file changes none of these rows. See *What a reopen does to a
+claimed message*, above.
+
+### Before any of this is assembly: the format contract
+
+The order here is not a preference. A capability bit is a promise to every
+build that already exists, so it is made in the format's own documents before a
+single page is written with a non-zero lease state:
+
+```text
+1. docs/FORMAT.md        the bit, its dependency, what an old reader must do
+2. include/format.inc    the constant
+3. the creator           `cyboudb create` gains the choice
+4. open-time validation  QUEUE_LEASES without QUEUE is a refusal
+5. an old-reader test    a frozen fixture a 0.5 build must refuse, cleanly
+```
+
+Step 5 is the one that makes the rest true rather than intended. A `0.5` build
+opening a leases file has to say *unsupported feature* and not *corrupt queue*,
+and the only thing that establishes it is a file those builds actually refuse -
+asserted by a fixture, the way the compatibility promise already is.
+
+`FORMAT.md` currently stops at `32768 STREAM`, which is correct today because
+leases do not exist. It stops being correct the moment they do.
+
+**And `Q_TIME_FLOOR`'s zero check becomes conditional rather than deleted.**
+The check added with the clock design says the field is zero; when leases
+arrive the rule is not *remove it*, it is:
+
+```text
+without QUEUE_LEASES   Q_TIME_FLOOR == 0
+with QUEUE_LEASES      Q_TIME_FLOOR is a timestamp, validated as one
+```
+
+Deleting the check would make a queue without leases stop caring about eight
+bytes it is still required not to use - which is the same mistake the field was
+found in, repeated deliberately.
 
 ### What is still open
 

@@ -105,7 +105,7 @@ being right; this is about it being usable.
 ```text
 0.6
  ├─ flush investigation    done
- ├─ parameter binding      done
+ ├─ parameter binding      INSERT done, predicate binding to go
  └─ queue leases
 ```
 
@@ -198,10 +198,48 @@ needs the probe harness, which reaches the engine below `cyboudb_bind_*`, and
 that is worth doing when the counters are next being read anyway rather than
 as a detour here.
 
-`?` is accepted only in `INSERT ... VALUES`. A placeholder in a `WHERE` clause
-is a syntax error that names the restriction; widening it is a separate piece
-of work, because a predicate placeholder has to survive kernel resolution and
-zone pruning, both of which read the literal at bind time.
+**Half done, and the other half stays in `0.6`.** `?` is accepted only in
+`INSERT ... VALUES`. That leaves the release's own promise - *an application
+can use CybouDB without building SQL by hand* - only half kept, because an
+application still reaches for
+
+```c
+snprintf(sql, n, "SELECT ... WHERE id = %lld", id);
+```
+
+for every read, every conditional update and every delete. Shipping `0.6` like
+that would mean either narrowing the promise or making the first thing anyone
+notices be the thing that is missing. The promise stays; the work finishes:
+
+```text
+1. SELECT predicate parameters
+2. UPDATE SET values
+3. UPDATE predicate
+4. DELETE predicate
+5. the prepared re-run matrix x parameters
+```
+
+The CRUD path, not parameters everywhere. `?` in a projection list, in an
+`ORDER BY`, in a `LIMIT` or as a table name is not part of this and is not
+missed by an application writing ordinary queries.
+
+**What makes the predicate case harder than the INSERT case**, and what the
+design has to answer before the assembly: a bound predicate value is read at
+*bind* time by two things that an INSERT cell is not. The comparison kernel is
+resolved against the literal's type, and zone pruning decides which pages can
+be skipped by comparing the literal against per-zone minima and maxima. Both
+happen while building the plan, and the plan is immutable across executions -
+so neither may capture a value that has not arrived yet.
+
+The shape that follows from the rule already in force: the kernel is resolved
+from the *column's* type rather than the literal's, which it already has; and
+zone pruning becomes a per-execution decision taken against the bound value
+rather than a plan-time one. That second part is the real work, and it is the
+part worth measuring, because pruning is where the scan gets its speed.
+
+Then the gate: a bound `SELECT` must prune the same zones as the equivalent
+literal `SELECT` - which is also the counter comparison the INSERT gates only
+half met, arriving where it is actually load-bearing rather than as a detour.
 
 ### Queue leases
 
@@ -268,7 +306,7 @@ Gates:
 ### Explicitly not in 0.6
 
 No change to what format v1 means for data already written. No ARM64 - that is
-`0.7` and a whole release of its own. No WAL, no second writer, no encryption,
+`0.8` and a whole release of its own. No WAL, no second writer, no encryption,
 no ANN index, no daemon. No further commit-path optimisation unless the flush
 measurement says otherwise, and then as its own release rather than folded
 into this one.
@@ -345,14 +383,56 @@ recipient PUBLIC KEY
     sealed record
 ```
 
-That covers `APPEND`, `ENQUEUE`, and a sealed `INSERT`.
+**The promise is about who supplies the payload, not about who writes the
+file**, and an earlier draft of this section got that wrong. It said that
+append-shaped operations add without reading, and therefore that a process
+holding nothing but a public key could perform them directly. The first half is
+true of the *data* and false of the *engine*.
 
-**It does not cover `UPDATE`, `DELETE` or `ALTER`, and it will not be claimed
-to.** A copy-on-write engine has to read the structural state it is about to
-replace — the leaf it rewrites, the index entries it patches, the directory it
-restages. A writer that cannot decrypt that state cannot produce a correct
-successor to it. Append-shaped operations are exactly the ones that add without
-reading, which is why the promise stops there.
+An `ENQUEUE` reads and rewrites the queue page, the tail position, the segment
+directory, the allocation map, the copy-on-write path up through the catalog,
+and the candidate superblock. An `APPEND` does the same. None of that is
+payload, and all of it is structure - so if metadata is encrypted too, a
+process with only an ML-KEM public key and a sealed ciphertext **cannot build
+the next generation of the file at all.** Not because it is forbidden, but
+because it cannot read what it must replace.
+
+So the guarantee is stated this way instead:
+
+> **A payload may be submitted by a party holding only the recipient's public
+> key. The component that mutates CybouDB's structure needs structural metadata
+> authority — and does not need authority to decrypt any payload.**
+
+That is a weaker sentence about who touches the file and exactly as strong a
+sentence about who can read the data, which is the part that matters. Three
+architectures satisfy it, and they are different products rather than different
+implementations:
+
+**A — a structural metadata key.** The writer is given the metadata DEK, the
+recipient's public payload key, and an `APPEND` capability. It can see the page
+tree, queue positions, segment metadata and the allocation map; it cannot see
+messages, or rows under a scoped payload DEK. This is the most natural fit for
+an embedded engine, because the writer *is* the process, and it is still a
+strong model: the thing writing your queue cannot read your queue.
+
+**B — a broker.** The client holds only the public key and hands a sealed
+ciphertext to a component that has structural authority. The client is then
+mathematically incapable of reading the database, which is the strongest
+statement available - at the cost of a second component, which is the thing an
+embedded database exists to avoid.
+
+**C — a blind-append inbox.** A separate structure designed so that adding to
+it requires no structural reads at all, ingested later by the full engine. This
+is a new storage primitive rather than a use of the existing one, and it should
+not be adopted without deciding it is worth a primitive.
+
+**A is the working assumption**, and the threat model in step 1 is where it is
+argued properly rather than asserted here. What the threat model must not do is
+recover the old sentence.
+
+`UPDATE`, `DELETE` and `ALTER` stay outside the sealed-write story for the
+separate and still-true reason: they rewrite payload the caller must be able to
+read first, so no arrangement of structural authority makes them blind.
 
 ### The access manifest
 
