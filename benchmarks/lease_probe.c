@@ -367,18 +367,35 @@ static int tree_scan(uint64_t now, uint64_t *out_position) {
  * minimum - claiming the last free message in it, and acknowledging the claim
  * that held the earliest deadline - and only those pay for a rescan.
  */
-static unsigned long long maint_slots, maint_nodes;
+static unsigned long long maint_slots, maint_nodes, maint_leaf_pages;
 static unsigned long long maint_ops, maint_slots_max, maint_nodes_max;
 
-/* Climb from a leaf, stopping where the minimum stops moving. */
-static void tree_propagate(int leaf) {
+/* Climb from a leaf, stopping where the minimum stops moving.
+ *
+ * Asymmetric on purpose, and this is where a design doc could have been
+ * optimistic. A leaf whose value *fell* can only lower its parent, so the
+ * parent takes min(parent, value) and no sibling is read. A leaf whose value
+ * *rose* may or may not have been the minimum, and nothing short of the other
+ * seven siblings can say - and a sibling leaf is a segment page, so those
+ * reads are real work that the first version of this measurement did not
+ * count. Only the bottom level pays it: the levels above it are nodes in one
+ * page, already in hand. */
+static void tree_propagate(int leaf, int rose) {
     int i2 = leaf / 8, i1 = i2 / 8, c;
     uint64_t m;
 
-    m = UINT64_MAX;
-    for (c = 0; c < 8; c++) if (t_leaf[i2 * 8 + c] < m) m = t_leaf[i2 * 8 + c];
-    if (m == t_l2[i2]) return;
-    t_l2[i2] = m;
+    if (!rose) {
+        if (t_leaf[leaf] >= t_l2[i2]) return;
+        t_l2[i2] = t_leaf[leaf];
+    } else {
+        m = UINT64_MAX;
+        for (c = 0; c < 8; c++) {
+            if (t_leaf[i2 * 8 + c] != UINT64_MAX) maint_leaf_pages++;
+            if (t_leaf[i2 * 8 + c] < m) m = t_leaf[i2 * 8 + c];
+        }
+        if (m == t_l2[i2]) return;
+        t_l2[i2] = m;
+    }
     maint_nodes++;
 
     m = UINT64_MAX;
@@ -399,7 +416,7 @@ static void tree_lower(uint64_t seg, uint64_t value) {
     int leaf = (int)(seg & (TREE_LEAVES - 1));
     if (value >= t_leaf[leaf]) return;
     t_leaf[leaf] = value;
-    tree_propagate(leaf);
+    tree_propagate(leaf, 0);
 }
 
 /* A change that may have raised it: the segment has to be read again. */
@@ -422,11 +439,16 @@ static void tree_rescan(uint64_t seg, uint64_t head, uint64_t tail) {
         }
     }
     if (best == t_leaf[leaf]) return;
-    t_leaf[leaf] = best;
-    tree_propagate(leaf);
+    {
+        int rose = best > t_leaf[leaf];
+        t_leaf[leaf] = best;
+        tree_propagate(leaf, rose);
+    }
 }
 
-static void maint_begin(void) { maint_slots = 0; maint_nodes = 0; }
+static void maint_begin(void) {
+    maint_slots = 0; maint_nodes = 0; maint_leaf_pages = 0;
+}
 static void maint_end(void) {
     maint_ops++;
     if (maint_slots > maint_slots_max) maint_slots_max = maint_slots;
@@ -559,12 +581,16 @@ int main(int argc, char **argv) {
     /* --- and what keeping the summary costs ---------------------------- */
     if (!strcmp(want, "all")) {
         uint64_t head, tail, n, slots[4], nodes[4], smax[4], nmax[4], count = 0;
+        uint64_t sibs[4], sibmax[4];
         /* In the order seq[] runs them, which is the order a worker does:
            take a free message, claim it, hand it back, claim and finish. */
         const char *names[4] = { "enqueue", "claim", "nack", "ack" };
         int k;
 
-        for (k = 0; k < 4; k++) { slots[k] = nodes[k] = smax[k] = nmax[k] = 0; }
+        for (k = 0; k < 4; k++) {
+            slots[k] = nodes[k] = smax[k] = nmax[k] = 0;
+            sibs[k] = sibmax[k] = 0;
+        }
 
         /* The cycle a worker actually runs, over a queue that starts with
            everything free: take a message, hand it back, take it again,
@@ -581,24 +607,28 @@ int main(int argc, char **argv) {
                and claim-then-ack; nack is measured where it belongs. */
             for (k = 0; k < 4; k++) {
                 if (k == 3) op_claim(n, head, tail);   /* ack needs a claim */
-                maint_slots = 0; maint_nodes = 0;
+                maint_slots = 0; maint_nodes = 0; maint_leaf_pages = 0;
                 seq[k](n, head, tail);
                 slots[k] += maint_slots;
                 nodes[k] += maint_nodes;
+                sibs[k] += maint_leaf_pages;
                 if (maint_slots > smax[k]) smax[k] = maint_slots;
                 if (maint_nodes > nmax[k]) nmax[k] = maint_nodes;
+                if (maint_leaf_pages > sibmax[k]) sibmax[k] = maint_leaf_pages;
             }
             count++;
         }
 
-        printf("\n| operation | depth | ops | slots re-read, mean (max) | nodes written, mean (max) |\n");
-        printf("| :--- | ---: | ---: | ---: | ---: |\n");
+        printf("\n| operation | depth | ops | slots re-read | sibling segments | nodes written |\n");
+        printf("| :--- | ---: | ---: | ---: | ---: | ---: |\n");
         for (k = 0; k < 4; k++) {
-            printf("| %s | %llu | %llu | %.2f (%llu) | %.2f (%llu) |\n",
+            printf("| %s | %llu | %llu | %.2f (%llu) | %.2f (%llu) | %.2f (%llu) |\n",
                    names[k], (unsigned long long)depth,
                    (unsigned long long)count,
                    count ? (double)slots[k] / (double)count : 0.0,
                    (unsigned long long)smax[k],
+                   count ? (double)sibs[k] / (double)count : 0.0,
+                   (unsigned long long)sibmax[k],
                    count ? (double)nodes[k] / (double)count : 0.0,
                    (unsigned long long)nmax[k]);
         }

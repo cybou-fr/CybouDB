@@ -99,26 +99,41 @@ The measurement that could have sunk this. A summary cheap to read and
 expensive to keep is not a win, so the other half is what each operation pays
 to leave the tree correct.
 
-Two costs, different in kind. **Slots re-read**, when a change could have
-*raised* a segment's minimum - and only two transitions can, claiming the last
-free message in a segment and acknowledging the claim that held the earliest
-deadline. A change that can only lower the minimum needs no scan at all:
-enqueueing or handing a message back makes the segment's `ready_at` zero, and
-zero is the floor. **Nodes written**, climbing to the root and stopping as soon
-as a parent's minimum does not move; three levels, so three is the ceiling.
+Three costs. **Slots re-read**, when a change could have *raised* a segment's
+minimum - and only two transitions can, claiming the last free message in a
+segment and acknowledging the claim that held the earliest deadline. A change
+that can only lower the minimum needs no scan at all: enqueueing or handing a
+message back makes the segment's `ready_at` zero, and zero is the floor.
+**Nodes written**, climbing to the root and stopping as soon as a parent's
+minimum does not move; three levels, so three is the ceiling. And **sibling
+segments read**, which the first version of this measurement missed.
+
+That third one is where a design document could have been optimistic. A leaf
+whose value *fell* can only lower its parent, so the parent takes
+`min(parent, value)` and no sibling is touched. A leaf whose value *rose* may
+or may not have been the minimum, and nothing short of the other seven siblings
+can say - and a sibling leaf is a **segment page**. Only the bottom level pays
+it; the levels above are nodes in one page that is already in hand.
 
 Measured over the cycle a worker actually runs - take a free message, claim it,
-hand it back, claim it again, finish it - across the whole queue:
+hand it back, claim it again, finish it - across the whole queue, mean with the
+maximum in brackets:
 
-| operation | 100 | 1,000 | 10,000 | 29,700 | nodes |
-| :--- | ---: | ---: | ---: | ---: | ---: |
-| enqueue | 0 | 0 | 0 | 0 | 0 |
-| claim | 27.9 (62) | 32.3 (62) | 32.4 (62) | 32.5 (62) | ≤3 |
-| nack | 0 | 0 | 0 | 0 | ≤3 |
-| ack | 1.0 (62) | 1.0 (62) | 1.0 (62) | 1.0 (62) | ≤3 |
+| operation | slots re-read | sibling segments | nodes written |
+| :--- | ---: | ---: | ---: |
+| enqueue | 0 (0) | 0 (0) | 0 (0) |
+| claim | 32.4 (62) | 0.07 (8) | 0.00 (3) |
+| nack | 0 (0) | 0 (0) | 0.00 (3) |
+| ack | 1.00 (62) | 0.06 (7) | 0.00 (3) |
 
-Slots re-read, mean with the maximum in brackets. **Flat across depth**, which
-is the whole question: maintenance is bounded by a segment, not by the backlog.
+At depth 10,000; every column is within 0.01 of the same figure at 1,000 and at
+29,700, and `claim`'s slot mean moves only from 27.9 to 32.5 across the whole
+range. **Flat across depth**, which is the whole question: maintenance is
+bounded by a segment, not by the backlog.
+
+The sibling reads are rare because the propagation stops early: a node write
+happens on about one operation in a hundred, and only a node write can need
+them.
 
 `enqueue` and `nack` are free of scans by construction. `claim` averages about
 half a segment because the rescan stops at the first free message it finds, and
