@@ -123,6 +123,13 @@ rewrote the file, because `DEQUEUE` on it is a real operation. That is the
 assertion earning its place - it can tell the difference between a reader that
 declined and a reader that acted.
 
+> The `reports:` line above says `0.5.0-preview.2` for the build under test,
+> which is not a typo and is not what it looks like: the version string in
+> `src/main.asm` had not been moved off the last release. It says `0.6.0-dev`
+> now, and `tools/package.sh` and `tools/package.bat` refuse to build a package
+> whose name and whose binary disagree. The transcript is left as it was run -
+> a record that is edited to look better afterwards is not a record.
+
 ## The model was right
 
 The same gate, pointed at `build/cyboudb_nolease` - the `--no-leases` build that
