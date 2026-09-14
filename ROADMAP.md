@@ -32,10 +32,11 @@ and both sets are read by both platforms in CI.
 
 Three things are open and named rather than implied:
 
-* **The flush grows with the size of the file**, and is now the larger term in
-  a commit - about 99% of it on the hardware measured. The instrumentation
-  added in `preview.2` found this; nothing has been done about it, and nothing
-  should be until it is understood.
+* **The flush grows with how much of the file has been written**, and is the
+  larger term in a commit - about 99% of it on the hardware measured. Measured
+  in [benchmarks/results/2026-09-14-flush.md](benchmarks/results/2026-09-14-flush.md):
+  not the flushed range, not dirty state the engine is holding, and not the
+  file's length. Reducing it means writing less of the file.
 * **A retired page with no shared header cannot be attributed to an owner.**
   A continuation page of a multi-page run, retired on its own, is accepted by
   the commit and refused by `cyboudb check`. No engine path produces it - a
@@ -133,15 +134,22 @@ both are load-bearing for a proof the engine already depends on.
    is a measurement and a cause, not a fix. Whether a fix belongs in `0.6` at
    all is a decision that measurement makes, not this document.
 
-   *In progress, and it has already found something the timings did not
-   suggest. The range a commit hands the kernel is a hull, `DB_DIRTY_LO..HI`,
-   and in one workload - a queue filled to 10,000 and drained empty - a commit
-   handed one barrier **59,998 pages** where an ordinary commit hands over 13.
-   That is the engine asking the kernel for more, not the kernel being slow,
-   and it is a different finding from "the flush grows with the file".
-   The cause is not yet established: draining 2,000, 5,000 and 9,000 of 10,000
-   leaves the range at 13, so whatever triggers it is not simply reuse after a
-   retire, which was the first guess.*
+   *(done -
+   [benchmarks/results/2026-09-14-flush.md](benchmarks/results/2026-09-14-flush.md).
+   The range is not the cause: at a constant 13-page flush, sync grows 565 to
+   5,983 us with what the database holds, and survives a close and reopen, so
+   it is a property of the file once written rather than state the engine is
+   holding. Reducing it means writing less of the file, which is a different
+   question from the barrier - so nothing here promises to make a deep queue
+   commit fast.*
+
+   *It did find one thing that is the engine's own doing: the flushed range is
+   a hull, and once the allocator starts reusing pages from the bottom of a
+   file that has reached its high-water, the hull becomes the whole file -
+   measured at `[5, 8001)` in an 8,000-page file, 7,999 pages flushed to
+   publish a change of a few. That is worth fixing on its own terms whatever it
+   costs, and it is small: a set rather than a hull, or not restarting the
+   reuse sweep at the bottom on every commit.)**
 
 ### Parameter binding
 
@@ -480,6 +488,10 @@ part of the architecture for the weakest reason.
 
 ## Known gaps
 
+* [ ] the flushed range is a hull, so a commit on a file that has reached its
+      high-water asks the kernel to flush the whole file to publish a few
+      pages. Measured, understood, and small to fix; see
+      [benchmarks/results/2026-09-14-flush.md](benchmarks/results/2026-09-14-flush.md)
 * [ ] the double-free guard is a heuristic and will need a real allocation
       bitmap once pages carry data
 * [ ] `cyboudb --help` still describes the engine as an "mmap-backed storage
