@@ -218,7 +218,7 @@ A year from now that would not have been true.
 
 ## Values that arrive after prepare
 
-`tests/bind_test.c`, 39 checks, built with `--c-tests` and run against a
+`tests/bind_test.c`, 49 checks, built with `--c-tests` and run against a
 `create-large` database. A `?` is a hole in a statement, and the suite is
 organised around what happens at the edges of the hole rather than in it.
 
@@ -248,6 +248,11 @@ caller's pointer, so every varlen case here **overwrites or frees the source
 buffer between the bind and the step**. Had the pointer been kept, those checks
 would read freed memory - which is the failure the copy exists to make
 impossible, and the reason it is worth the copy.
+
+Clearing has its own small group, and the check that matters there is eight
+binds of 30 KiB each through a 32 KiB buffer: it passes only if a cleared
+parameter actually gives its bytes back, and fails on the second bind if
+`cyboudb_clear_bindings` merely marks slots unbound.
 
 The last two checks are the loop the feature is for: two thousand binds and
 steps with lengths that grow and shrink, against a 32 KiB buffer. A slot reuses

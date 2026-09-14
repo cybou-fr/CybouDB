@@ -441,6 +441,23 @@ int cyboudb_bind_vector_f32(cyboudb_stmt *stmt, int idx, const float *values,
  * halfway through an insert. */
 int cyboudb_bind_null(cyboudb_stmt *stmt, int idx);
 
+/*
+ * Return every parameter to unbound.
+ *
+ * The three verbs are separable on purpose:
+ *
+ *   cyboudb_reset            clears what an execution did, keeps the bindings
+ *   cyboudb_clear_bindings   clears the bindings, keeps the statement
+ *   cyboudb_finalize         destroys both
+ *
+ * Without the middle one the only way back to unbound is to prepare the
+ * statement again.
+ *
+ * @return CybouDB_OK, or CybouDB_MISUSE for a bad handle or a call while a
+ *         scan is in progress. A statement with no parameters succeeds.
+ */
+int cyboudb_clear_bindings(cyboudb_stmt *stmt);
+
 /**
  * Destroy a prepared statement and release all its resources.
  *

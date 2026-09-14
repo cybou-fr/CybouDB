@@ -64,6 +64,7 @@ global cyboudb_bind_float
 global cyboudb_bind_text
 global cyboudb_bind_blob
 global cyboudb_bind_vector_f32
+global cyboudb_clear_bindings
 
 section .rodata
 str_ok:         db "ok", 0
@@ -1682,6 +1683,64 @@ cyboudb_bind_vector_f32:
     FRAME_END
     ret
 
+
+
+; -----------------------------------------------------------------------------
+;  cyboudb_clear_bindings(cyboudb_stmt *stmt) -> int
+;
+;  Every parameter back to unbound. The three verbs are meant to be separable:
+;  reset clears what an execution did and keeps what was bound, this clears
+;  what was bound and keeps the statement, finalize destroys both. Without it
+;  the only way back to unbound is to prepare the statement again, which is a
+;  strange thing to have to do to a statement that is otherwise fine.
+;
+;  The copy buffer is released as a whole rather than per slot: a slot's bytes
+;  are worth keeping only because the slot may be bound again to something that
+;  fits them, and nothing is bound after this.
+; -----------------------------------------------------------------------------
+cyboudb_clear_bindings:
+    test    ARG1, ARG1
+    jz      .misuse
+    mov     rax, STMT_MAGIC_VAL
+    cmp     [ARG1 + STMT_H_MAGIC], rax
+    jne     .misuse
+    ; Mid-scan this would change values a cursor is reading, which is the same
+    ; reason a bind is refused there.
+    cmp     dword [ARG1 + STMT_H_STATE], STMT_STATE_SCANNING
+    je      .misuse
+    mov     r10, [ARG1 + STMT_H_PLAN]
+    test    r10, r10
+    jz      .done                       ; nothing prepared is nothing to clear
+    mov     r11, [r10 + PLAN_PARAM_BUF]
+    test    r11, r11
+    jz      .no_buffer
+    mov     qword [r11 + PARAM_BUF_USED], 0
+.no_buffer:
+    mov     r11, [r10 + PLAN_PARAM_SLOTS]
+    test    r11, r11
+    jz      .done
+    mov     rcx, [r10 + PLAN_PARAM_COUNT]
+    test    rcx, rcx
+    jz      .done
+.next:
+    dec     rcx
+    mov     rdx, rcx
+    shl     rdx, 6                      ; PARAM_SLOT_SIZE
+    add     rdx, r11
+    ; PARAM_CELL, PARAM_TYPE and PARAM_FLAGS are the binder's and stay: they
+    ; describe where the parameter goes, not what it was given.
+    mov     qword [rdx + PARAM_VAL], 0
+    mov     qword [rdx + PARAM_LEN], 0
+    mov     qword [rdx + PARAM_CAP], 0
+    mov     qword [rdx + PARAM_STATE], PARAM_UNBOUND
+    test    rcx, rcx
+    jnz     .next
+.done:
+    xor     eax, eax
+    ret
+.misuse:
+    mov     eax, CybouDB_C_MISUSE
+    ret
 
 ; =============================================================================
 ;  cyboudb_finalize(cyboudb_stmt *stmt) -> int

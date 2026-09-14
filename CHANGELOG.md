@@ -32,9 +32,17 @@ migration path, and is not something a minor release does quietly.
 
 ### Parameter binding
 
-`INSERT ... VALUES` takes `?` placeholders, and nine new C functions supply
+`INSERT ... VALUES` takes `?` placeholders, and ten new C functions supply
 their values: `cyboudb_bind_int32`, `_int64`, `_float`, `_bool`, `_text`,
-`_blob`, `_vector_f32`, `_null`, and `cyboudb_bind_parameter_count`.
+`_blob`, `_vector_f32`, `_null`, `cyboudb_bind_parameter_count`, and
+`cyboudb_clear_bindings`.
+
+The three lifetime verbs are separable on purpose - `cyboudb_reset` clears what
+an execution did and keeps the bindings, `cyboudb_clear_bindings` clears the
+bindings and keeps the statement, `cyboudb_finalize` destroys both. Without the
+middle one the only way back to unbound is to prepare again, which is a strange
+thing to have to do to a statement that is otherwise fine. Cheap to add now and
+an argument after 1.0.
 
 This is additive. No existing function changed, the on-disk format is untouched
 and still version 1, and a statement without a `?` behaves and costs exactly

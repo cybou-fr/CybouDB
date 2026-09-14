@@ -321,6 +321,65 @@ int main(int argc, char **argv) {
     cyboudb_finalize(st);
     st = NULL;
 
+    /* --- clearing, which reset deliberately does not do -------------------- */
+    check("a statement to clear",
+          cyboudb_prepare(db, "INSERT INTO b_ints VALUES (?, ?)", &st)
+              == CybouDB_OK);
+    if (st) {
+        check("bound, and stepping works",
+              cyboudb_bind_int64(st, 0, 77) == CybouDB_OK &&
+              cyboudb_bind_int32(st, 1, 78) == CybouDB_OK &&
+              cyboudb_step(st) == CybouDB_DONE &&
+              cyboudb_reset(st) == CybouDB_OK);
+        check("cleared", cyboudb_clear_bindings(st) == CybouDB_OK);
+        /* This is the difference between the two verbs: after a reset the
+           statement would have stepped again with the same values. After a
+           clear it has no values, and says so rather than inserting a NULL
+           or the last thing it was given. */
+        check("and now the statement has nothing to insert",
+              cyboudb_step(st) != CybouDB_DONE);
+        check("which wrote no second row",
+              count(db, "SELECT COUNT(*) FROM b_ints WHERE a = 77") == 1);
+        check("binding again after a clear works",
+              cyboudb_reset(st) == CybouDB_OK &&
+              cyboudb_bind_int64(st, 0, 79) == CybouDB_OK &&
+              cyboudb_bind_int32(st, 1, 80) == CybouDB_OK &&
+              cyboudb_step(st) == CybouDB_DONE &&
+              count(db, "SELECT COUNT(*) FROM b_ints WHERE a = 79") == 1);
+    }
+    cyboudb_finalize(st);
+    st = NULL;
+
+    check("clearing a statement with no parameters is not an error",
+          cyboudb_prepare(db, "INSERT INTO b_ints VALUES (1, 2)", &st)
+              == CybouDB_OK &&
+          cyboudb_clear_bindings(st) == CybouDB_OK);
+    cyboudb_finalize(st);
+    st = NULL;
+    check("and a null handle is misuse",
+          cyboudb_clear_bindings(NULL) == CybouDB_MISUSE);
+
+    /* A cleared TEXT parameter gives its bytes back, so the buffer is as it
+       was rather than slowly filling with values nobody can reach. */
+    check("a cleared varlen parameter releases what it held",
+          cyboudb_prepare(db, "INSERT INTO b_text VALUES (7, ?)", &st)
+              == CybouDB_OK);
+    if (st) {
+        size_t big = 30 * 1024;
+        char *huge = malloc(big);
+        int i, ok = 1;
+        memset(huge, 'z', big);
+        for (i = 0; i < 8 && ok; i++) {
+            if (cyboudb_bind_text(st, 0, huge, (int64_t)big) != CybouDB_OK)
+                ok = 0;
+            if (cyboudb_clear_bindings(st) != CybouDB_OK) ok = 0;
+        }
+        free(huge);
+        check("eight times 30 KiB through a 32 KiB buffer", ok);
+    }
+    cyboudb_finalize(st);
+    st = NULL;
+
     /* --- binding in a loop, which is the whole point ---------------------- */
     check("a prepared INSERT bound and stepped many times",
           cyboudb_prepare(db, "INSERT INTO b_text VALUES (100, ?)", &st)
