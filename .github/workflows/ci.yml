@@ -151,6 +151,9 @@ jobs:
           ./build/prepared_rerun_test build/test_ci_rerun.cdb
           ./cyboudb create-large build/test_ci_bind.cdb 20000 --force
           ./build/bind_test build/test_ci_bind.cdb
+          ./cyboudb create-leases build/test_ci_leased.cdb 4000 --force
+          ./cyboudb create-large build/test_ci_plainq.cdb 4000 --force
+          ./build/lease_state_test build/test_ci_leased.cdb build/test_ci_plainq.cdb
           sh build.sh --vector-example
           ./build/vector_search_example
           sh build.sh --worker-example
@@ -365,6 +368,12 @@ jobs:
           cyboudb.exe create-large build\test_ci_bind.cdb 20000 --force
           if errorlevel 1 exit /b 1
           build\bind_test.exe build\test_ci_bind.cdb
+          if errorlevel 1 exit /b 1
+          cyboudb.exe create-leases build\test_ci_leased.cdb 4000 --force
+          if errorlevel 1 exit /b 1
+          cyboudb.exe create-large build\test_ci_plainq.cdb 4000 --force
+          if errorlevel 1 exit /b 1
+          build\lease_state_test.exe build\test_ci_leased.cdb build\test_ci_plainq.cdb
           if errorlevel 1 exit /b 1
           call build.bat --vector-example
           if errorlevel 1 exit /b 1

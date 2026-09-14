@@ -287,16 +287,61 @@ db_queue_segments_valid:
     lea rax, [rax + QSEG_SLOTS + rdx]
     mov [rbp - 40], rax
     mov r10, rax
-    ; Nothing has a lease yet, and a record that claims one was not written by
-    ; this build.
-    cmp dword [r10 + QMSG_STATE], QMSG_STATE_HELD
-    jne .bad
+    ; Reserved with leases and without: it is where a failure count would go,
+    ; and there is no rule to write against it yet.
     cmp dword [r10 + QMSG_RESERVED32], 0
+    jne .bad
+
+    mov r11, [rbp - 8]
+    mov r11, [r11 + QSV_CTX]
+    test qword [r11 + DB_FEATURES], CybouDB_FEATURE_QUEUE_LEASES
+    jnz .lease_state
+
+    ; Without the capability nothing has a lease, and a record that claims one
+    ; was not written by this build.
+    cmp dword [r10 + QMSG_STATE], QMSG_STATE_HELD
     jne .bad
     cmp qword [r10 + QMSG_LEASE_UNTIL], 0
     jne .bad
     cmp qword [r10 + QMSG_LEASE_TOKEN], 0
     jne .bad
+    jmp .state_ok
+
+.lease_state:
+    ; docs/QUEUE.md, "What a valid file looks like, with leases and without".
+    ; The token is the slot's fencing history rather than a property of being
+    ; claimed, so HELD accepts any token: NACK raises it and leaves the message
+    ; HELD, and requiring zero there would forbid the state NACK is defined to
+    ; produce.
+    mov ecx, [r10 + QMSG_STATE]
+    cmp ecx, QMSG_STATE_HELD
+    je .state_held
+    cmp ecx, QMSG_STATE_CLAIMED
+    je .state_claimed
+    cmp ecx, QMSG_STATE_ACKED
+    jne .bad                        ; a fourth state nothing defines
+
+    ; ACKED: finished, and it keeps the token that finished it. A zero there
+    ; would mean never claimed, which is the one value a forged ticket could
+    ; guess, so the finished state is the last one that should accept it.
+    cmp qword [r10 + QMSG_LEASE_UNTIL], 0
+    jne .bad
+    cmp qword [r10 + QMSG_LEASE_TOKEN], 0
+    je .bad
+    jmp .state_ok
+
+.state_held:
+    cmp qword [r10 + QMSG_LEASE_UNTIL], 0
+    jne .bad                        ; nobody holds it, so nothing expires
+    jmp .state_ok
+
+.state_claimed:
+    cmp qword [r10 + QMSG_LEASE_UNTIL], 0
+    je .bad                         ; a claim without a deadline never lapses
+    cmp qword [r10 + QMSG_LEASE_TOKEN], 0
+    je .bad                         ; and a claim raised the token
+
+.state_ok:
     mov ecx, [r10 + QMSG_FLAGS]
     test ecx, ~QMSG_FLAG_EXTENT
     jnz .bad
@@ -360,19 +405,39 @@ queue_page_valid:
     jne .q_bad
     cmp qword [r11 + Q_RESERVED2 + 8], 0
     jne .q_bad
-    ; Where a lease clock's high-water would go. Checked for the same reason
-    ; the reserved directory bytes are: a field nothing requires to be zero is
-    ; a field a later release cannot start writing, because it cannot tell a
-    ; file that left it alone from one that meant something by it.
+
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_QUEUE_LEASES
+    jnz .q_leases
+
+    ; Without leases the clock has no high-water, and a DEQUEUE hands out and
+    ; acknowledges in one step, so the claim cursor is the head. A file that
+    ; disagrees was written by something this build does not understand - which
+    ; is what the capability bit exists to say before this check is reached.
     cmp qword [r11 + Q_TIME_FLOOR], 0
     jne .q_bad
-    ; A version 1 DEQUEUE hands out and acknowledges in one step, so the claim
-    ; cursor is the head. The field is where a lease would keep it; until there
-    ; is a capability bit saying a build writes leases, a file whose claim has
-    ; run ahead was written by something this build does not understand.
     mov rax, [r11 + Q_HEAD]
     cmp rax, [r11 + Q_CLAIM]
     jne .q_bad
+    jmp .q_cursor_ok
+
+.q_leases:
+    ; With them, acknowledgement can arrive out of order, so the oldest
+    ; unacknowledged position and the next one to hand out stop being the same
+    ; number - but neither may pass the other or the tail.
+    mov rax, [r11 + Q_HEAD]
+    cmp rax, [r11 + Q_CLAIM]
+    ja .q_bad
+    mov rax, [r11 + Q_CLAIM]
+    cmp rax, [r11 + Q_TAIL]
+    ja .q_bad
+
+    ; Q_TIME_FLOOR is deliberately not required to be a timestamp. Having
+    ; leases and having used them are different facts: the bit is set when the
+    ; file is created, and a queue in that file may never see a CLAIM. Zero is
+    ; what "no time has been used yet" looks like, and demanding more would be
+    ; demanding evidence of use from a file that claimed only the ability.
+
+.q_cursor_ok:
 
     mov [rbp - 160 + QSV_CTX], ARG1
     mov rax, [rbp - 16]

@@ -196,6 +196,32 @@ python3 tests/queue_sql_tests.py ./build/cyboudb_audit      # and the rest
 
 See [COMMIT_VALIDATION.md](COMMIT_VALIDATION.md).
 
+## Which lease states make a file valid
+
+`tests/lease_state_test.c`, 27 checks, run against two databases - one created
+with `create-leases` and one without.
+
+Nothing in the engine writes a lease state yet, so every state here is written
+by hand into a committed page and the page is resealed with an independent
+CRC-32C. That is what makes each case prove its rule: a page that no longer
+checksums is refused long before anything reads what it says, so an unsealed
+edit would test the checksum and nothing else.
+
+The case worth knowing about is **HELD with a non-zero token, which is
+accepted**. The obvious rule - held means never claimed, so the token is zero -
+is wrong against a decision the design had already made. `NACK` raises the
+token, because otherwise a worker could hand a message back, watch another
+worker take it, and then acknowledge the work it abandoned. So `CLAIM 7; NACK`
+leaves the message `HELD` with token 8, and a validator demanding zero there
+would forbid the state `NACK` is defined to produce. Review caught that before
+any of it was assembly; the test is what keeps it caught.
+
+The suite runs the conditional from both sides. The three combinations that are
+legal in a leases database are written into an ordinary one and refused, and a
+clock high-water is accepted in the first and refused in the second - because
+having leases and having used them are different facts, which is also why zero
+stays legal in a database that has the capability.
+
 ## The eight bytes a lease clock will want
 
 `tests/queue_page_test.c` gained one damage case, and it is there for a reason

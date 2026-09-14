@@ -73,11 +73,18 @@
 ; TEXT cell uses and the reason the queue does not invent a second one.
 %define QMSG_LENGTH 0                    ; u32 payload bytes
 %define QMSG_FLAGS 4                     ; u32
-; Reserved, and zero in version 1: what a message is doing, until when, and
-; under whose claim. A version 1 queue has no state between held and gone, so
-; these are the space a lease needs rather than a lease. Reserving them costs
-; sixteen bytes of inline payload and nothing else; adding them afterwards
-; would cost the format.
+; What a message is doing, until when, and under whose claim. Zero throughout
+; unless the database carries CybouDB_FEATURE_QUEUE_LEASES, which is decided
+; when the file is created.
+;
+; The token is the slot's fencing history and not a property of being claimed:
+; zero means never claimed, and it only ever goes up. So a HELD message may
+; carry any token - NACK raises it and leaves the message HELD - and an ACKED
+; one keeps the token that finished it, which is what makes a stale ticket
+; visibly stale. See docs/QUEUE.md, "What a valid file looks like".
+;
+; QMSG_RESERVED32 stays reserved with leases and without: it is where a failure
+; count would go when there is a dead-letter rule to write against it.
 %define QMSG_STATE 8                     ; u32
 %define QMSG_RESERVED32 12               ; u32, zero
 %define QMSG_LEASE_UNTIL 16              ; u64, zero
@@ -86,7 +93,12 @@
 %define QMSG_EXTENT 32                   ; or the chain's first page id
 %define QMSG_INLINE_MAX 32
 %define QMSG_FLAG_EXTENT 1
+; What a message is doing. HELD is the only one a queue without
+; CybouDB_FEATURE_QUEUE_LEASES may carry; the other two are what a lease adds,
+; and ACKED is what lets acknowledgement arrive out of order.
 %define QMSG_STATE_HELD 0
+%define QMSG_STATE_CLAIMED 1
+%define QMSG_STATE_ACKED 2
 
 ; --- What db_queue_segments_valid is asked to prove ---------------------------
 ; A stream keeps its records in these same segments, so the walk over them is

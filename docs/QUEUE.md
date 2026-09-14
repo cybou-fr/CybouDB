@@ -921,7 +921,7 @@ single page is written with a non-zero lease state:
 3. the creator           `cyboudb create-leases`                               done
 4. open-time validation  QUEUE_LEASES without QUEUE is a refusal               done
 5. an old-reader test    a build that does not know the bit must refuse        done
-6. conditional validation  the state table above, behind the bit
+6. conditional validation  the state table above, behind the bit            done
 ```
 
 Step 5 is the one that makes the rest true rather than intended, and it is done
@@ -938,10 +938,18 @@ platforms. Not on every push - the structural check above is what belongs in
 CI - but once, so that *released 0.5 refuses a 0.6 lease file cleanly* is a
 sentence someone has watched happen.
 
-Step 6 is where the state table above stops being a document. Nothing writes a
-non-zero lease field until the validator knows which ones are legal, because
-the first file that escapes with one settles the question for every reader that
-already exists.
+Step 6 is where the state table above stops being a document, and
+`tests/lease_state_test.c` is what holds it there: 27 checks that write each
+state by hand into a committed page, reseal it with an independent CRC-32C so
+the case proves its rule rather than the checksum, and ask the integrity check
+what it thinks. Every legal combination is accepted and every illegal one is
+refused, and the three that are legal with leases are then written into a
+database created without them and refused - which is the conditional, tested
+from both sides rather than described.
+
+Nothing writes a non-zero lease field yet. That order was the point: the first
+file that escapes with one settles the question for every reader that already
+exists.
 
 ### What is still open
 
