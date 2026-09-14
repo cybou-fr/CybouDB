@@ -119,6 +119,25 @@ Built with `--c-tests`:
   public header including a private one, or a missing exported symbol, fails in
   CI rather than for the first person who downloads the package.
 
+## Attacking the validator
+
+* `tests/validator_attack_test.c` (18): not "is this damage noticed" but "can
+  the reasoning be made to reach a false conclusion". Incremental commit
+  validation claims that a base proof plus a registered delta is a valid
+  candidate proof, so the cases worth writing are the ones where every part
+  looks right and the conclusion is still wrong. It found one: a transaction
+  could retire a page an inherited object still reached, with the transition
+  registered exactly as the engine registers its own and every checksum
+  verifying. Each case has its opposite beside it - a retire of a page nothing
+  reaches any more must still commit - because a rule that refuses everything
+  is not a rule.
+
+* `sh build.sh --cs-overflow` builds with a change-set too small to hold a
+  transaction, so the path taken when the log cannot be trusted is one the
+  suites walk rather than one nobody reaches. Inheritance has to switch itself
+  off there: with the log overflowing, segment visits per commit go back to
+  33.42 at depth 2,000 from 1.00, and every suite still passes.
+
 ## Integrity, as distinct from recovery
 
 * `tests/integrity_tests.py` (7): a damaged newest generation. An ordinary

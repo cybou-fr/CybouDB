@@ -1,6 +1,6 @@
 # Incremental commit validation — design
 
-**Status:** design, not implemented. Target `0.5.0-preview.2`.
+**Status:** implemented, under release validation. Target `0.5.0-preview.2`.
 **Measured baseline:** [benchmarks/results/2026-09-14-commit-baseline.md](../benchmarks/results/2026-09-14-commit-baseline.md)
 
 A commit must prove that what it is about to publish is a well-formed graph. It
@@ -428,23 +428,52 @@ D. forge a directory edge or an allocation transition the change-set
       commit MUST refuse
 ```
 
-| Attack | Must end as |
-| :--- | :--- |
-| Damage a page this transaction wrote | commit refused |
-| Damage a page an earlier generation wrote | commit accepts, `cyboudb check` reports damage |
-| A map entry changed with no matching transition | commit refused |
-| An illegal transition, e.g. `PAYLOAD -> FREE` | commit refused |
-| Retire a page still reachable through an inherited subtree | commit refused |
-| Reuse a `RETIRED` page while a reader is pinned to the base | commit refused |
-| A directory entry whose id changed but whose page did not | validated, not inherited |
-| A directory entry whose page changed but whose id did not | validated, not inherited |
-| A stale queue entry pointing at a page owned by another object | commit refused |
-| Two directory entries naming one page | commit refused |
-| `SB_ALLOC_PAGES` maintained and recomputed disagreeing | commit refused |
-| Rollback after a large change-set | base generation intact, change-set empty |
-| Failure at the first sync | base generation, wholly |
-| Failure at the second sync | base generation, wholly |
-| A torn publication | base generation, wholly |
+| Attack | Must end as | Where |
+| :--- | :--- | :--- |
+| Damage a page this transaction wrote | commit refused | `queue_page_test` A |
+| Damage an old page of an object being written | commit accepts, `check` reports | `queue_page_test` B |
+| Damage a page of an object nobody is touching | commit accepts, `check` reports | `queue_page_test` C, `stream_page_test` |
+| A map entry changed with no transition registered | commit refused | the `cs_record` negative control |
+| **Retire a page still reachable through an inherited subtree** | **commit refused** | `validator_attack_test` |
+| A retire of a page nothing reaches any more | commit accepted | `validator_attack_test` |
+| A queue naming another queue's segment | commit refused | `validator_attack_test` |
+| One page in two logical segment positions | commit refused | `validator_attack_test` |
+| A change-set that overflowed | no inheritance; the long proof | `build.sh --cs-overflow` |
+| A damaged newest generation | open recovers, `check` reports | `integrity_tests` |
+| A torn superblock | open recovers, `check` reports OK | the storage suite |
+
+### What the retire attack found
+
+It was a real hole, and it is the reason this section is not a formality.
+Proof inheritance skips an object whose directory entry has not moved, and
+nothing then stopped the same transaction retiring a page that object still
+reaches - registered correctly, map leaf resealed, checksums verifying. The
+candidate claimed both *this queue reaches page X* and *page X is retired*.
+The build before inheritance refused it; inheriting the subtree stopped
+anyone from asking.
+
+`cs_retires_are_unreachable` closes it from the other end, once per retired
+page rather than by walking the graph. Every page shape in the format writes
+its owning object's id at offset 24 and its own page id at offset 8, so a
+retired page can say which object held it - and a page that does not name
+itself is the continuation of a multi-page run, where offset 24 is row data
+rather than an owner. Reading that as an owner is how the first version of
+this check refused an ordinary 128-row `INSERT`; the self-naming test is what
+tells a header from a payload page.
+
+What it does not cover, stated rather than implied: a retired page with no
+header cannot be attributed, so a transaction that retires only such pages
+while an inherited object reaches them would not be caught here. The pages of
+a run are retired together with their header, which is what makes that
+narrow.
+
+### Still open
+
+Forging the change-set itself - an entry whose recorded `from` state does not
+match the published map - cannot be attacked from a test without a hook for
+writing the log directly, and no such hook exists. `cs_leaf_explained` checks
+that a differing entry ends in the state the log records, not that the chain
+starts where the published map says it starts.
 
 Every outcome must be wholly the base generation or wholly the candidate. There
 is no third state a reader can observe, and that is unchanged by any of this.

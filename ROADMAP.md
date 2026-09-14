@@ -259,6 +259,13 @@ opposite.
    page, a malformed dirty catalog page, rollback, a failure at the first sync,
    at the second, and a torn publication. Every outcome must be wholly the old
    generation or wholly the new one.
+   *(done, and it found a real hole: a transaction could retire a page an
+   inherited object still reaches, with the transition registered and every
+   checksum verifying. `tests/validator_attack_test.c` is the regression and
+   it fails on the commit before the fix. `build.sh --cs-overflow` covers the
+   other half - a change-set that cannot be trusted must take the long proof,
+   and with the log forced to overflow the segment visits go back to 33.42 at
+   depth 2,000, which is what says inheritance really did switch itself off.)*
 8. **Only then, benchmark.** The headline chart of preview.2 is not CybouDB
    against SQLite; it is queue depth against commit validation cost. The line
    going flat is the deliverable.

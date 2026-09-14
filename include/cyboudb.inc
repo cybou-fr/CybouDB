@@ -109,7 +109,12 @@
 %define CS_ENTRY_SIZE     16
 %define CS_ENTRY_PAGE     0
 %define CS_ENTRY_STATES   8             ; from | (to << 8)
+%ifndef CybouDB_CS_CAPACITY
+; Overridable so a build can be made to overflow on purpose: an incomplete
+; log must send the commit down the exhaustive path, and a capacity nothing
+; ever reaches is a branch nothing ever tests. `build.sh --cs-overflow`.
 %define CybouDB_CS_CAPACITY  8192          ; 128 KiB; past this, overflow
+%endif
 
 ; --- Transaction States ---
 %define CybouDB_TX_NONE      0

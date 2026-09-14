@@ -47,6 +47,8 @@ global db_bitmap_candidate_payload, db_bitmap_leaves
 global db_bitmap_retire, db_bitmap_recount, db_bitmap_headroom
 global db_bitmap_is_fresh, db_bitmap_deep
 global cs_record, cs_reset, cs_release, cs_audit, cs_leaf_explained
+global cs_retires_are_unreachable
+extern catalog_entry_in
 extern os_mem_alloc, os_mem_free
 
 section .data
@@ -629,6 +631,11 @@ db_bitmap_validate:
     mov     ARG1, [rbp - 8]
     mov     ARG2, [rbp - 16]
     call    db_catalog_validate
+    test    eax, eax
+    jz      .done
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [rbp - 16]
+    call    cs_retires_are_unreachable
     jmp     .done
 .bad:
     xor     eax, eax
@@ -981,6 +988,118 @@ cs_leaf_explained:
 .next_word:
     add     qword [rbp - 40], 8
     jmp     .word
+.ok:
+    mov     eax, 1
+    FRAME_END
+    ret
+.bad:
+    xor     eax, eax
+    FRAME_END
+    ret
+
+
+; cs_retires_are_unreachable(ARG1 = ctx, ARG2 = candidate superblock) -> eax
+;
+; A page may be retired only if the candidate no longer reaches it. Walking
+; the whole graph to prove that is the cost this work exists to remove, so the
+; question is asked from the other end, once per retired page.
+;
+; Every page shape in the format puts its owning object's id at the same
+; offset - CAT_OWNER, PAX_OWNER, IDX_OWNER, QSEG_OWNER, VAR_OWNER, ZONE_OWNER
+; are all 24 - so a retired page can say which object used to hold it. If that
+; object's directory entry did not move, the object was inherited, the commit
+; never looked inside it, and it still reaches this page. The candidate would
+; then be claiming both "this object reaches page X" and "page X is retired",
+; and it is refused.
+;
+; When the owner is gone from the candidate directory, or is new, or its entry
+; moved, there is nothing to refuse: a dropped object's pages are meant to be
+; retired, and a changed object was walked with every page checked against the
+; candidate map.
+;
+; This is the hole the first version of proof inheritance opened, and the walk
+; it replaced was what used to close it: db_bitmap_candidate_payload refuses a
+; retired page, and inheriting the subtree stopped anyone from asking.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=candidate sb, [rbp-24]=index,
+;               [rbp-32]=candidate root, [rbp-40]=published root,
+;               [rbp-48]=the owner id
+cs_retires_are_unreachable:
+    FRAME_BEGIN 64, 0
+    mov     [rbp - 8], ARG1
+    mov     [rbp - 16], ARG2
+    mov     r10, ARG1
+    cmp     qword [r10 + DB_CS_PROVE], 0
+    je      .ok                         ; not a commit proving its own work
+    cmp     qword [r10 + DB_CS_OVERFLOW], 0
+    jne     .ok                         ; nothing is inherited in that case
+    cmp     qword [r10 + DB_CS_LOG], 0
+    je      .ok
+    mov     r11, [r10 + DB_SB_PTR]
+    test    r11, r11
+    jz      .ok
+    mov     rax, [r11 + SB_ROOT_PAGE]
+    mov     [rbp - 40], rax
+    mov     r11, [rbp - 16]
+    mov     rax, [r11 + SB_ROOT_PAGE]
+    mov     [rbp - 32], rax
+    mov     qword [rbp - 24], 0
+.entry:
+    mov     r10, [rbp - 8]
+    mov     rax, [rbp - 24]
+    cmp     rax, [r10 + DB_CS_COUNT]
+    jae     .ok
+    mov     r11, [r10 + DB_CS_LOG]
+    shl     rax, 4
+    add     r11, rax
+    mov     rax, [r11 + CS_ENTRY_STATES]
+    shr     rax, 8
+    and     eax, 0xff
+    cmp     eax, MAP_RETIRED
+    jne     .next
+    mov     rax, [r11 + CS_ENTRY_PAGE]
+    cmp     rax, CybouDB_MIN_PAGES
+    jb      .next
+    cmp     rax, [r10 + DB_PAGES]
+    jae     .next
+    mov     rdx, rax                    ; the page id, to check it owns itself
+    shl     rax, CybouDB_PAGE_SHIFT
+    add     rax, [r10 + DB_BASE]
+    ; Only a page carrying the shared header can say who owns it. Every page
+    ; shape in the format writes its own id at offset 8 - CAT_PAGE_ID,
+    ; PAX_PAGE_ID, QSEG_PAGE_ID, IDX_PAGE_ID, VAR_PAGE_ID, ZONE_PAGE_ID are
+    ; all 8 - so a page that names itself has a header and one that does not
+    ; is the continuation of a multi-page run, where offset 24 is row data.
+    ; Reading that as an owner id is how this check first refused an ordinary
+    ; 128-row INSERT.
+    cmp     [rax + CAT_PAGE_ID], rdx
+    jne     .next
+    mov     rax, [rax + CAT_OWNER]      ; the one offset every header shares
+    test    rax, rax
+    jz      .next                       ; nothing claims it
+    mov     [rbp - 48], rax
+    mov     ARG2, [rbp - 32]
+    mov     ARG3, rax
+    mov     ARG4, 0
+    mov     ARG1, [rbp - 8]
+    call    catalog_entry_in
+    test    rax, rax
+    jz      .next                       ; the candidate has no such object
+    mov     r11, rax
+    mov     ARG2, [rbp - 40]
+    mov     ARG3, [rbp - 48]
+    mov     ARG4, 0
+    mov     ARG1, [rbp - 8]
+    mov     [rbp - 56], r11
+    call    catalog_entry_in
+    test    rax, rax
+    jz      .next                       ; the published one had no such object
+    cmp     rax, [rbp - 56]
+    je      .bad                        ; the same page: inherited, and it
+                                        ; still reaches what was just retired
+.next:
+    inc     qword [rbp - 24]
+    jmp     .entry
 .ok:
     mov     eax, 1
     FRAME_END

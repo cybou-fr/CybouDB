@@ -27,6 +27,11 @@ if [ "${1:-}" = "--audit" ]; then
     OBJDIR=build/audit
 fi
 
+if [ "${1:-}" = "--cs-overflow" ]; then
+    OUT=build/cyboudb_overflow
+    OBJDIR=build/cs-overflow
+fi
+
 if [ "${1:-}" = "--core-tests" ]; then
     OUT=build/cow_harness
     OBJDIR=build/core-tests
@@ -119,6 +124,7 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         "$CC" -O2 -no-pie -Wall -Iinclude tests/index_probe.c build/libcyboudb.a -o build/index_probe
         "$CC" -O2 -no-pie -Wall -Iinclude tests/index_plan_test.c build/libcyboudb.a -o build/index_plan_test
         "$CC" -O2 -no-pie -Wall -Iinclude tests/queue_page_test.c build/libcyboudb.a -o build/queue_page_test
+        "$CC" -O2 -no-pie -Wall -Iinclude tests/validator_attack_test.c build/libcyboudb.a -o build/validator_attack_test
         "$CC" -O2 -no-pie -Wall -Iinclude tests/stream_page_test.c build/libcyboudb.a -o build/stream_page_test
         "$CC" -O2 -no-pie -Wall -Iinclude tests/queue_api_test.c build/libcyboudb.a -o build/queue_api_test
         "$CC" -O2 -no-pie -Wall -Iinclude tests/stream_api_test.c build/libcyboudb.a -o build/stream_api_test
@@ -205,6 +211,12 @@ for f in $SOURCES; do
     # the audit walks both allocation maps in full on every commit.
     if [ "${1:-}" = "--audit" ]; then
         defs="$defs -DCybouDB_AUDIT_CHANGESET=1"
+    fi
+    # A change-set that overflows almost at once, so the path taken when the
+    # log cannot be trusted is a path the suites actually walk. Inheritance
+    # must switch itself off and the commit must prove the long way.
+    if [ "${1:-}" = "--cs-overflow" ]; then
+        defs="$defs -DCybouDB_CS_CAPACITY=1"
     fi
     nasm -f elf64 $INC $defs "$f" -o "$o"
     OBJS="$OBJS $o"

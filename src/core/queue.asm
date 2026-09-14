@@ -403,6 +403,8 @@ queue_page_valid:
     mov r10, [rbp - 8]
     cmp qword [r10 + DB_VERIFY], 0
     jne .no_base                    ; `cyboudb check` inherits nothing
+    cmp qword [r10 + DB_CS_OVERFLOW], 0
+    jne .no_base                    ; an incomplete change-set proves nothing
     mov r11, [r10 + DB_SB_PTR]
     test r11, r11
     jz .no_base                     ; nothing published yet to inherit from

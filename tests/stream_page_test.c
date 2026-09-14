@@ -117,14 +117,6 @@ static int integrity_check_refuses(const char *path) {
     return 0;
 }
 
-static int refused_with(void *ctx, unsigned char *image, uint64_t probe_id) {
-    int refused;
-    stream_image(image, "probe");
-    refused = db_catalog_put_stream(ctx, probe_id, image) != 0 ||
-              db_commit(ctx) != CybouDB_OK;
-    db_rollback(ctx);
-    return refused;
-}
 
 int main(int argc, char **argv) {
     static unsigned char image[4096];

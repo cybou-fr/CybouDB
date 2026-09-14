@@ -377,6 +377,8 @@ db_catalog_validate:
     mov r10, [rbp - 8]
     cmp qword [r10 + DB_VERIFY], 0
     jne .walk_object                ; `cyboudb check` inherits nothing
+    cmp qword [r10 + DB_CS_OVERFLOW], 0
+    jne .walk_object                ; an incomplete change-set proves nothing
     mov r11, [r10 + DB_SB_PTR]
     test r11, r11
     jz .walk_object                 ; nothing published yet to inherit from
@@ -554,8 +556,8 @@ seal_page:
 
 ; -----------------------------------------------------------------------------
 ;  catalog_entry_in(ARG1 = ctx, ARG2 = directory page, ARG3 = object id,
-;                   ARG4 = expected type) -> RAX: the object page's address,
-;                   or 0.
+;                   ARG4 = expected type, or 0 for any) -> RAX: the object
+;                   page's address, or 0.
 ;
 ;  db_catalog_get answers from the live root. This answers from whichever
 ;  directory it is handed, which is what lets a commit ask what the *published*
@@ -613,8 +615,11 @@ catalog_entry_in:
     ; It has to be the object that was asked about, of the type that was
     ; asked about, or the answer is not usable.
     mov ecx, [rbp - 24]
+    test ecx, ecx
+    jz .type_any                        ; a caller holding a page, not a type
     cmp [rax + CAT_TYPE], ecx
     jne .none
+.type_any:
     mov r11, [rbp - 16]
     cmp [rax + CAT_OWNER], r11
     jne .none

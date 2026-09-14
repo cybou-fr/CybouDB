@@ -24,6 +24,11 @@ if "%~1"=="--audit" (
     set OBJDIR=build\audit
 )
 
+if "%~1"=="--cs-overflow" (
+    set OUT=build\cyboudb_overflow.exe
+    set OBJDIR=build\cs-overflow
+)
+
 if "%~1"=="--core-tests" (
     set OUT=build\cow_harness.exe
     set OBJDIR=build\core-tests
@@ -188,6 +193,9 @@ for %%F in (%SOURCES%) do (
     if "%~1"=="--core-tests" if "%%F"=="src\core\database.asm" set DEFS=-Dvfs_sync=test_sync -DCybouDB_TEST_COMMIT_HOOK=1
     rem --audit arms the change-set completeness check; not a shipped build.
     if "%~1"=="--audit" set DEFS=-DCybouDB_AUDIT_CHANGESET=1
+    rem A change-set too small to hold a transaction, so the path taken when
+    rem the log cannot be trusted is one the suites actually walk.
+    if "%~1"=="--cs-overflow" set DEFS=-DCybouDB_CS_CAPACITY=1
     if "%~1"=="--lib" set DEFS=-DCybouDB_LIBRARY=1
     if "%~1"=="--c-api-bench" set DEFS=-DCybouDB_LIBRARY=1
     if "%~1"=="--vector-bench" set DEFS=-DCybouDB_LIBRARY=1
@@ -351,6 +359,8 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     cl.exe /O2 /W3 /nologo /Iinclude tests\index_plan_test.c /Febuild\index_plan_test.exe /Fobuild\index_plan_test.obj /link build\cyboudb.lib kernel32.lib
     if errorlevel 1 goto :fail
     cl.exe /O2 /W3 /nologo /Iinclude tests\queue_page_test.c /Febuild\queue_page_test.exe /Fobuild\queue_page_test.obj /link build\cyboudb.lib kernel32.lib
+    if errorlevel 1 goto :fail
+    cl.exe /O2 /W3 /nologo /Iinclude tests\validator_attack_test.c /Febuild\validator_attack_test.exe /Fobuild\validator_attack_test.obj /link build\cyboudb.lib kernel32.lib
     if errorlevel 1 goto :fail
     cl.exe /O2 /W3 /nologo /Iinclude tests\stream_page_test.c /Febuild\stream_page_test.exe /Fobuild\stream_page_test.obj /link build\cyboudb.lib kernel32.lib
     if errorlevel 1 goto :fail
