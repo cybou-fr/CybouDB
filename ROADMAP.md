@@ -597,7 +597,12 @@ the release, not after it.
 ```text
  1. Threat model                     docs/ENCRYPTION.md          done
  2. Format design                    docs/ENCRYPTED_FORMAT.md    done
- 3. Reference crypto backend         ML-KEM, ML-DSA candidate, AEAD, KDF,
+2.5 Encrypted I/O spike              MAP_SHARED vs MAP_PRIVATE vs
+                                     read_at/write_at + page cache; plaintext
+                                     zero-regression; commit cost with seals
+ 3. Reference crypto backend         nonce-misuse-resistant AEAD required
+                                     unless uniqueness is proved across crash
+                                     and retry; ML-KEM, ML-DSA candidate, KDF,
                                      against official known-answer vectors
  4. Root key hierarchy
  5. Opening with a PQ private key
@@ -628,13 +633,21 @@ pages of its own avoids that, at a flat 2% of the file. The reasoning, the
 rejected alternatives and what each field of the authenticated data prevents
 are in [docs/ENCRYPTED_FORMAT.md](docs/ENCRYPTED_FORMAT.md).
 
+Step 2's review added one load-bearing answer: **the seal entries are
+themselves authenticated**, by a keyed tree whose root sits in the superblock.
+Without it an adversary restores an old page *and* its old seal entry, and the
+AEAD accepts the pair because the pair is genuine - it is simply last week's.
+The tree makes the rule one sentence - *what is current is exactly what a valid
+superblock says is current* - at a depth of 2 for any file up to 24 GiB.
+
 It also found the expensive part of this release, and it is not the
 cryptography: the engine reads every page as a pointer into one shared mapping,
 and plaintext in a shared mapping is plaintext on the disk. An encrypted
 database needs explicit I/O the platform layer does not have and a plaintext
-page cache under the engine's hottest operation. **That measurement comes
-before step 7, not at step 19**, because if it is unacceptable the shape of the
-release changes.
+page cache under the engine's hottest operation. **That measurement is step 2.5**,
+ahead of the reference crypto backend, because a reference AEAD is bounded work
+with official test vectors while the I/O architecture can change the shape of
+the release rather than one of its steps.
 
 **A note on size.** This is larger than `0.5` and `0.6` together, and the
 project has one measurement-driven habit worth keeping here: nothing in the

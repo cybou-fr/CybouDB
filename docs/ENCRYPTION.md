@@ -217,9 +217,20 @@ Cryptography inside the file cannot distinguish "the database as it was" from
 
 Detecting it needs an anchor the attacker does not control: a monotonic counter
 kept elsewhere, a signed generation receipt held by a client, secure hardware.
-All of those are outside an embedded database that is one file. **`0.7` will
-detect splicing, relocation, truncation and page-level replay, and will not
-claim to detect whole-file rollback.**
+All of those are outside an embedded database that is one file.
+
+What is and is not claimed, in one table, so that no later sentence has to be
+read carefully to find out:
+
+| | |
+| :--- | :--- |
+| a page spliced in from another database | **detected** |
+| a page moved within this file | **detected** |
+| a page replayed from an earlier generation of this file | **detected** |
+| an old page presented together with its own old seal entry | **detected** ([the seal tree](ENCRYPTED_FORMAT.md#decision-3b--what-authenticates-the-seals)) |
+| modified ciphertext, or a flipped bit | **detected** |
+| the newer superblock destroyed to force the older one | **detected as damage**, not as forgery |
+| the whole file replaced by an older copy of itself | **not detected** |
 
 ### Access already granted
 

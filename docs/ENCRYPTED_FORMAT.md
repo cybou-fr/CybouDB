@@ -35,6 +35,17 @@ read page 0, find the feature mask, see a bit it does not know, and refuse.
 That refusal is the format working, and it is exactly what `QUEUE_LEASES` did
 one release ago.
 
+**What the bit permits, and only it.** Two fields that v1 requires to be inert
+become meaningful when `ENCRYPTION` is set, and stay inert without it:
+
+| Field | Without the bit | With it |
+| :--- | :--- | :--- |
+| header `reserved_uuid` (+48, 16 bytes) | zero, as v1 requires | the database identity, 128 bits from the platform CSPRNG, written once at creation and never rewritten |
+| superblock `feature_root` (+56) | non-zero is refused | points at the crypto root page |
+
+A file carrying either one *without* the bit is refused rather than tolerated -
+that is what v1 already says about both, and encryption does not soften it.
+
 **The condition:** page 0 must stay plaintext, and the bit must be in
 `flags_incompat`. If either fails, an older reader sees noise where the magic
 should be and reports *not a CybouDB file* rather than *a CybouDB file needing
@@ -105,14 +116,26 @@ page header and the CRC in its usual place, an entry page covers
 `(4092 - 64) / 40 = 100` pages. So `S = ceil(total_pages / 100)`, in two
 copies:
 
-| File | Pages | Seal directory, both copies | Overhead |
-| ---: | ---: | ---: | ---: |
-| 4 MiB | 1,000 | 20 pages | 2.0% |
-| 240 MiB | 60,000 | 1,200 pages | 2.0% |
-| 4 GiB | 1,048,576 | 20,972 pages | 2.0% |
+Counting the nodes of Decision 3b as well, and stating the overhead against
+the *finished* file rather than against the pages it protects - for every 100
+protected pages the file carries about 2 seal pages, so the share is 2/102 and
+not 2/100:
 
-Two per cent of the file, flat, and known before a line is written. That number
+| File | Pages | Seal leaves | Nodes | Depth | Both copies | Overhead |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 MiB | 1,000 | 10 | 1 | 1 | 22 pages | 2.15% |
+| 240 MiB | 60,000 | 600 | 4 | 2 | 1,208 pages | 1.97% |
+| 4 GiB | 1,048,576 | 10,486 | 43 | 2 | 21,058 pages | 1.97% |
+| 24 GiB | 6,300,000 | 63,000 | 252 | 2 | 126,504 pages | 1.97% |
+
+Just under two per cent, flat, and known before a line is written. That number
 is the price of not touching a single existing page layout.
+
+**Seal pages have no seal entries of their own.** A seal leaf is authenticated
+by its parent node, a node by its parent, and the root by the superblock - so
+the directory does not index itself and there is no recursion to terminate. The
+entry array therefore covers payload and the allocation map, and skips the
+range the directory occupies.
 
 **What it costs in writes is not known and must be measured.** A commit that
 rewrites five scattered payment pages may touch five different seal pages,
@@ -121,6 +144,83 @@ instrument for this — the flush measurement of `preview.2` counted exactly thi
 kind of amplification — and step 19 has to run it before anyone claims the
 design is cheap. If locality turns out to be bad, the answer is a different
 entry layout, not a different story about the cost.
+
+---
+
+## Decision 3b — what authenticates the seals
+
+A tag proves a page was not altered *by whoever does not have the key*. It does
+not prove the page is the **current** one, and the seal directory makes that
+gap concrete:
+
+```text
+page 817     ciphertext_old        seal[817] = nonce_old + tag_old
+                 ... rewritten ...
+page 817     ciphertext_new        seal[817] = nonce_new + tag_new
+```
+
+An adversary who restores *both halves of the old pair* presents something the
+AEAD accepts without hesitation, because it is genuine - it simply belongs to
+last week. **An external tag is an authenticator only while the seal entry is
+itself trusted state**, and nothing said so far makes it trusted state.
+
+So the seals are authenticated by a keyed tree whose root is inside the
+superblock:
+
+```text
+authenticated superblock                     (the trust anchor)
+        │  seal_root MAC + seal geometry
+        ▼
+   seal node            MAC over its children's MACs, its own node id,
+        │               the generation and the seal epoch
+        ├── seal leaf   MAC over its 100 entries, its leaf index,
+        │               the generation and the seal epoch
+        │        └── nonce + tag for page N
+        │                    └── sealed page N
+        └── ...
+```
+
+Each level authenticates the level below, and the top is authenticated by the
+superblock, which is authenticated by the key. Substituting an old page **and**
+its old entry now fails at the leaf: the leaf's MAC covers the entry array as
+it was published, so an entry from a different generation makes the leaf
+disagree with its parent, the parent disagree with the root, and the root
+disagree with the superblock.
+
+**The geometry, with the arithmetic rather than an adjective.** A node page
+holds `(4092 - 64) / 16 = 251` child MACs, so one node covers
+`251 x 100 = 25,100` pages - which means **depth 1 for any file up to 98 MiB
+and depth 2 for anything up to 24 GiB**. A commit that rewrites *k* pages
+updates at most *k* leaves, at most *k* nodes, one root and the superblock:
+bounded, and independent of how large the database is.
+
+### The invariant this establishes
+
+> **What is current is exactly what a valid superblock says is current.**
+> A page, a seal entry, a seal leaf and a seal node have no standing of their
+> own: each is reachable, or it is not, from a superblock that authenticates
+> under the key. An attempt that was never published has no valid superblock,
+> and therefore has no authenticated existence - which is what stops a
+> crashed generation-7 attempt from being spliced into the published
+> generation 7.
+
+This is also why `generation` alone was never going to be the anti-replay
+identity. It is one field in the associated data, and it is not a claim that
+*this* is the live version of the page; the seal root is that claim, and it is
+the only one.
+
+### What it still does not stop
+
+Two superblocks exist so that a half-written commit is recoverable, and
+recovery picks the newer *valid* copy. An adversary who can write the file can
+therefore damage the newer one and force the reader back to the older - a
+rollback of exactly one published generation, by destruction rather than
+forgery. It is detectable as damage, not as forgery, and it is the smallest
+member of the whole-file rollback family that
+[ENCRYPTION.md](ENCRYPTION.md#rollback-to-an-older-internally-consistent-file)
+already refuses to claim it can prevent. Naming it here keeps the seal tree's
+promise honest: **it stops an old page being presented as current; it does not
+stop an old database being presented as current.**
 
 ---
 
@@ -150,18 +250,42 @@ This is the mistake the roadmap named as *silent, total and unrecoverable*, and
 it is reachable in this engine by a rolled-back transaction, which is an
 ordinary event rather than an attack.
 
-**Requirement on step 3, stated here so the primitive is chosen with it:** the
-construction must be one of
+There are two separate failures in that picture and they need two separate
+fixes, which is worth separating because fixing one looks like fixing both:
 
-* an AEAD where a repeated nonce is not catastrophic — a misuse-resistant mode,
-  or an extended-nonce construction with a random 192-bit nonce per write;
-* or a nonce that provably never repeats **including across writes that were
-  never published** — which in practice means a counter that survives the death
-  of the process that incremented it, and that is a durable write of its own.
+* **confidentiality** breaks because the keystream repeats. Only the primitive
+  can fix that - see the requirement below;
+* **replay** would let the unpublished attempt be presented as current. That is
+  fixed by [Decision 3b](#decision-3b--what-authenticates-the-seals), not by the
+  nonce, and it is fixed for every page rather than for this one case.
 
-The first is cheaper and is the working assumption. Either way **the nonce is
-stored in the seal directory rather than recomputed**, because a stored nonce is
-a fact and a derived nonce is an argument that has to keep being true.
+**Acceptance requirement on step 3**, written now so the primitive is chosen
+against the engine's crash model rather than against a benchmark:
+
+```text
+Either
+  A. the AEAD tolerates an accidental nonce repeat without a catastrophic
+     loss of confidentiality or of the authentication key;
+or
+  B. CybouDB proves nonce uniqueness across crash and retry, independently of
+     the transaction's generation and of whether it was ever published.
+```
+
+**A is strongly preferred**, because B is a durable, fsynced counter on the
+commit path - a write whose whole purpose is to be slower than the thing it
+protects - and because a proof that survives every crash path is a proof this
+project would have to keep re-earning at every change to the commit.
+
+NIST SP 800-38D makes a unique IV per key a *requirement* of GCM rather than a
+recommendation, so plain AES-GCM only satisfies A by satisfying B. A
+nonce-misuse-resistant AEAD - AES-GCM-SIV (RFC 8452) is the obvious candidate,
+and is a candidate and not a choice - satisfies A directly. **Step 3 decides,
+against official known-answer vectors; step 2 only refuses to let that decision
+be made by accident.**
+
+Either way **the nonce is stored in the seal directory rather than recomputed**,
+because a stored nonce is a fact and a derived nonce is an argument that has to
+keep being true.
 
 ---
 
@@ -188,13 +312,48 @@ for the validator's benefit. Under encryption those become *claims inside the
 ciphertext* that must equal the AAD the reader supplied — which is how a
 mismatch becomes a refusal instead of a silently accepted page.
 
+**What the file identity buys, exactly.** With `file_uuid` in the associated
+data:
+
+| | |
+| :--- | :--- |
+| a page from another database, spliced in | **detected** |
+| a page moved within this file | **detected** |
+| a page from an earlier generation of this file | **detected** (Decision 3b) |
+| modified ciphertext | **detected** |
+| the whole file replaced by an older copy of itself | **not detected** |
+
+The last line is not a gap in the identity; it is the identity working. An old
+copy of this database has this database's UUID, because it is this database.
+Detecting it needs state the attacker does not control, and a single local file
+has none.
+
 **The superblock is the exception and needs its own argument.** Its tag lives
 in its own reserved bytes at +64 - 56 free, 40 needed - so it cannot cover
 itself: authentication runs over bytes `[0, 124)` **with the 40-byte seal slot
 read as zero**, the same trick the CRC uses by sitting outside its own range.
 `generation` is in the AAD, and `staged` at +120 is inside the authenticated
 range, which is what stops an attacker clearing the marker to promote a
-half-built graph. It cannot be
+half-built graph.
+
+The order is fixed, because the dependencies have to be acyclic:
+
+```text
+write                                     read
+  1. prepare the superblock's fields        1. CRC over [0, 124)
+  2. choose a fresh nonce                        -> a torn write is rejected
+  3. zero the 16 tag bytes                          cheaply, before any key
+  4. authenticate [0, 124)                          is involved
+  5. write the tag                          2. authenticate [0, 124) with the
+  6. CRC over the final [0, 124)                    tag bytes read as zero
+  7. write the CRC at +124                       -> a trusted superblock
+```
+
+Only the **tag** bytes are zeroed for authentication, not the whole seal slot:
+the nonce sits beside the tag and is an input the reader needs, so it is
+authenticated like any other field. The CRC covers the final bytes including
+the tag, which keeps the two guarantees in their usual order - *the disk did
+not lie* first, and cheaply, then *nobody lied*. It cannot be
 encrypted: recovery reads both superblocks, compares generations and picks the
 newer valid one, and it has to do that before it knows which key any page is
 under. So an attacker who can write the file may still choose *between
@@ -269,15 +428,79 @@ Two honest consequences:
    under the engine's hottest operation is an architectural change that every
    existing suite has an opinion about.
 2. **Plaintext databases must keep the mapping.** Whatever the cache costs, a
-   file without the encryption bit must not pay it. That means the read path
-   has two shapes, chosen at open, and the cost of *that* is a branch in the
-   hottest code in the engine — which is itself a thing to measure before
-   believing.
+   file without the encryption bit must not pay it - `PAGE_ADDR` stays a
+   pointer, with no lookup and no branch. The dispatch belongs **above the hot
+   inner loop**: a scan decides once which shape it is reading through and then
+   runs, rather than asking *is this encrypted* per row, per cell or per page.
+   Where exactly that boundary sits is what the spike below has to find, since
+   putting it too high duplicates the executor and too low costs the branch
+   this paragraph exists to avoid.
 
-**Step 2 does not get to hand-wave this.** The measurement that decides whether
-the cache is acceptable belongs before step 7 (authenticated page encryption),
-not at step 19 with everything else, because if it is unacceptable the shape of
-the release changes.
+**Step 2 does not get to hand-wave this**, and the measurement has moved
+earlier still: it is now step **2.5**, before the reference crypto backend
+rather than before step 7. A reference AEAD is bounded engineering with
+official test vectors; the I/O architecture is the one that can answer *the
+storage engine needs a new page-access layer*, and that changes the release
+rather than one of its steps.
+
+### The spike, and the three architectures it compares
+
+```text
+A  MAP_SHARED, plaintext            the baseline that must not regress
+B  MAP_PRIVATE + explicit writes    the address space cannot reach the file
+C  read_at / write_at + a bounded plaintext page cache
+```
+
+**B is in the list to be eliminated on evidence rather than by argument.** A
+private mapping does stop the engine's stores from reaching the file, and it
+does not solve reading: the page arrives as ciphertext, and something has to
+turn it into plaintext before the first dereference. Without a page-access
+boundary the only remaining shapes are *decrypt the whole database at open* or
+platform-specific fault handling, and neither is a storage engine this project
+wants to own. C is the expected answer; the spike exists so that expectation
+has to survive contact with numbers.
+
+What it has to report, per architecture:
+
+* the cost of a page access on a hot scan, against A as the baseline;
+* the cost of a commit, including the seal pages of Decision 3b;
+* cache behaviour under a working set larger than the budget - hit rate, and
+  what a miss costs when it also has to authenticate;
+* **plaintext zero-regression**: a database without the encryption bit must
+  measure the same as it does today, which is the claim most likely to be
+  quietly lost;
+* where the dispatch boundary can sit without duplicating the executor.
+
+Counters before conclusions, as everywhere else in this engine.
+
+---
+
+## Decision 8 — a cryptographic random source, and what it costs to have one
+
+Stored nonces, the file UUID, every data encryption key and any KEM
+encapsulation all need unpredictable bytes. The platform layer has no random
+source at all today, so this design requires one:
+
+```text
+os_random(buffer, length)
+
+Linux     getrandom(2), blocking until the pool is initialised, no /dev/urandom
+          file descriptor to exhaust and no fallback that silently weakens
+Windows   BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG
+```
+
+**This breaks a rule the project has kept until now**, and it should be broken
+deliberately rather than discovered later: the Windows backend is kernel32-only,
+and `BCryptGenRandom` lives in bcrypt.dll. `0.7` gives that up for the system
+CSPRNG, because the alternative is shipping a hand-written generator, and a
+hand-written cryptographic RNG is the single worst thing this project could
+choose to own.
+
+The rule was never about kernel32 as such - it was about having a small,
+auditable platform surface with no dependency that can be absent. That argument
+does not apply to the operating system's own random source, and `0.5` and `0.6`
+keep their kernel32-only build because a plaintext database still needs no
+randomness at all.
 
 ---
 
@@ -299,14 +522,15 @@ the release changes.
 
 ## Open, and named
 
-* **Does the seal directory need two copies?** It must be consistent with the
-  generation that published it, which the map solves by pairing. Whether seals
-  can instead be recovered from the pages they seal (they cannot — that is what
-  a tag is for) or reconstructed on a rekey is worth one paragraph and one
-  experiment, because 2% of the file is a real number.
+* **Does the seal directory need two copies?** Pairing is how the span map
+  survives a half-written commit, and the seals have the same requirement - but
+  the seal *tree* may make one copy plus the root's own generation binding
+  sufficient. Worth one experiment, because a per cent of the file is a real
+  number.
 * **Write amplification per commit shape**, measured with the existing flush
   instrument, on the queue and stream paths where a commit touches scattered
-  pages.
+  pages. The seal tree bounds it at *k* leaves + *k* nodes + a root; what *k*
+  is on a real `ENQUEUE` is a measurement, not an estimate.
 * **What happens to the mapping-based instruments** — `db_bitmap_headroom` and
   the change-set audit both read the file directly. They stay correct on
   plaintext files; on encrypted ones they need the same read path as everything
