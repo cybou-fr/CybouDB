@@ -24,7 +24,8 @@ crashes.
 8. [Replayable Event Streams](#8-replayable-event-streams)
 9. [Unified Cross-Primitive Transactions](#9-unified-cross-primitive-transactions)
 10. [Embedding CybouDB with the C API](#10-embedding-cyboudb-with-the-c-api)
-11. [Performance & Operational Best Practices](#11-performance--operational-best-practices)
+11. [Embedding CybouDB in Rust](#11-embedding-cyboudb-in-rust)
+12. [Performance & Operational Best Practices](#12-performance--operational-best-practices)
 
 ---
 
@@ -435,8 +436,9 @@ NACK  FROM task_queue AT 41 TOKEN 3;
 RENEW FROM task_queue AT 41 TOKEN 3 FOR 30000;
 ```
 
-A database must be created for leases - `cyboudb create-leases`, or
-`cyboudb_create_with_options` with `CybouDB_CREATE_QUEUE_LEASES`. It is decided
+A database must be created for leases - `cyboudb create <path> <pages>
+--leases` at the command line, or `cyboudb_create_with_options` with
+`CybouDB_CREATE_QUEUE_LEASES` in C. It is decided
 when the file is made and never afterwards, so a database created without it
 stays readable by builds that predate leases. In C the payload comes out
 through `cyboudb_message` the way a `DEQUEUE`'s does, and `cyboudb_claim_ticket`
@@ -649,7 +651,56 @@ while (cyboudb_step_batch(stmt, &batch, &lane_mask) == CybouDB_ROW) {
 
 ---
 
-## 11. Performance & Operational Best Practices
+## 11. Embedding CybouDB in Rust
+
+CybouDB provides official first-class Rust bindings in `bindings/rust/cyboudb`:
+
+```toml
+[dependencies]
+cyboudb = { path = "bindings/rust/cyboudb" }
+```
+
+### Safety and Lifetimes
+
+The Rust crate wraps the zero-dependency C ABI with complete memory and lifetime safety:
+- **Compile-time Lifetime Tracking**: `Statement<'db>` borrows the parent `&'db Database`. The Rust compiler guarantees that a database cannot be closed while statements are active, preventing runtime `CybouDB_BUSY` errors.
+- **RAII Drops**: `Database`, `Statement`, and `Transaction` implement `Drop`. An uncommitted transaction automatically rolls back if a panic or error occurs.
+- **Strong Typing**: `ToParam` and `FromColumn` traits provide safe conversion for primitive types (`i32`, `i64`, `f32`, `bool`), text (`&str`, `String`), binary blobs (`&[u8]`, `Vec<u8>`), and vector slices (`&[f32]`).
+
+### Example: Transaction Across Tables and Queues
+
+```rust
+use cyboudb::{Database, Result};
+
+fn main() -> Result<()> {
+    let mut db = Database::create("service.cdb", 1024)?;
+
+    db.execute("CREATE TABLE accounts (id INT64 NOT NULL, balance FLOAT32);")?;
+    db.execute("CREATE UNIQUE INDEX idx_acc_id ON accounts (id);")?;
+    db.execute("CREATE QUEUE transfer_jobs;")?;
+
+    // Atomic transaction across queue and table
+    db.transaction(|tx| {
+        tx.enqueue("transfer_jobs", "{\"from\": 1, \"to\": 2, \"amount\": 100.0}")?;
+        tx.execute("INSERT INTO accounts VALUES (1, 500.0);")?;
+        Ok(())
+    })?;
+
+    // Query with prepared statement and typed parameter binding
+    let mut stmt = db.prepare("SELECT balance FROM accounts WHERE id = ?;")?;
+    let mut rows = stmt.query(&[&1i64])?;
+    if let Some(row) = rows.next() {
+        let balance: f32 = row?.get(0)?;
+        println!("Account #1 balance: {}", balance);
+    }
+
+    Ok(())
+}
+```
+
+---
+
+## 12. Performance & Operational Best Practices
 
 ### 1. Batch Write Operations
 CybouDB enforces durability by issuing two storage flushes (`vfs_sync`) per

@@ -198,7 +198,7 @@ See [COMMIT_VALIDATION.md](COMMIT_VALIDATION.md).
 
 ## The lease surface
 
-`tests/lease_sql_tests.py`, 27 checks, driving the command line. Queues reach
+`tests/lease_sql_tests.py`, 34 checks, driving the command line. Queues reach
 the outside entirely through SQL, so leases went there rather than growing a
 C-only API beside them, and this is the part a user meets: that a claim prints
 the message **and the ticket**, because a person at the prompt needs both and

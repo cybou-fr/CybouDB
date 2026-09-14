@@ -118,9 +118,13 @@ db_create_large:
     mov eax, CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR | CybouDB_FEATURE_INDEX | CybouDB_FEATURE_QUEUE | CybouDB_FEATURE_STREAM
     jmp create_common
 ; The profile a caller who was not asked gets, plus the one capability that
-; cannot be added afterwards. A separate creator and not a flag on another one,
-; because the bit can only be set at creation - see docs/QUEUE.md - and a
-; creator is the honest place to say so.
+; cannot be added afterwards: the bit can only be set at creation - see
+; docs/QUEUE.md - so there is no in-place upgrade to offer.
+;
+; One creator, reached two ways. `cyboudb create-leases` is the honest name and
+; is what the tests drive; `cyboudb create --leases` is the same thing for
+; someone reading the usage text, where the historical creators are not listed.
+; tests/lease_sql_tests.py holds the two spellings to the same feature mask.
 ;
 ; Defined from CybouDB_FEATURES_DEFAULT rather than listed again, so that a
 ; leases database is exactly the default database plus one bit and cannot

@@ -1097,7 +1097,7 @@ single page is written with a non-zero lease state:
 ```text
 1. docs/FORMAT.md        the bit, its dependency, what an old reader must do   done
 2. include/format.inc    the constant                                          done
-3. the creator           `cyboudb create-leases`                               done
+3. the creator           `create-leases`, or `create --leases`                 done
 4. open-time validation  QUEUE_LEASES without QUEUE is a refusal               done
 5. an old-reader test    a build that does not know the bit must refuse        done
 6. conditional validation  the state table above, behind the bit            done

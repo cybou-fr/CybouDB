@@ -44,6 +44,13 @@ def check(name, condition, detail=""):
         failed += 1
 
 
+def feature_mask(path):
+    """The incompatible-feature mask a file was created with."""
+    with open(path, "rb") as fh:
+        head = fh.read(24)
+    return int.from_bytes(head[16:24], "little")
+
+
 def main():
     if len(sys.argv) < 2:
         print("usage: lease_sql_tests.py <cyboudb>", file=sys.stderr)
@@ -141,6 +148,41 @@ def main():
         check("while a DEQUEUE on it still works",
               "x" in q("DEQUEUE FROM jobs;", plain).stdout)
         check("and that database is intact", intact(plain))
+
+        # --- the flag on `create`, which is how a user finds this ------------
+        # `create-leases` is a creator among the creators that exist to test
+        # the format at the stages it grew through, and none of those are in
+        # --help. A user reading the usage would not have found the one thing
+        # this release is about, so `create` takes the flag as well - the same
+        # choice cyboudb_create_with_options makes in C, for the same reason:
+        # the next creation-time capability should not be another command.
+        flagged = str(Path(tmp) / "flagged.cdb")
+        for order in (("--force", "--leases"), ("--leases", "--force")):
+            check(f"create {' '.join(order)} makes a leases database",
+                  run("create", flagged, "1000", *order).returncode == 0 and
+                  q("CREATE QUEUE jobs;", flagged).returncode == 0 and
+                  q("ENQUEUE INTO jobs VALUES ('x');", flagged).returncode == 0
+                  and q("CLAIM FROM jobs FOR 30000;", flagged).returncode == 0)
+        check("and the file it makes is one the check accepts", intact(flagged))
+
+        # The two spellings must not drift: a file made by the flag and one
+        # made by the creator are the same database, which is the whole claim.
+        both = str(Path(tmp) / "verb.cdb")
+        run("create-leases", both, "1000", "--force")
+        check("the flag and create-leases agree on the feature mask",
+              feature_mask(flagged) == feature_mask(both),
+              f"{feature_mask(flagged):#x} vs {feature_mask(both):#x}")
+
+        # And it stays refused where it would mean something else.
+        check("the flag is refused on the historical creators",
+              run("create-large", str(Path(tmp) / "no.cdb"), "1000",
+                  "--force", "--leases").returncode != 0)
+        check("and on a database that already exists, nothing changed",
+              intact(plain))
+
+        # --- usage ------------------------------------------------------------
+        check("the usage text says the flag exists",
+              "--leases" in run().stdout + run().stderr)
 
     print(f"\nLease SQL suite: {passed} passed, {failed} failed")
     return 0 if failed == 0 else 1

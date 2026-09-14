@@ -329,9 +329,9 @@ happens.** Every other capability in this format works that way, and for the
 same reason: `flags_incompat` lives in the file header, which is written once
 and never rewritten, and a first `CLAIM` that had to promote a file in place
 would be a format change disguised as an operation. So a database is created
-with leases or without them, `cyboudb create` gains the choice, and a file
-created without them stays readable by `0.5` forever rather than until someone
-claims a message.
+with leases or without them - `cyboudb create --leases`, or the options struct
+in C - and a file created without them stays readable by `0.5` forever rather
+than until someone claims a message.
 
 This is the format's own philosophy meeting its first real test: a new
 capability becomes a new `flags_incompat` bit, an older reader refuses what it

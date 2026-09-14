@@ -66,6 +66,7 @@ str_cmd_alloc:   db "alloc", 0
 str_cmd_free:    db "free", 0
 str_cmd_query:   db "query", 0
 str_opt_force:   db "--force", 0
+str_opt_leases:  db "--leases", 0
 str_opt_pax:     db "--pax", 0
 str_opt_compress: db "--compress", 0
 str_opt_help:    db "--help", 0
@@ -86,10 +87,12 @@ msg_usage:
     db "Usage:", 10
     db "  cyboudb <path>                  open an interactive console", 10
     db "  cyboudb console <path>          the same", 10
-    db "  cyboudb create <path> <pages> [--force]", 10
+    db "  cyboudb create <path> <pages> [--force] [--leases]", 10
     db "                               create a database: tables, indexes,", 10
     db "                               TEXT/BLOB, vectors, queues, streams;", 10
-    db "                               --force replaces an existing one", 10
+    db "                               --force replaces an existing one,", 10
+    db "                               --leases allows CLAIM on its queues", 10
+    db "                               and is refused by builds before 0.6", 10
     db "  cyboudb query  <path> <statement>", 10
     db "                               execute a SQL statement", 10
     db "  cyboudb info   <path>           show database metadata", 10
@@ -609,8 +612,25 @@ cyboudb_main:
     lea     ARG2, [str_opt_force]
     call    os_str_eq_ascii
     test    rax, rax
-    jz      .check_flag_pax
+    jz      .check_flag_leases
     mov     qword [rbp - 40], 1
+    inc     r12
+    jmp     .flag_loop
+
+.check_flag_leases:
+
+    ; --leases makes a database that allows CLAIM, which is decided here and
+    ; never afterwards. A flag on `create` rather than a verb of its own, for
+    ; the same reason cyboudb_create_with_options is one entry point: the next
+    ; creation-time capability should not be another command.
+    mov     ARG1, r13                   ; the argument this pass is looking at
+    lea     ARG2, [str_opt_leases]
+    call    os_str_eq_ascii
+    test    rax, rax
+    jz      .check_flag_pax
+    cmp     qword [rbp - 56], 7         ; 7 is plain `create`, and the only
+    jne     .usage                      ; profile that has this choice
+    mov     qword [rbp - 56], 8         ; which is create-leases exactly
     inc     r12
     jmp     .flag_loop
 
