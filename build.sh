@@ -177,8 +177,10 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         command -v gcc >/dev/null 2>&1 || CC=clang
         nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/crypto/chacha20.asm \
             -o build/chacha20.o
+        nasm -f elf64 $INC -DCybouDB_LIBRARY=1 tests/chacha20_abi.asm \
+            -o build/chacha20_abi.o
         "$CC" -O2 -no-pie -Wall -Wextra tests/chacha20_test.c \
-            build/chacha20.o -o build/chacha20_test
+            build/chacha20.o build/chacha20_abi.o -o build/chacha20_test
         echo "Build OK -> build/chacha20_test"
     fi
     if [ "${1:-}" = "--crypto-probe" ]; then

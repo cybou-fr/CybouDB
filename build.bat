@@ -388,7 +388,9 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     call "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
     "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\crypto\chacha20.asm -o build\chacha20.obj
     if errorlevel 1 goto :fail
-    cl.exe /O2 /W3 /nologo tests\chacha20_test.c build\chacha20.obj /Febuild\chacha20_test.exe /Fobuild\chacha20_test.obj
+    "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 tests\chacha20_abi.asm -o build\chacha20_abi.obj
+    if errorlevel 1 goto :fail
+    cl.exe /O2 /W3 /nologo tests\chacha20_test.c build\chacha20.obj build\chacha20_abi.obj /Febuild\chacha20_test.exe /Fobuild\chacha20_test.obj
     if errorlevel 1 goto :fail
     echo Build OK -^> build\chacha20_test.exe
     goto :eof

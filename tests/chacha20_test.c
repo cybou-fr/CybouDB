@@ -33,6 +33,12 @@
 void cyboudb_chacha20_xor(const uint8_t *key, uint32_t counter,
                           const uint8_t *nonce, uint8_t *buf, uint64_t len);
 
+/* tests/chacha20_abi.asm: fills xmm6..xmm15, calls the cipher on enough bytes
+   to take its three-block path, and returns a bitmask of the ones that did not
+   survive. Win64 requires zero; System V has no such requirement, so the
+   assertion below is made only where the convention makes one. */
+unsigned cyboudb_chacha20_abi_probe(void);
+
 static int checks, failures;
 
 static void check(const char *what, int ok) {
@@ -195,6 +201,23 @@ int main(void) {
         cyboudb_chacha20_xor(key, 1, nonce, guard, 0);
         for (i = 0; i < 16; i++) if (guard[i] != 0xA5) break;
         check("a zero-length call writes nothing", i == 16);
+    }
+
+    /* The registers the caller lent it. A C test cannot check this: nothing
+       here keeps a live value in xmm6..xmm15 across the call, so the test
+       would agree with an implementation that trampled all ten. */
+    {
+        unsigned changed = cyboudb_chacha20_abi_probe();
+#ifdef _WIN32
+        if (changed) printf("     clobbered mask %#x (bit 0 = xmm6)\n", changed);
+        check("the caller's xmm6..xmm15 come back unchanged (Win64)",
+              changed == 0);
+#else
+        /* Volatile under System V - reported, not required. */
+        printf("ok   xmm6..xmm15 are scratch here; the cipher changed %#x\n",
+               changed);
+        checks++;
+#endif
     }
 
     /* What it costs, on the unit the format seals. Not a gate - the numbers

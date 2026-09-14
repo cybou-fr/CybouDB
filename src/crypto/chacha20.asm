@@ -3,9 +3,8 @@
 ; =============================================================================
 ;  crypto/chacha20.asm - the stream cipher half of the page seal
 ; =============================================================================
-;  RFC 8439. One block at a time in four SSE2 registers: the state's four rows,
-;  with the diagonal round expressed as three PSHUFDs rather than as a
-;  different set of registers.
+;  RFC 8439, SSE2 only. Three blocks at a time where there is work for three,
+;  one at a time for what is left.
 ;
 ;  Why SSE2 and not AVX2: SSE2 is part of the x86-64 baseline, so this needs no
 ;  CPUID question, no dispatch, and no fallback to test. The engine's other
@@ -13,22 +12,26 @@
 ;  because the instruction might be missing. There is no x86-64 machine this
 ;  engine runs on that lacks SSE2.
 ;
-;  Why one block and not four: four blocks need the sixteen state words in
-;  sixteen registers, leaving nothing for the rotation temporary, so a
-;  four-block version spills or gives up a state word to memory. Measured in C,
-;  four blocks is 1.8x this one - so the four-block assembly is worth writing
-;  and is worth writing second, against a correct one-block implementation that
-;  can check it.
+;  Why three blocks and not four. The fast way to do four is the transposed
+;  layout, where a register holds word i of four different blocks and the
+;  diagonal round costs nothing - but that needs all sixteen state words in
+;  registers at once, and SSE2 has sixteen, leaving none for the rotation
+;  temporary that shift-shift-or requires. Three independent copies of the
+;  row-oriented block function fit exactly: twelve state registers and three
+;  temporaries, with one to spare. The measured C versions bracket it - one
+;  block 4.6 us per page, four blocks 2.6 - and three chains is where most of
+;  that distance is, because the win is having independent work rather than
+;  wider registers.
 ;
-;  Registers: xmm0..xmm5 only. Both calling conventions treat those as
-;  volatile - Win64 makes xmm6..xmm15 the caller's, and a routine that used
-;  them without saving would be the SIMD version of the bug
-;  tests/abi_nonvolatile_lint.py exists to catch.
+;  Win64 makes xmm6..xmm15 the caller's, so the three-block path saves the nine
+;  it uses and gives them back. System V does not need that and does not pay
+;  for it. The frame is laid out identically on both so the offsets below mean
+;  one thing.
 ;
 ;  The output is byte-identical to the portable implementation, at every
-;  length. That is not a quality bar, it is the format's requirement: the file
-;  says XChaCha20-Poly1305 and never says which instructions computed it.
-;  See docs/CRYPTO_BACKEND.md.
+;  length, and to the one-block path it replaces. That is not a quality bar, it
+;  is the format's requirement: the file says XChaCha20-Poly1305 and never says
+;  which instructions computed it. See docs/CRYPTO_BACKEND.md.
 ; =============================================================================
 
 %include "cyboudb.inc"
@@ -45,6 +48,19 @@ chacha_one:     dd 1, 0, 0, 0
 
 section .text
 
+; --- frame offsets, all from rbp -------------------------------------------
+%define ST_ROW0   16                    ; the three rows every block shares
+%define ST_ROW1   32
+%define ST_ROW2   48
+%define ST_CTR    64                    ; row three for the next block
+%define ST_D0     80                    ; row three as each block started with
+%define ST_D1     96
+%define ST_D2     112
+%define ST_KS     320                   ; 192 bytes of keystream, blocks A B C
+%define ST_BUF    328
+%define ST_LEFT   336
+%define ST_XMM    480                   ; xmm6..xmm14, Win64 only
+
 ; -----------------------------------------------------------------------------
 ;  ROTL_EPI32 <vector>, <temp>, <bits>
 ;
@@ -60,25 +76,81 @@ section .text
 %endmacro
 
 ; -----------------------------------------------------------------------------
-;  QUARTER_ROUND - the four lines of RFC 8439 section 2.1, on whole rows.
-;  xmm0 = a, xmm1 = b, xmm2 = c, xmm3 = d, xmm4 = scratch.
+;  QUARTER_ROUND <a>, <b>, <c>, <d>, <temp> - RFC 8439 section 2.1, on rows.
 ; -----------------------------------------------------------------------------
-%macro QUARTER_ROUND 0
+%macro QUARTER_ROUND 5
+    paddd   %1, %2
+    pxor    %4, %1
+    ROTL_EPI32 %4, %5, 16
+    paddd   %3, %4
+    pxor    %2, %3
+    ROTL_EPI32 %2, %5, 12
+    paddd   %1, %2
+    pxor    %4, %1
+    ROTL_EPI32 %4, %5, 8
+    paddd   %3, %4
+    pxor    %2, %3
+    ROTL_EPI32 %2, %5, 7
+%endmacro
+
+; -----------------------------------------------------------------------------
+;  QR3 - the same quarter round for three blocks, interleaved line by line so
+;  that the three dependency chains are visible to the machine rather than
+;  sequential. This interleaving is the whole reason the three-block path is
+;  faster than three calls to the one-block path.
+; -----------------------------------------------------------------------------
+%macro QR3 0
     paddd   xmm0, xmm1
+    paddd   xmm4, xmm5
+    paddd   xmm8, xmm9
     pxor    xmm3, xmm0
-    ROTL_EPI32 xmm3, xmm4, 16
+    pxor    xmm7, xmm4
+    pxor    xmm11, xmm8
+    ROTL_EPI32 xmm3, xmm12, 16
+    ROTL_EPI32 xmm7, xmm13, 16
+    ROTL_EPI32 xmm11, xmm14, 16
 
     paddd   xmm2, xmm3
+    paddd   xmm6, xmm7
+    paddd   xmm10, xmm11
     pxor    xmm1, xmm2
-    ROTL_EPI32 xmm1, xmm4, 12
+    pxor    xmm5, xmm6
+    pxor    xmm9, xmm10
+    ROTL_EPI32 xmm1, xmm12, 12
+    ROTL_EPI32 xmm5, xmm13, 12
+    ROTL_EPI32 xmm9, xmm14, 12
 
     paddd   xmm0, xmm1
+    paddd   xmm4, xmm5
+    paddd   xmm8, xmm9
     pxor    xmm3, xmm0
-    ROTL_EPI32 xmm3, xmm4, 8
+    pxor    xmm7, xmm4
+    pxor    xmm11, xmm8
+    ROTL_EPI32 xmm3, xmm12, 8
+    ROTL_EPI32 xmm7, xmm13, 8
+    ROTL_EPI32 xmm11, xmm14, 8
 
     paddd   xmm2, xmm3
+    paddd   xmm6, xmm7
+    paddd   xmm10, xmm11
     pxor    xmm1, xmm2
-    ROTL_EPI32 xmm1, xmm4, 7
+    pxor    xmm5, xmm6
+    pxor    xmm9, xmm10
+    ROTL_EPI32 xmm1, xmm12, 7
+    ROTL_EPI32 xmm5, xmm13, 7
+    ROTL_EPI32 xmm9, xmm14, 7
+%endmacro
+
+%macro SHUFFLE3 3                       ; b by %1, c by %2, d by %3 lanes
+    pshufd  xmm1, xmm1, %1
+    pshufd  xmm5, xmm5, %1
+    pshufd  xmm9, xmm9, %1
+    pshufd  xmm2, xmm2, %2
+    pshufd  xmm6, xmm6, %2
+    pshufd  xmm10, xmm10, %2
+    pshufd  xmm3, xmm3, %3
+    pshufd  xmm7, xmm7, %3
+    pshufd  xmm11, xmm11, %3
 %endmacro
 
 ; =============================================================================
@@ -89,15 +161,9 @@ section .text
 ;  ARG3  const uint8_t nonce[12]
 ;  ARG4  uint8_t      *buf          (xored in place)
 ;  ARG5  uint64_t      len
-;
-;  Frame:
-;    [rbp - 16]  original row 0        [rbp - 80]  the d row being built
-;    [rbp - 32]  original row 1        [rbp - 160] keystream block
-;    [rbp - 48]  original row 2
-;    [rbp - 64]  original row 3
 ; =============================================================================
 cyboudb_chacha20_xor:
-    FRAME_BEGIN 176, 0
+    FRAME_BEGIN ST_XMM, 0
 
     ; Arguments are read from the last to the first, into registers that
     ; neither convention uses for arguments. Reading them in the written order
@@ -108,8 +174,8 @@ cyboudb_chacha20_xor:
 %else
     mov     rax, ARG5
 %endif
-    mov     [rbp - 176], rax            ; bytes left
-    mov     [rbp - 168], ARG4           ; buf
+    mov     [rbp - ST_LEFT], rax
+    mov     [rbp - ST_BUF], ARG4
     mov     r11, ARG3                   ; nonce
     mov     r10d, ARG2d                 ; counter
     mov     r9, ARG1                    ; key
@@ -117,68 +183,179 @@ cyboudb_chacha20_xor:
     test    rax, rax
     jz      .done
 
+%ifdef CybouDB_WINDOWS
+    movdqa  [rbp - ST_XMM], xmm6        ; the caller's, under this convention
+    movdqa  [rbp - ST_XMM + 16], xmm7
+    movdqa  [rbp - ST_XMM + 32], xmm8
+    movdqa  [rbp - ST_XMM + 48], xmm9
+    movdqa  [rbp - ST_XMM + 64], xmm10
+    movdqa  [rbp - ST_XMM + 80], xmm11
+    movdqa  [rbp - ST_XMM + 96], xmm12
+    movdqa  [rbp - ST_XMM + 112], xmm13
+    movdqa  [rbp - ST_XMM + 128], xmm14
+%endif
+
     ; --- the three rows that never change -----------------------------------
     movdqa  xmm0, [chacha_sigma]
     movdqu  xmm1, [r9]                  ; key words 0..3
     movdqu  xmm2, [r9 + 16]             ; key words 4..7
-    movdqa  [rbp - 16], xmm0
-    movdqa  [rbp - 32], xmm1
-    movdqa  [rbp - 48], xmm2
+    movdqa  [rbp - ST_ROW0], xmm0
+    movdqa  [rbp - ST_ROW1], xmm1
+    movdqa  [rbp - ST_ROW2], xmm2
 
     ; --- row three: counter, then the twelve nonce bytes --------------------
-    mov     [rbp - 80], r10d            ; the block counter
-    mov     eax, [r11]                  ; and the twelve nonce bytes
-    mov     [rbp - 76], eax
+    mov     [rbp - ST_CTR], r10d
+    mov     eax, [r11]
+    mov     [rbp - ST_CTR + 4], eax
     mov     eax, [r11 + 4]
-    mov     [rbp - 72], eax
+    mov     [rbp - ST_CTR + 8], eax
     mov     eax, [r11 + 8]
-    mov     [rbp - 68], eax
+    mov     [rbp - ST_CTR + 12], eax
 
-.block_loop:
-    movdqa  xmm3, [rbp - 80]
-    movdqa  [rbp - 64], xmm3            ; this block's original row three
+; -----------------------------------------------------------------------------
+;  Three blocks at a time, while there are 192 bytes to seal.
+; -----------------------------------------------------------------------------
+.three_loop:
+    cmp     qword [rbp - ST_LEFT], 192
+    jb      .one_block
 
-    movdqa  xmm0, [rbp - 16]
-    movdqa  xmm1, [rbp - 32]
-    movdqa  xmm2, [rbp - 48]
+    movdqa  xmm3, [rbp - ST_CTR]        ; block A's row three
+    movdqa  xmm7, xmm3
+    paddd   xmm7, [chacha_one]          ; B
+    movdqa  xmm11, xmm7
+    paddd   xmm11, [chacha_one]         ; C
+    movdqa  [rbp - ST_D0], xmm3
+    movdqa  [rbp - ST_D1], xmm7
+    movdqa  [rbp - ST_D2], xmm11
+
+    movdqa  xmm0, [rbp - ST_ROW0]
+    movdqa  xmm1, [rbp - ST_ROW1]
+    movdqa  xmm2, [rbp - ST_ROW2]
+    movdqa  xmm4, xmm0
+    movdqa  xmm5, xmm1
+    movdqa  xmm6, xmm2
+    movdqa  xmm8, xmm0
+    movdqa  xmm9, xmm1
+    movdqa  xmm10, xmm2
 
     mov     ecx, 10
-.round_loop:
-    QUARTER_ROUND                       ; the column round
+.three_rounds:
+    QR3
+    SHUFFLE3 0x39, 0x4E, 0x93
+    QR3
+    SHUFFLE3 0x93, 0x4E, 0x39
+    dec     ecx
+    jnz     .three_rounds
 
-    pshufd  xmm1, xmm1, 0x39            ; rows slide one, two and three lanes
+    paddd   xmm0, [rbp - ST_ROW0]
+    paddd   xmm1, [rbp - ST_ROW1]
+    paddd   xmm2, [rbp - ST_ROW2]
+    paddd   xmm3, [rbp - ST_D0]
+    paddd   xmm4, [rbp - ST_ROW0]
+    paddd   xmm5, [rbp - ST_ROW1]
+    paddd   xmm6, [rbp - ST_ROW2]
+    paddd   xmm7, [rbp - ST_D1]
+    paddd   xmm8, [rbp - ST_ROW0]
+    paddd   xmm9, [rbp - ST_ROW1]
+    paddd   xmm10, [rbp - ST_ROW2]
+    paddd   xmm11, [rbp - ST_D2]
+
+    mov     r10, [rbp - ST_BUF]
+
+    movdqu  xmm12, [r10]
+    pxor    xmm12, xmm0
+    movdqu  [r10], xmm12
+    movdqu  xmm12, [r10 + 16]
+    pxor    xmm12, xmm1
+    movdqu  [r10 + 16], xmm12
+    movdqu  xmm12, [r10 + 32]
+    pxor    xmm12, xmm2
+    movdqu  [r10 + 32], xmm12
+    movdqu  xmm12, [r10 + 48]
+    pxor    xmm12, xmm3
+    movdqu  [r10 + 48], xmm12
+
+    movdqu  xmm12, [r10 + 64]
+    pxor    xmm12, xmm4
+    movdqu  [r10 + 64], xmm12
+    movdqu  xmm12, [r10 + 80]
+    pxor    xmm12, xmm5
+    movdqu  [r10 + 80], xmm12
+    movdqu  xmm12, [r10 + 96]
+    pxor    xmm12, xmm6
+    movdqu  [r10 + 96], xmm12
+    movdqu  xmm12, [r10 + 112]
+    pxor    xmm12, xmm7
+    movdqu  [r10 + 112], xmm12
+
+    movdqu  xmm12, [r10 + 128]
+    pxor    xmm12, xmm8
+    movdqu  [r10 + 128], xmm12
+    movdqu  xmm12, [r10 + 144]
+    pxor    xmm12, xmm9
+    movdqu  [r10 + 144], xmm12
+    movdqu  xmm12, [r10 + 160]
+    pxor    xmm12, xmm10
+    movdqu  [r10 + 160], xmm12
+    movdqu  xmm12, [r10 + 176]
+    pxor    xmm12, xmm11
+    movdqu  [r10 + 176], xmm12
+
+    add     qword [rbp - ST_BUF], 192
+    sub     qword [rbp - ST_LEFT], 192
+
+    movdqa  xmm3, [rbp - ST_CTR]        ; three blocks consumed
+    paddd   xmm3, [chacha_one]
+    paddd   xmm3, [chacha_one]
+    paddd   xmm3, [chacha_one]
+    movdqa  [rbp - ST_CTR], xmm3
+    jmp     .three_loop
+
+; -----------------------------------------------------------------------------
+;  One block at a time for the rest: at most two whole blocks and a tail.
+; -----------------------------------------------------------------------------
+.one_block:
+    cmp     qword [rbp - ST_LEFT], 0
+    je      .wipe
+
+    movdqa  xmm3, [rbp - ST_CTR]
+    movdqa  [rbp - ST_D0], xmm3
+    movdqa  xmm0, [rbp - ST_ROW0]
+    movdqa  xmm1, [rbp - ST_ROW1]
+    movdqa  xmm2, [rbp - ST_ROW2]
+
+    mov     ecx, 10
+.one_rounds:
+    QUARTER_ROUND xmm0, xmm1, xmm2, xmm3, xmm12
+    pshufd  xmm1, xmm1, 0x39
     pshufd  xmm2, xmm2, 0x4E
     pshufd  xmm3, xmm3, 0x93
-
-    QUARTER_ROUND                       ; the diagonal round, same code
-
-    pshufd  xmm1, xmm1, 0x93            ; and slide back
+    QUARTER_ROUND xmm0, xmm1, xmm2, xmm3, xmm12
+    pshufd  xmm1, xmm1, 0x93
     pshufd  xmm2, xmm2, 0x4E
     pshufd  xmm3, xmm3, 0x39
-
     dec     ecx
-    jnz     .round_loop
+    jnz     .one_rounds
 
-    paddd   xmm0, [rbp - 16]
-    paddd   xmm1, [rbp - 32]
-    paddd   xmm2, [rbp - 48]
-    paddd   xmm3, [rbp - 64]
+    paddd   xmm0, [rbp - ST_ROW0]
+    paddd   xmm1, [rbp - ST_ROW1]
+    paddd   xmm2, [rbp - ST_ROW2]
+    paddd   xmm3, [rbp - ST_D0]
 
-    movdqa  [rbp - 160], xmm0
-    movdqa  [rbp - 144], xmm1
-    movdqa  [rbp - 128], xmm2
-    movdqa  [rbp - 112], xmm3
+    movdqa  [rbp - ST_KS], xmm0
+    movdqa  [rbp - ST_KS + 16], xmm1
+    movdqa  [rbp - ST_KS + 32], xmm2
+    movdqa  [rbp - ST_KS + 48], xmm3
 
-    ; --- xor it into the caller's bytes -------------------------------------
-    mov     r10, [rbp - 168]            ; buf
-    mov     r11, [rbp - 176]            ; bytes left
+    mov     r10, [rbp - ST_BUF]
+    mov     r11, [rbp - ST_LEFT]
     mov     rax, 64
     cmp     r11, rax
     cmovb   rax, r11                    ; n = min(64, left)
-    lea     r9, [rbp - 160]             ; keystream
+    lea     r9, [rbp - ST_KS]
 
     cmp     rax, 64
-    jne     .xor_tail
+    jne     .one_tail
 
     movdqu  xmm0, [r10]
     pxor    xmm0, [r9]
@@ -192,48 +369,60 @@ cyboudb_chacha20_xor:
     movdqu  xmm0, [r10 + 48]
     pxor    xmm0, [r9 + 48]
     movdqu  [r10 + 48], xmm0
-    jmp     .xor_done
+    jmp     .one_done
 
-.xor_tail:
-    ; A final partial block, byte at a time. Whole blocks are the common case
-    ; and a 4096-byte page has none of these, but a page is not the only thing
-    ; this will ever seal.
+.one_tail:
+    ; A final partial block, byte at a time. A 4096-byte page has none of
+    ; these, but a page is not the only thing this will ever seal.
     xor     r8, r8
-.xor_byte:
+.one_byte:
     cmp     r8, rax
-    jae     .xor_done
+    jae     .one_done
     mov     cl, [r9 + r8]
     xor     [r10 + r8], cl
     inc     r8
-    jmp     .xor_byte
+    jmp     .one_byte
 
-.xor_done:
-    add     [rbp - 168], rax            ; buf += n
-    sub     [rbp - 176], rax            ; left -= n
+.one_done:
+    add     [rbp - ST_BUF], rax
+    sub     [rbp - ST_LEFT], rax
 
     ; The counter lives in the stored row rather than a register, so that an
     ; overflow past 2^32 wraps exactly where RFC 8439 says it does.
-    movdqa  xmm3, [rbp - 80]
+    movdqa  xmm3, [rbp - ST_CTR]
     paddd   xmm3, [chacha_one]
-    movdqa  [rbp - 80], xmm3
+    movdqa  [rbp - ST_CTR], xmm3
+    jmp     .one_block
 
-    cmp     qword [rbp - 176], 0
-    jne     .block_loop
+.wipe:
+%ifdef CybouDB_WINDOWS
+    movdqa  xmm6, [rbp - ST_XMM]
+    movdqa  xmm7, [rbp - ST_XMM + 16]
+    movdqa  xmm8, [rbp - ST_XMM + 32]
+    movdqa  xmm9, [rbp - ST_XMM + 48]
+    movdqa  xmm10, [rbp - ST_XMM + 64]
+    movdqa  xmm11, [rbp - ST_XMM + 80]
+    movdqa  xmm12, [rbp - ST_XMM + 96]
+    movdqa  xmm13, [rbp - ST_XMM + 112]
+    movdqa  xmm14, [rbp - ST_XMM + 128]
+%endif
+
+    ; Nothing of the key or the keystream is left on the stack for the next
+    ; function to find.
+    pxor    xmm0, xmm0
+    movdqa  [rbp - ST_ROW0], xmm0
+    movdqa  [rbp - ST_ROW1], xmm0
+    movdqa  [rbp - ST_ROW2], xmm0
+    movdqa  [rbp - ST_CTR], xmm0
+    movdqa  [rbp - ST_D0], xmm0
+    movdqa  [rbp - ST_D1], xmm0
+    movdqa  [rbp - ST_D2], xmm0
+    movdqa  [rbp - ST_KS], xmm0
+    movdqa  [rbp - ST_KS + 16], xmm0
+    movdqa  [rbp - ST_KS + 32], xmm0
+    movdqa  [rbp - ST_KS + 48], xmm0
 
 .done:
-    ; Nothing of the key or the keystream is left on the stack for the next
-    ; function to find. This costs one pass over 176 bytes per call.
-    pxor    xmm0, xmm0
-    movdqa  [rbp - 16], xmm0
-    movdqa  [rbp - 32], xmm0
-    movdqa  [rbp - 48], xmm0
-    movdqa  [rbp - 64], xmm0
-    movdqa  [rbp - 80], xmm0
-    movdqa  [rbp - 160], xmm0
-    movdqa  [rbp - 144], xmm0
-    movdqa  [rbp - 128], xmm0
-    movdqa  [rbp - 112], xmm0
-
     FRAME_END
     ret
 
