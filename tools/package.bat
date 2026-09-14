@@ -58,8 +58,14 @@ cl.exe /O2 /W3 /nologo /I"%NAME%\include" consumer.c /Fe:consumer.exe /Fo:consum
 del /q consumer.exe consumer.obj consumer.c >nul 2>&1
 popd
 
-echo [check] the packaged binary runs and agrees with its header
+echo [check] the packaged binary runs and says the version on the tin
 "%STAGE%\cyboudb.exe" version || exit /b 1
+powershell -NoProfile -Command "if ((& '%STAGE%\cyboudb.exe' version)[0] -ne 'CybouDB %VERSION%') { exit 1 }" || (
+    echo package: the binary does not say CybouDB %VERSION%, which is what
+    echo          this package is being built as. Update msg_product in
+    echo          src\main.asm and rebuild.
+    exit /b 1
+)
 "%STAGE%\cyboudb.exe" create "%OUT%\smoke.cdb" 256 >nul || exit /b 1
 "%STAGE%\cyboudb.exe" query "%OUT%\smoke.cdb" "CREATE TABLE t (a INT64)" >nul || exit /b 1
 "%STAGE%\cyboudb.exe" check "%OUT%\smoke.cdb" | findstr /c:"Status:          OK" >nul || exit /b 1

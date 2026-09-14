@@ -45,8 +45,14 @@ cp tests/package_consumer.c "$STAGE/../consumer.c"
     "${NAME}/libcyboudb.a" -o consumer && ./consumer )
 rm -f "${OUT}/consumer" "${OUT}/consumer.c"
 
-echo "[check] the packaged binary runs and agrees with its header"
+echo "[check] the packaged binary runs and says the version on the tin"
 "$STAGE/cyboudb" version
+if ! "$STAGE/cyboudb" version | head -1 | grep -qx "CybouDB ${VERSION}"; then
+    echo "package: the binary says $("$STAGE/cyboudb" version | head -1)," >&2
+    echo "         and this package is being built as ${VERSION}." >&2
+    echo "         Update msg_product in src/main.asm and rebuild." >&2
+    exit 1
+fi
 "$STAGE/cyboudb" create "${OUT}/smoke.cdb" 256 >/dev/null
 "$STAGE/cyboudb" query "${OUT}/smoke.cdb" "CREATE TABLE t (a INT64)" >/dev/null
 "$STAGE/cyboudb" check "${OUT}/smoke.cdb" | grep -q "Status:          OK"

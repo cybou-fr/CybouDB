@@ -30,9 +30,9 @@ extern "C" {
  * the file rather than guess at it, and that refusal is the format working as
  * designed. See docs/FORMAT.md, which is normative.
  */
-#define CybouDB_VERSION         "0.5.0-preview.2"
+#define CybouDB_VERSION         "0.6.0-dev"
 #define CybouDB_VERSION_MAJOR   0
-#define CybouDB_VERSION_MINOR   5
+#define CybouDB_VERSION_MINOR   6
 #define CybouDB_VERSION_PATCH   0
 
 /* --- Return & Status Codes ------------------------------------------------ */
