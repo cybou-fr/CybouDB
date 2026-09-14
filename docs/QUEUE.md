@@ -1123,13 +1123,29 @@ with the bit dropped from the mask of what it understands, which is what every
 released `0.5` binary is, and `tests/lease_format_tests.py` runs both binaries
 against the same files.
 
-**What that does not prove**, and the release is where it gets proved: a build
+**What that did not prove**, and what the release gate proved instead: a build
 made from today's source with one macro flipped is a very good model of a `0.5`
-reader and is not literally one. Before `0.6` ships, the lease fixture goes once
-against the actual released `preview.1` and `preview.2` binaries, on both
-platforms. Not on every push - the structural check above is what belongs in
-CI - but once, so that *released 0.5 refuses a 0.6 lease file cleanly* is a
-sentence someone has watched happen.
+reader and is not literally one. So the lease fixture went once against the
+actual published binaries - `0.5.0-preview.1` and `0.5.0-preview.2`, Linux and
+Windows, four executables downloaded from the release page and checked against
+its `SHA256SUMS` - and *released 0.5 refuses a 0.6 lease file cleanly* is now a
+sentence someone has watched happen. The run is frozen in
+[`docs/RELEASE-GATE-0.6.md`](RELEASE-GATE-0.6.md) and the script that produced
+it is `tests/release_gate_leases.sh`, which takes the build under test and the
+released binaries to hold it against.
+
+It asks three things of each released binary, and the third is the one the
+`--no-leases` model could never have answered honestly: that `info`, `check`
+and a statement all fail and say *incompatible features* rather than anything
+about damage; that the same three against an ordinary file still succeed, so
+the refusal is about the capability and not about the release; and that the
+lease file is **byte-identical afterwards**, because a refusal that stamped a
+generation or attempted a repair would be a `0.5` binary editing a file it has
+just said it does not understand.
+
+Not on every push - the structural check above is what belongs in CI, and the
+gate needs binaries that are not in this repository - but once per release, and
+the script exists so that *once* is a command rather than an afternoon.
 
 Step 6 is where the state table above stops being a document, and
 `tests/lease_state_test.c` is what holds it there: 27 checks that write each
