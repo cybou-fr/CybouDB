@@ -20,6 +20,7 @@ global queue_page_valid, db_queue_seg_addr, queue_seg_seal, db_queue_segments_va
 extern catalog_entry_in
 global db_queue_push, db_queue_pop, db_queue_peek, db_queue_depth
 global db_queue_retire_all
+global db_queue_scan_claimable
 global db_stream_append
 global queue_slot_at, queue_slot_copy, queue_retire_chain
 global db_stream_retire_all
@@ -30,6 +31,21 @@ section .data
 ; has carried, and a test can say so rather than assuming it.
 global queue_segments_walked
 queue_segments_walked: dq 0
+
+; What a search for a claimable message looked at. Counters rather than a
+; timing, for the reason preview.2 established: a counter says whether the cost
+; follows the work or the backlog, and a timing says what the machine was doing
+; that afternoon. See docs/QUEUE.md, "The open problem: finding a claimable
+; message".
+global lease_slots_inspected, lease_segments_inspected
+lease_slots_inspected: dq 0
+lease_segments_inspected: dq 0
+
+; Reserved and never incremented. If the per-segment summary needs a level
+; above it, that level will want counting too, and naming it now is what keeps
+; a later measurement comparable with the ones taken before it.
+global lease_summary_nodes_inspected
+lease_summary_nodes_inspected: dq 0
 
 section .text
 
@@ -1167,6 +1183,106 @@ queue_retire_chain:
 ; leave the queue through.
 ;
 ;  Local slots: [rbp-8]=ctx, [rbp-16]=id, [rbp-24]=out
+; -----------------------------------------------------------------------------
+;  db_queue_scan_claimable(ctx, queue id, now in ms, out position)
+;      -> RAX: 1 when a claimable message was found, 0 when none was
+;
+;  The naive answer, on purpose. Walk forward from the head and take the first
+;  slot that is HELD or whose lease has lapsed, skipping what is ACKED and what
+;  is still held by somebody. It writes nothing - no state, no cursor, no
+;  clock - because its job is to make the cost of this strategy a number before
+;  a better strategy is chosen, and a measurement that also mutated would be
+;  measuring something else by its second run.
+;
+;  What it counts is what a real claim would have to read: a slot per position
+;  considered, and a segment page per segment the walk enters. The segment
+;  counter only moves when the walk crosses into a new one, which is what makes
+;  it mean "pages touched" rather than "positions divided by 62".
+;
+;  docs/QUEUE.md says why this is the hard part of leases and why a cursor
+;  alone does not fix it.
+; -----------------------------------------------------------------------------
+db_queue_scan_claimable:
+    FRAME_BEGIN 80, 0
+    mov [rbp - 8], ARG1             ; ctx
+    mov [rbp - 16], ARG2            ; queue id
+    mov [rbp - 24], ARG3            ; now, in milliseconds
+    mov [rbp - 32], ARG4            ; where the position goes, or zero
+    mov r10, ARG1
+    test qword [r10 + DB_FEATURES], CybouDB_FEATURE_QUEUE_LEASES
+    jz .sc_none                     ; without the capability nothing is claimed
+    mov ARG1, [rbp - 8]
+    mov ARG2, [rbp - 16]
+    call db_catalog_page
+    test rax, rax
+    jz .sc_none
+    cmp dword [rax + CAT_TYPE], CAT_QUEUE
+    jne .sc_none
+    mov [rbp - 40], rax
+    mov rdx, [rax + Q_HEAD]
+    mov [rbp - 48], rdx             ; the position being looked at
+    mov rdx, [rax + Q_TAIL]
+    mov [rbp - 56], rdx
+    mov qword [rbp - 64], -1        ; the segment whose page is in hand
+    mov qword [rbp - 72], 0         ; and its address
+
+.sc_next:
+    mov rax, [rbp - 48]
+    cmp rax, [rbp - 56]
+    jae .sc_none                    ; the walk reached the tail
+    xor edx, edx
+    mov r9, QUEUE_SEG_SLOTS
+    div r9                          ; rax = segment, rdx = slot within it
+    mov [rbp - 80], rdx
+    cmp rax, [rbp - 64]
+    je .sc_have_segment
+
+    mov [rbp - 64], rax
+    mov r11, [rbp - 40]
+    sub rax, [r11 + Q_FIRST_SEG]
+    mov r9, [r11 + Q_ENTRIES + rax * 8]
+    mov ARG1, [rbp - 8]
+    mov ARG2, r9
+    call db_queue_seg_addr
+    mov [rbp - 72], rax
+    inc qword [rel lease_segments_inspected]
+
+.sc_have_segment:
+    inc qword [rel lease_slots_inspected]
+    mov rdx, [rbp - 80]
+    shl rdx, 6                      ; QUEUE_SLOT_SIZE
+    mov r8, [rbp - 72]
+    lea r8, [r8 + QSEG_SLOTS + rdx]
+    mov ecx, [r8 + QMSG_STATE]
+    cmp ecx, QMSG_STATE_HELD
+    je .sc_found
+    cmp ecx, QMSG_STATE_CLAIMED
+    jne .sc_step                    ; ACKED, and the validator allows no other
+    ; A lapsed lease is claimable; a deadline still ahead is somebody's.
+    mov rax, [r8 + QMSG_LEASE_UNTIL]
+    cmp rax, [rbp - 24]
+    ja .sc_step
+
+.sc_found:
+    mov r11, [rbp - 32]
+    test r11, r11
+    jz .sc_found_done
+    mov rax, [rbp - 48]
+    mov [r11], rax
+.sc_found_done:
+    mov eax, 1
+    FRAME_END
+    ret
+
+.sc_step:
+    inc qword [rbp - 48]
+    jmp .sc_next
+
+.sc_none:
+    xor eax, eax
+    FRAME_END
+    ret
+
 db_queue_peek:
     FRAME_BEGIN 48, 0
     mov [rbp - 8], ARG1

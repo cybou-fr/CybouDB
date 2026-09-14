@@ -100,7 +100,7 @@ if [ "${1:-}" = "--duckdb-bench" ]; then
     exit 0
 fi
 
-if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api-bench" ] || [ "${1:-}" = "--vector-bench" ] || [ "${1:-}" = "--delete-bench" ] || [ "${1:-}" = "--vector-example" ] || [ "${1:-}" = "--worker-example" ] || [ "${1:-}" = "--queue-bench" ] || [ "${1:-}" = "--commit-probe" ] || [ "${1:-}" = "--flush-probe" ] || [ "${1:-}" = "--for-experiment" ]; then
+if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api-bench" ] || [ "${1:-}" = "--vector-bench" ] || [ "${1:-}" = "--delete-bench" ] || [ "${1:-}" = "--vector-example" ] || [ "${1:-}" = "--worker-example" ] || [ "${1:-}" = "--queue-bench" ] || [ "${1:-}" = "--commit-probe" ] || [ "${1:-}" = "--flush-probe" ] || [ "${1:-}" = "--lease-probe" ] || [ "${1:-}" = "--for-experiment" ]; then
     mkdir -p build/lib
     LIB_SOURCES="src/api/cyboudb_c.asm ${SOURCES#src/main.asm }"
     TEST_DEFS=""
@@ -182,6 +182,12 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         command -v gcc >/dev/null 2>&1 || CC=clang
         "$CC" -O2 -no-pie -Wall -Iinclude benchmarks/commit_probe.c build/libcyboudb.a -o build/commit_probe
         echo "Build OK -> build/commit_probe"
+    fi
+    if [ "${1:-}" = "--lease-probe" ]; then
+        CC=gcc
+        command -v gcc >/dev/null 2>&1 || CC=clang
+        "$CC" -O2 -no-pie -Wall -Iinclude benchmarks/lease_probe.c build/libcyboudb.a -o build/lease_probe
+        echo "Build OK -> build/lease_probe"
     fi
     if [ "${1:-}" = "--flush-probe" ]; then
         CC=gcc

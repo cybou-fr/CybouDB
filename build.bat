@@ -133,6 +133,12 @@ if "%~1"=="--flush-probe" (
     set SOURCES=src\api\cyboudb_c.asm !BASE_SOURCES!
 )
 
+if "%~1"=="--lease-probe" (
+    set OUT=build\cyboudb.lib
+    set OBJDIR=build\lib
+    set SOURCES=src\api\cyboudb_c.asm !BASE_SOURCES!
+)
+
 if "%~1"=="--for-experiment" (
     set OUT=build\cyboudb.lib
     set OBJDIR=build\lib
@@ -220,6 +226,7 @@ for %%F in (%SOURCES%) do (
     if "%~1"=="--queue-bench" set DEFS=-DCybouDB_LIBRARY=1
     if "%~1"=="--commit-probe" set DEFS=-DCybouDB_LIBRARY=1
     if "%~1"=="--flush-probe" set DEFS=-DCybouDB_LIBRARY=1
+    if "%~1"=="--lease-probe" set DEFS=-DCybouDB_LIBRARY=1
     if "%~1"=="--for-experiment" set DEFS=-DCybouDB_LIBRARY=1
     if "%~1"=="--c-tests" set DEFS=-DCybouDB_LIBRARY=1 -DCybouDB_API_TEST_ALLOC=1
     "%NASM%" -f win64 %INC% !DEFS! %%F -o %OBJDIR%\%%~nF.obj
@@ -236,6 +243,7 @@ if "%~1"=="--worker-example" goto :build_lib
 if "%~1"=="--queue-bench" goto :build_lib
 if "%~1"=="--commit-probe" goto :build_lib
 if "%~1"=="--flush-probe" goto :build_lib
+if "%~1"=="--lease-probe" goto :build_lib
 if "%~1"=="--for-experiment" goto :build_lib
 if "%~1"=="--c-tests" goto :build_c_tests
 
@@ -336,6 +344,10 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     )
     if "%~1"=="--flush-probe" (
         cl.exe /O2 /W3 /nologo /Iinclude benchmarks\flush_probe.c /Febuild\flush_probe.exe /Fobuild\flush_probe.obj /link build\cyboudb.lib kernel32.lib
+        if errorlevel 1 goto :fail
+    )
+    if "%~1"=="--lease-probe" (
+        cl.exe /O2 /W3 /nologo /Iinclude benchmarks\lease_probe.c /Febuild\lease_probe.exe /Fobuild\lease_probe.obj /link build\cyboudb.lib kernel32.lib
         if errorlevel 1 goto :fail
     )
     if "%~1"=="--for-experiment" (

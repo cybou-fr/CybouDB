@@ -740,6 +740,12 @@ case. A hint plus a full rescan when the hint finds nothing just moves the
 linear walk to the moment the queue is out of fresh messages, which is when a
 work queue is most likely to be scanning for a lapsed one.
 
+**The baseline is taken**, and it says what the argument above predicted:
+`benchmarks/results/2026-09-14-lease-search.md`. One slot at every depth when a
+fresh message is at the head, and the whole queue for every other shape - 100,
+1,000, 10,000, 29,700 slots inspected, exactly linear in what is retained. The
+`stuck` shape needs one slow worker and nothing else to produce it.
+
 **The shape an answer probably has.** What can be written cheaply is a summary
 per segment, because every operation that changes a slot already writes that
 slot's segment page: whether the segment holds any `HELD` slot, and the
@@ -788,12 +794,18 @@ it breaks a different plausible answer:
 | One stuck `head` with thousands of `ACKED` behind it | **the pathological case**, and the one a cursor alone does not fix |
 | A lapsed claim far behind `Q_CLAIM` | a hint does not lose a reclaimable message |
 | No claimable message at all | a negative answer is bounded too, not a full walk |
-| Depth 100, 10,000, 1,000,000 | cost does not follow retention |
+| Depth 100, 10,000, ~29,700 | cost does not follow retention |
 
 The last row is the one `preview.2` already taught: what must stay flat is
 **slots inspected per claim**, the same shape as the 2.14 → 163.41 → 1.00 table
 that work closed with. A counter says whether the cost follows the work or the
 backlog; a timing says what the machine was doing that afternoon.
+
+Its top depth used to read 1,000,000, which is a depth a queue cannot reach: a
+queue page names at most 495 segments of 62 messages, so the undelivered
+backlog is capped at 30,690 and a 60,000-page file fills at 29,753. ~29,700 is
+the ceiling, and a million belongs to whatever the second directory level would
+allow. An acceptance row nobody can ever fill is worse than no row.
 
 The fifth row is the one most likely to be forgotten. A strategy can be fast
 whenever there is something to find and linear whenever there is not - and a

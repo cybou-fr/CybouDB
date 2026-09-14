@@ -196,6 +196,26 @@ python3 tests/queue_sql_tests.py ./build/cyboudb_audit      # and the rest
 
 See [COMMIT_VALIDATION.md](COMMIT_VALIDATION.md).
 
+## The cost of finding a claimable message
+
+Not a test - a probe, `benchmarks/lease_probe.c`, built with
+`sh build.sh --lease-probe`. It exists because the search is the open problem
+in queue leases and the order this project keeps is to measure before choosing.
+
+`db_queue_scan_claimable` is the naive walk, deliberately: forward from the
+head, taking the first slot that is `HELD` or lapsed. It writes nothing, so a
+second run measures the same thing as the first, and it counts what a real
+claim would have to read - a slot per position, a segment page per segment
+entered.
+
+Five shapes at a fixed depth, because depth alone lets almost any strategy look
+constant on a tidy queue. The results are in
+[benchmarks/results/2026-09-14-lease-search.md](../benchmarks/results/2026-09-14-lease-search.md):
+one slot when a fresh message is at the head, and the entire queue for every
+other shape. The one to know about is `stuck` - one slow worker at the head,
+everything behind it acknowledged - which needs no adversary to produce and
+turns every later claim into a walk over the whole backlog.
+
 ## Which lease states make a file valid
 
 `tests/lease_state_test.c`, 27 checks, run against two databases - one created
