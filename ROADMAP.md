@@ -599,10 +599,12 @@ the release, not after it.
  2. Format design                    docs/ENCRYPTED_FORMAT.md    done
 2.5 Encrypted I/O spike              done - benchmarks/results/
                                      2026-09-15-encrypted-io.md
- 3. Reference crypto backend         nonce-misuse-resistant AEAD required
-                                     unless uniqueness is proved across crash
-                                     and retry; ML-KEM, ML-DSA candidate, KDF,
-                                     against official known-answer vectors
+ 3. Reference crypto backend         docs/CRYPTO_BACKEND.md - decided:
+                                     XChaCha20-Poly1305, implemented here,
+                                     dispatched but not chosen by the machine.
+                                     Owes a vectorised ChaCha20, measured
+3.5 Key-hierarchy primitives         ML-KEM, ML-DSA, KDF - a different budget,
+                                     since they run at open and not per page
  4. Root key hierarchy
  5. Opening with a PQ private key
  6. Independent 24-word recovery
@@ -647,6 +649,24 @@ page cache under the engine's hottest operation. **That measurement is step 2.5*
 ahead of the reference crypto backend, because a reference AEAD is bounded work
 with official test vectors while the I/O architecture can change the shape of
 the release rather than one of its steps.
+
+Step 3 found the thing step 2.5 could not. The I/O spike measured the
+architecture with a stand-in transform and concluded the cipher was amortised -
+while saying that any conclusion depending on that floor was not one. Raising
+the floor to real primitives breaks it in one direction: a page sealed with
+portable ChaCha20-Poly1305 costs **9.3 us** against a page miss's 850 ns to
+3.3 us, while hardware AES and PCLMULQDQ do the same work in **~690 ns**. So
+the cipher is a minority of the miss where AES-NI exists and three to eleven
+times the I/O where it does not.
+
+The decision does not follow the fast number, and
+[docs/CRYPTO_BACKEND.md](docs/CRYPTO_BACKEND.md) says why: the ciphertext must
+not depend on the machine that wrote it, so the AEAD is a format decision. AES
+without AES-NI is table-driven and leaks through the cache, or bitsliced and
+slower than the alternative; ChaCha20 has no table, so a machine without
+hardware support runs slower and not differently. What is dispatched is the
+implementation, and both paths must produce identical bytes - a property a test
+can assert rather than a benchmark's opinion.
 
 **A note on size.** This is larger than `0.5` and `0.6` together, and the
 project has one measurement-driven habit worth keeping here: nothing in the
