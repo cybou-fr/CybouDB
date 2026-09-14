@@ -256,6 +256,7 @@ if "%~1"=="--for-experiment" goto :build_lib
 if "%~1"=="--c-tests" goto :build_c_tests
 if "%~1"=="--io-spike" goto :build_io_spike
 if "%~1"=="--crypto-probe" goto :build_crypto_probe
+if "%~1"=="--crypto-tests" goto :build_crypto_tests
 
 rem --- locate a linker -------------------------------------------------------
 rem GoLink produces the smallest executable and needs no Visual Studio.
@@ -374,6 +375,25 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     exit /b 0
 )
 echo error: MSVC lib.exe not found.
+goto :fail
+
+rem The assembly cipher and the test that holds it to RFC 8439 and to a C
+rem reference at every length. No engine, no library: one object and a test.
+:build_crypto_tests
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist "!VSWHERE!" (
+    for /f "usebackq tokens=*" %%i in (`"!VSWHERE!" -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do if exist "%%i\VC\Auxiliary\Build\vcvars64.bat" set "VSPATH=%%i"
+)
+if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
+    call "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+    "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\crypto\chacha20.asm -o build\chacha20.obj
+    if errorlevel 1 goto :fail
+    cl.exe /O2 /W3 /nologo tests\chacha20_test.c build\chacha20.obj /Febuild\chacha20_test.exe /Fobuild\chacha20_test.obj
+    if errorlevel 1 goto :fail
+    echo Build OK -^> build\chacha20_test.exe
+    goto :eof
+)
+echo error: the crypto tests need NASM and the MSVC C compiler.
 goto :fail
 
 rem The 0.7 crypto probe is plain C: MSVC needs no switch for the AES-NI

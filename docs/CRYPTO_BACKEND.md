@@ -193,7 +193,8 @@ official vectors does not ship.
 | :--- | :--- |
 | ~~a vectorised ChaCha20, measured~~ | done: 2.25 GB/s with AVX2, 1.49 with SSE2, and the expectation it was testing turned out to be 1.75x optimistic |
 | ~~a parallel Poly1305~~ | done: four chains with precomputed powers, 1.6x, and a sealed page at 2.6 µs |
-| an assembly implementation | everything measured here is C; the engine is NASM, and the backend has to be too |
+| an assembly implementation | **started**: `src/crypto/chacha20.asm` is the one-block SSE2 cipher, 0.88 GB/s, held to RFC 8439 and to a C reference at every length from 0 to 600 on both platforms. The four-block cipher and the MAC are still C |
+| XChaCha20 and the AEAD wiring in assembly | the C probe measures the pieces; nothing yet computes a whole sealed page in the engine's own language |
 | XChaCha20's own vectors | the HChaCha20 construction has published test vectors of its own; ChaCha20's do not cover it |
 | a Poly1305 one-time-key derivation check | the AEAD derives its MAC key from the cipher; that wiring has its own vector in RFC 8439 section 2.8.2 |
 | constant-time review of Poly1305's final reduction | the probe's version branches on nothing, but that is an assertion until someone checks the generated code |
