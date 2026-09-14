@@ -782,10 +782,10 @@ already produced.
 and the acceptance criterion is stated against them rather than against a
 wall-clock time, for the same reason the commit work was:
 
-**Depth is not enough on its own.** A queue of a million messages that is
-otherwise tidy would let almost any strategy look constant, so the probe has to
-vary the *shape* at a fixed depth as well. Six scenarios, each present because
-it breaks a different plausible answer:
+**Depth is not enough on its own.** A large queue that is otherwise tidy would
+let almost any strategy look constant, so the probe has to vary the *shape* at
+a fixed depth as well. Five shapes, each present because it breaks a different
+plausible answer, measured across a depth axis:
 
 | Scenario | What it has to show |
 | :--- | :--- |

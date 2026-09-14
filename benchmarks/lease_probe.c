@@ -13,8 +13,8 @@
  * half-finished implementation of a better one.
  *
  * Depth alone would let almost any strategy look constant on a tidy queue, so
- * the probe varies the *shape* at a fixed depth as well. Six scenarios, each
- * breaking a different plausible answer:
+ * the probe varies the *shape* at a fixed depth as well. Five shapes, each
+ * breaking a different plausible answer, measured across a depth axis:
  *
  *   front      a fresh HELD message at the head - the ordinary claim
  *   live       many live claims before the first available one
@@ -23,7 +23,8 @@
  *   empty      nothing claimable at all - a bounded *no* matters as much as a
  *              bounded *yes*, because a worker asks far more often than it is
  *              answered
- *   depth      the same shape at 100, 10k and 1M, which is the preview.2 axis
+ *
+ * Depth is the other axis and not a sixth shape.
  *
  * Nothing in the engine writes a lease state yet, so the shapes are written by
  * hand into committed pages and resealed with an independent CRC-32C. The
@@ -141,33 +142,48 @@ static void reset_shape(uint64_t depth) {
     seal_all(depth);
 }
 
-/* The six shapes. Each leaves the queue valid; see tests/lease_state_test.c. */
+/* The five shapes. Each leaves the queue valid; see tests/lease_state_test.c.
+ *
+ * Each also carries the claim cursor its history would have left, which the
+ * naive walk never reads and a cursor-aware candidate will. A fixture whose
+ * cursor is merely legal rather than truthful would hand the challenger a
+ * different queue from the one the baseline was taken on, and the comparison
+ * would be between two states rather than two strategies.
+ *
+ * Q_CLAIM is one past the highest position ever handed out, so it follows from
+ * which slots have been claimed at some point - CLAIMED and ACKED both have
+ * been, HELD with a zero token has not. */
 static void shape(const char *name, uint64_t depth) {
-    uint64_t p;
+    uint64_t p, claim = 0;
     reset_shape(depth);
     if (!strcmp(name, "front")) {
-        /* Nothing to skip: the head is a fresh message. */
+        /* Nothing was ever handed out: the head is a fresh message. */
+        claim = 0;
     } else if (!strcmp(name, "live")) {
         /* Every message but the last is claimed and still held. */
         for (p = 0; p + 1 < depth; p++) set_state(p, STATE_CLAIMED, FUTURE, p + 1);
+        claim = depth - 1;
     } else if (!strcmp(name, "stuck")) {
         /* One slow worker at the head, everything behind it acknowledged, one
            fresh message at the end. This is the pathological case. */
         set_state(0, STATE_CLAIMED, FUTURE, 1);
         for (p = 1; p + 1 < depth; p++) set_state(p, STATE_ACKED, 0, p + 1);
+        claim = depth - 1;
     } else if (!strcmp(name, "lapsed")) {
         /* The claimable one is a lapsed claim near the end, behind a wall of
            acknowledged messages - a cursor that only moves forward loses it. */
         set_state(0, STATE_CLAIMED, FUTURE, 1);
         for (p = 1; p + 1 < depth; p++) set_state(p, STATE_ACKED, 0, p + 1);
         set_state(depth - 1, STATE_CLAIMED, PAST, 7);
-        put64(qpage, Q_CLAIM_OFF, depth);
-        db_catalog_seal(qpage);
+        claim = depth;
     } else if (!strcmp(name, "empty")) {
         /* Nothing to find, which a strategy may answer slowly if it only
            bounds the cost of success. */
         for (p = 0; p < depth; p++) set_state(p, STATE_CLAIMED, FUTURE, p + 1);
+        claim = depth;
     }
+    put64(qpage, Q_CLAIM_OFF, claim);
+    db_catalog_seal(qpage);
     seal_all(depth);
 }
 
