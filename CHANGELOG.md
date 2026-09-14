@@ -43,8 +43,8 @@ NACK  FROM jobs AT 41 TOKEN 3;
 RENEW FROM jobs AT 41 TOKEN 3 FOR 30000;
 ```
 
-Only in a database created for it - `cyboudb create-leases`, incompatible bit
-65536, decided when the file is made and never afterwards. A `0.5` build
+Only in a database created for it - `cyboudb create <path> <pages> --leases`,
+incompatible bit 65536, decided when the file is made and never afterwards. A `0.5` build
 refuses such a file saying *unsupported feature* rather than *corrupt queue*,
 which is what the bit is for; one created without it is unchanged and stays
 readable by `0.5` forever. That is not an intention: the published
