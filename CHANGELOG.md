@@ -161,6 +161,23 @@ the engine's zone-pruning counters between a bound predicate and the literal
 one, not just the rows: a bound predicate that lost its pruning would still
 answer correctly and read the whole table to do it.
 
+### Fixed
+
+**A register that belongs to the caller was being used as scratch.** `rdi` and
+`rsi` are argument registers on Linux and the caller's own on Windows, and
+eight routines wrote one without giving it back: the statement error path added
+this release, six in the REPL - its line accumulator, two whitespace scans, its
+line reader and its two comparison helpers - and `cyboudb_exec_query`, which
+also wrote `r15`, the caller's under both conventions. The engine's own storage paths were not
+affected; what was at risk was the command line and the C caller of a statement
+that failed.
+
+Only the first was new, and it is how the rest were found: the lease suite
+printed every check as passing and then exited with a status that changed
+between runs, because the fault happened after `main` returned.
+`tests/abi_nonvolatile_lint.py` now reads the rule out of the source in CI,
+beside the argument-register lint that covers the neighbouring mistake.
+
 ## [0.5.0-preview.2] - 2026-09-14
 
 One thing, and it is not a feature: **a commit proves the transition from the
