@@ -320,6 +320,8 @@ sql_tok_next:
     ; Check single-character punctuation
     cmp     al, ','
     je      .tok_comma
+    cmp     al, '?'
+    je      .tok_param
     cmp     al, ';'
     je      .tok_semicolon
     cmp     al, '['
@@ -405,6 +407,12 @@ sql_tok_next:
     inc     rsi
     inc     ecx
     mov     rdi, TOK_COMMA
+    jmp     .finish_token
+
+.tok_param:
+    inc     rsi
+    inc     ecx
+    mov     rdi, TOK_PARAM
     jmp     .finish_token
 
 .tok_semicolon:

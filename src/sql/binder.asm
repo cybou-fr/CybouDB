@@ -21,6 +21,7 @@ err_col_not_found:   db "column not found in schema", 0
 err_dup_table:       db "table already exists", 0
 err_dup_col:         db "duplicate column name in table definition", 0
 err_type_mismatch:   db "type mismatch in expression or literal", 0
+err_param_placement: db "a parameter is only allowed in INSERT ... VALUES", 0
 err_not_nullable:    db "cannot insert NULL into non-nullable column", 0
 err_val_count:       db "row value count does not match column count", 0
 err_no_pax:          db "database does not have PAX table storage enabled", 0
@@ -507,6 +508,12 @@ bind_expr:
     cmp     rax, EXPR_BINARY
     je      .bind_binary
 
+    ; A placeholder reaching a predicate. Only INSERT ... VALUES takes them in
+    ; this release, and saying so is worth a message of its own: the type-
+    ; mismatch one this would otherwise get is not what is wrong.
+    cmp     rax, EXPR_PARAM
+    je      .param_placement
+
     ; Direct primary boolean column or literal (not supported in simple MVP)
     jmp     .unsupported
 
@@ -887,6 +894,16 @@ bind_expr:
     FRAME_END
     ret
 
+.param_placement:
+    mov     ARG1, [rbp - 32]
+    mov     ARG2, SQL_ERR_SYNTAX
+    xor     ARG3, ARG3
+    lea     ARG4, [err_param_placement]
+    call    set_binder_error
+    xor     eax, eax
+    FRAME_END
+    ret
+
 .unsupported:
     mov     ARG1, [rbp - 32]
     mov     ARG2, SQL_ERR_SYNTAX
@@ -961,6 +978,14 @@ sql_bind:
     mov     r10, [rbp - 16]
     mov     rax, [r10 + AST_STMT_TYPE]
     mov     r11, [r10 + AST_STMT_PAYLOAD]
+    ; How many placeholders the parser counted. Read here because the payload
+    ; is about to be written over the slot the statement itself was in, and
+    ; stored on the plan for every statement kind - a caller asking a SELECT
+    ; how many parameters it has should be told, not left to guess from an
+    ; error.
+    mov     rdx, [r10 + AST_STMT_PARAMS]
+    mov     r10, [rbp - 48]
+    mov     [r10 + PLAN_PARAM_COUNT], rdx
     mov     [rbp - 16], r11             ; all binders consume the payload
 
     cmp     rax, STMT_CREATE_TABLE
@@ -1295,6 +1320,34 @@ sql_bind:
     mov     [rax + BATCH_VAR_LENGTHS], r10
     mov     qword [rax + BATCH_FLAGS], 0    ; VALUES carries bytes, not roots
 
+    ; The parameter area, allocated before the cell loop starts so that filling
+    ; a cell never has to call the arena with the loop's registers live. Only a
+    ; statement that has placeholders pays for it.
+    mov     qword [rbp - 232], 0
+    mov     r10, [rbp - 48]
+    mov     rax, [r10 + PLAN_PARAM_COUNT]
+    test    rax, rax
+    jz      .ins_no_params
+
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, rax
+    shl     ARG2, 6                     ; PARAM_SLOT_SIZE
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+    mov     [rbp - 232], rax
+    mov     r10, [rbp - 48]
+    mov     [r10 + PLAN_PARAM_SLOTS], rax
+
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, PARAM_BUF_BYTES + CybouDB_PARAM_BUF_SIZE
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+    mov     r10, [rbp - 48]
+    mov     [r10 + PLAN_PARAM_BUF], rax
+
+.ins_no_params:
     ; Fill batch cells
     mov     r10, [rbp - 16]
     mov     r15, [r10 + STMT_EXTRA4]    ; rows array ptr
@@ -1306,10 +1359,6 @@ sql_bind:
 .ins_col:
     mov     [rbp - 112], rcx
     mov     r9, [r8 + rcx * 8]          ; AST_EXPR
-    ; VALUES accepts literals only. Identifiers have zeroed literal fields
-    ; and must never be mistaken for NULL (including NaN/Inf spellings).
-    cmp     qword [r9 + EXPR_KIND], EXPR_LITERAL
-    jne     .type_mismatch
 
     ; Target cell index: r * col_count + c
     mov     rax, rbx
@@ -1324,6 +1373,15 @@ sql_bind:
     lea     rdx, [r12 + CAT_COLUMNS + rax]
     mov     r10d, [rdx + 0]             ; col_type
     mov     r11d, [rdx + 4]             ; col_flags
+
+    ; VALUES accepts literals and placeholders. Identifiers have zeroed literal
+    ; fields and must never be mistaken for NULL (including NaN/Inf spellings).
+    ; The check is here rather than above because a placeholder records the
+    ; column it is going into, which is not known until the schema is read.
+    cmp     qword [r9 + EXPR_KIND], EXPR_PARAM
+    je      .ins_param
+    cmp     qword [r9 + EXPR_KIND], EXPR_LITERAL
+    jne     .type_mismatch
 
     ; Check NULL
     cmp     dword [r9 + EXPR_LIT_TYPE], 0 ; TYPE_NULL
@@ -1430,6 +1488,37 @@ sql_bind:
     mov     rdi, [rbp - 128]
     mov     rax, [r9 + EXPR_LIT_LEN]
     mov     [rdi + rdx * 8], rax
+    jmp     .ins_cell_done
+
+.ins_param:
+    ; What the binder knows about a placeholder is where its value goes and
+    ; what that value has to be. Recording the type and flags here is what lets
+    ; cyboudb_bind_* refuse a wrong type at the call rather than halfway
+    ; through an insert, when a row is already staged.
+    mov     rdi, [rbp - 232]
+    test    rdi, rdi
+    jz      .type_mismatch              ; a `?` the parser did not count
+    mov     rax, [r9 + EXPR_LIT_VAL]    ; the index this `?` has
+    shl     rax, 6                      ; PARAM_SLOT_SIZE
+    add     rdi, rax
+    mov     rax, [rbp - 120]            ; cell_idx
+    mov     [rdi + PARAM_CELL], rax
+    mov     [rdi + PARAM_TYPE], r10
+    mov     [rdi + PARAM_FLAGS], r11
+    mov     qword [rdi + PARAM_STATE], PARAM_UNBOUND
+
+    ; The cell is left NULL. Nothing reads it in that state: execution refuses
+    ; a statement with an unbound parameter, and a bound one writes over all
+    ; three arrays before the row is built.
+    mov     rdi, [rbp - 96]
+    mov     rdx, [rbp - 120]
+    mov     byte [rdi + rdx], 1
+    mov     rdi, [rbp - 88]
+    mov     qword [rdi + rdx * 8], 0
+    mov     rdi, [rbp - 128]
+    test    rdi, rdi
+    jz      .ins_cell_done
+    mov     qword [rdi + rdx * 8], 0
     jmp     .ins_cell_done
 
 .store_vector:

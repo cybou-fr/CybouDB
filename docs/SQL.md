@@ -61,6 +61,17 @@ INSERT INTO table_name VALUES (val1, val2, ...), (val1, val2, ...);
   - Boolean literals: TRUE, FALSE (case-insensitive).
   - Null literal: NULL (case-insensitive). Inserting NULL into a NOT NULL column is rejected at bind time (SQL_ERR_NOT_NULLABLE).
   - Type checking: Float literals cannot be inserted into integer columns. Integers within range are permitted in integer columns.
+- **Parameters**: `?` stands in for a value supplied before the statement is
+  stepped, through `cyboudb_bind_*`. Placeholders are positional and unnamed -
+  the first `?` in a statement is parameter 0 - and a statement reports how many
+  it has rather than the caller declaring them. They are accepted only in
+  `INSERT ... VALUES`; a `?` anywhere else is a syntax error naming that,
+  because the alternative message ("type mismatch") describes the wrong problem.
+  A bound value is input to one execution and never enters the plan, so a
+  prepared INSERT may be bound, stepped, reset and bound again - see
+  [section 5](#5-regression-tests) and the immutability rule in `include/sql.inc`.
+  A parameter nobody bound stops the statement at execution; it does not become
+  a NULL.
 
 ### 1.3 SELECT
 ```sql
@@ -175,6 +186,8 @@ SQL keywords (SELECT, FROM, WHERE, etc.) and identifiers (table names, column na
 | Float Literal | 128 decimal digits, finite binary32 result | SQL_ERR_SYNTAX | Excess length or overflow rejected |
 | Integer Magnitude | 64-bit signed | SQL_ERR_SYNTAX | Integer literal overflow |
 | Expression Nesting | 64 | SQL_ERR_EXPR_DEPTH | Parenthesised or `NOT` nesting deeper than 64 |
+| Parameters per Statement | 64 | SQL_ERR_SYNTAX | More than 64 `?` placeholders |
+| Bound Bytes per Statement | 32 KiB | CybouDB_NOMEM | Sum over parameters of the largest TEXT, BLOB or VECTOR value each has held |
 | Statement Length | 65535 bytes; 4095 characters of Windows command line | (CLI diagnostic) | Oversized statements are refused, never truncated |
 
 Expression nesting is bounded because the parser, the binder and the

@@ -1495,6 +1495,97 @@ sql_execute_batch:
     jnz     .insert_restore
 .insert_values_ready:
 
+    ; Bound parameters go on here, over the values the restore just put back.
+    ; They are input to this execution rather than part of the plan, which is
+    ; why they are applied afterwards and not written into what prepare
+    ; produced: the plan stays what it was, and the next execution starts from
+    ; the same place with whatever is bound by then.
+    ;
+    ; All three arrays are written for every parameter, so applying them twice
+    ; is applying them once - no state from the previous execution survives to
+    ; be undone. Only volatile registers are used: this function does not save
+    ; rsi, rdi or rbx, so it does not get to borrow them.
+    mov     r10, [rbp - 16]
+    mov     r11, [r10 + PLAN_PARAM_SLOTS]
+    test    r11, r11
+    jz      .insert_params_ready
+    mov     rcx, [r10 + PLAN_PARAM_COUNT]
+    test    rcx, rcx
+    jz      .insert_params_ready
+    mov     r10, [r10 + PLAN_DATA1]
+    test    r10, r10
+    jz      .insert_params_ready
+    cmp     qword [r10 + BATCH_VALUES], 0
+    je      .insert_params_ready
+
+.insert_param_next:
+    dec     rcx
+    mov     rdx, rcx
+    shl     rdx, 6                      ; PARAM_SLOT_SIZE
+    add     rdx, r11                    ; the slot
+    cmp     qword [rdx + PARAM_STATE], PARAM_UNBOUND
+    je      .insert_unbound
+
+    mov     r9, [rbp - 16]
+    mov     r8, [r9 + PLAN_DATA1]
+    mov     rax, [rdx + PARAM_CELL]
+    mov     r10, [r8 + BATCH_NULLS]
+    cmp     qword [rdx + PARAM_STATE], PARAM_NULL
+    je      .insert_param_null
+
+    mov     byte [r10 + rax], 0
+    mov     r10, [r8 + BATCH_VALUES]
+    mov     r9, [rdx + PARAM_TYPE]
+    cmp     r9, CAT_TEXT
+    jb      .insert_param_scalar
+
+    ; TEXT, BLOB and VECTOR. The cell names where the engine put the bytes and
+    ; not where the caller had them: the caller's buffer stopped mattering the
+    ; moment the bind returned.
+    mov     r9, [rbp - 16]
+    mov     r9, [r9 + PLAN_PARAM_BUF]
+    add     r9, PARAM_BUF_BYTES
+    add     r9, [rdx + PARAM_VAL]
+    mov     [r10 + rax * 8], r9
+    mov     r9, [r8 + BATCH_VAR_LENGTHS]
+    test    r9, r9
+    jz      .insert_param_more
+    mov     r8, [rdx + PARAM_LEN]
+    mov     [r9 + rax * 8], r8
+    jmp     .insert_param_more
+
+.insert_param_scalar:
+    mov     r9, [rdx + PARAM_VAL]
+    mov     [r10 + rax * 8], r9
+    mov     r9, [r8 + BATCH_VAR_LENGTHS]
+    test    r9, r9
+    jz      .insert_param_more
+    mov     qword [r9 + rax * 8], 0
+    jmp     .insert_param_more
+
+.insert_param_null:
+    mov     byte [r10 + rax], 1
+    mov     r10, [r8 + BATCH_VALUES]
+    mov     qword [r10 + rax * 8], 0
+    mov     r9, [r8 + BATCH_VAR_LENGTHS]
+    test    r9, r9
+    jz      .insert_param_more
+    mov     qword [r9 + rax * 8], 0
+
+.insert_param_more:
+    test    rcx, rcx
+    jnz     .insert_param_next
+    jmp     .insert_params_ready
+
+.insert_unbound:
+    ; A NULL would be the quiet answer and it is the wrong one: a statement
+    ; whose value never arrived has not been told what to insert.
+    lea     r11, [exec_unbound_param_msg]
+    jmp     .custom_exec_err
+
+.insert_params_ready:
+    mov     r10, [rbp - 16]
+
     ; Where the appended rows will sit, read before the append moves it.
     ; Through db_catalog_page rather than db_catalog_get: the second validates
     ; the whole staged graph, which is a walk proportional to the table, and
@@ -3272,6 +3363,7 @@ exec_sink_message: db "SELECT requires a result callback", 0
 exec_sink_failed_message: db "result callback reported a failure", 0
 exec_active_tx_msg: db "cannot BEGIN inside active transaction", 0
 exec_no_active_tx_commit_msg: db "no active transaction to COMMIT", 0
+exec_unbound_param_msg: db "a parameter was never bound", 0
 exec_no_active_tx_rollback_msg: db "no active transaction to ROLLBACK", 0
 exec_readonly_tx_msg: db "database is read-only", 0
 

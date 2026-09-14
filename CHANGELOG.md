@@ -28,6 +28,44 @@ earlier one.
 A change to the format version itself would be announced on its own, with a
 migration path, and is not something a minor release does quietly.
 
+## [Unreleased]
+
+### Parameter binding
+
+`INSERT ... VALUES` takes `?` placeholders, and nine new C functions supply
+their values: `cyboudb_bind_int32`, `_int64`, `_float`, `_bool`, `_text`,
+`_blob`, `_vector_f32`, `_null`, and `cyboudb_bind_parameter_count`.
+
+This is additive. No existing function changed, the on-disk format is untouched
+and still version 1, and a statement without a `?` behaves and costs exactly
+what it did.
+
+Three decisions worth stating, because each one could have gone the other way:
+
+- **The engine copies the bytes** of TEXT, BLOB and VECTOR values. The cheaper
+  alternative - keeping the caller's pointer, as `SQLITE_STATIC` does - makes
+  the lifetime of the caller's buffer part of this library's contract, and the
+  failure when that contract is broken is a use-after-free at commit. Copying
+  turns it into `CybouDB_NOMEM` at the call. The buffer is 32 KiB per statement
+  and a parameter re-bound to something that fits what it already holds reuses
+  those bytes, so binding in a loop does not exhaust it.
+
+- **A bound value is never written into the plan.** It is applied at execution,
+  over the values restored from the binder's pristine copy. That keeps the rule
+  `include/sql.inc` has held since the prepared-statement work: a prepared plan
+  is what prepare produced, across every execution. Bindings survive
+  `cyboudb_reset`.
+
+- **Each bind names the type it is for and refuses any other**, rather than
+  converting. What gets stored should not depend on which function the caller
+  reached for. A parameter nobody bound stops the statement; it does not
+  quietly become NULL.
+
+`?` is accepted only in `INSERT ... VALUES` in this release. Anywhere else it is
+a syntax error that says so.
+
+`tests/bind_test.c` (39 checks) runs on both platforms in CI.
+
 ## [0.5.0-preview.2] - 2026-09-14
 
 One thing, and it is not a feature: **a commit proves the transition from the

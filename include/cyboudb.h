@@ -384,6 +384,63 @@ int64_t cyboudb_batch_vector_f32(cyboudb_stmt *stmt,
  */
 int cyboudb_reset(cyboudb_stmt *stmt);
 
+/*
+ * Parameters.
+ *
+ * A `?` in INSERT ... VALUES is a placeholder whose value arrives before the
+ * statement is stepped. Placeholders are positional and unnamed: the first `?`
+ * in a statement is parameter 0, and the statement says how many it has.
+ *
+ * A bound value is input to one execution, not part of the prepared plan, so
+ * binding never changes what prepare produced and a statement may be bound,
+ * stepped, reset and bound again. Bindings survive cyboudb_reset; they are
+ * gone when the statement is finalized.
+ *
+ * The engine copies the bytes of TEXT, BLOB and VECTOR values, so the caller's
+ * buffer stops mattering the moment the call returns. That buffer is bounded:
+ * a value it cannot hold is CybouDB_NOMEM at the call rather than a dangling
+ * pointer at commit. Re-binding a parameter reuses the bytes it already owns
+ * when the new value fits, so binding in a loop does not exhaust it.
+ *
+ * Each bind names the column type it is for and refuses any other, rather than
+ * converting: what gets stored should not depend on which function the caller
+ * reached for. An unbound parameter stops the statement at step; it does not
+ * quietly become NULL.
+ */
+
+/*
+ * How many parameters the statement holds. Zero for a statement with none,
+ * and zero for an invalid handle.
+ */
+int cyboudb_bind_parameter_count(cyboudb_stmt *stmt);
+
+/*
+ * @return CybouDB_OK, or CybouDB_MISUSE for a bad handle, an index outside the
+ *         statement's parameters, a column of a different type, or a bind
+ *         while a scan is in progress. CybouDB_NOMEM when a TEXT, BLOB or
+ *         VECTOR value does not fit the statement's copy buffer.
+ */
+int cyboudb_bind_int32(cyboudb_stmt *stmt, int idx, int32_t value);
+int cyboudb_bind_int64(cyboudb_stmt *stmt, int idx, int64_t value);
+int cyboudb_bind_float(cyboudb_stmt *stmt, int idx, float value);
+int cyboudb_bind_bool(cyboudb_stmt *stmt, int idx, int value);
+
+/* A negative len means text is NUL-terminated and the engine measures it. The
+ * terminator is not stored: TEXT is bytes and a length. */
+int cyboudb_bind_text(cyboudb_stmt *stmt, int idx, const char *text,
+                      int64_t len);
+int cyboudb_bind_blob(cyboudb_stmt *stmt, int idx, const void *data,
+                      int64_t len);
+
+/* dims must equal the column's declared dimension; the width is part of the
+ * type, and nothing downstream would catch a vector of the wrong one. */
+int cyboudb_bind_vector_f32(cyboudb_stmt *stmt, int idx, const float *values,
+                            int dims);
+
+/* CybouDB_MISUSE if the column does not accept NULL - said here rather than
+ * halfway through an insert. */
+int cyboudb_bind_null(cyboudb_stmt *stmt, int idx);
+
 /**
  * Destroy a prepared statement and release all its resources.
  *

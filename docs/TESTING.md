@@ -196,6 +196,46 @@ python3 tests/queue_sql_tests.py ./build/cyboudb_audit      # and the rest
 
 See [COMMIT_VALIDATION.md](COMMIT_VALIDATION.md).
 
+## Values that arrive after prepare
+
+`tests/bind_test.c`, 39 checks, built with `--c-tests` and run against a
+`create-large` database. A `?` is a hole in a statement, and the suite is
+organised around what happens at the edges of the hole rather than in it.
+
+Three claims, kept apart on purpose:
+
+1. **The value gets there.** Every bindable kind - INT32, INT64, FLOAT32, BOOL,
+   TEXT, BLOB, VECTOR and NULL - goes in through a bind and comes back out of
+   the table as itself.
+
+2. **The plan does not change.** The same prepared statement is bound, stepped,
+   reset, bound to something else and stepped again, and both rows have to be
+   the values they were bound to rather than one of them being the other's.
+   This is `tests/prepared_rerun_test.c`'s argument with a value axis added: the
+   rule it defends is the one in `include/sql.inc`, that a prepared plan is
+   immutable across executions, and a parameter is the most obvious thing that
+   would break it.
+
+3. **What is refused is refused at the call.** A wrong type, an index that is
+   not there, a NULL into a `NOT NULL` column, a vector of the wrong width, a
+   negative length, a length with no pointer, a null handle, and a value too
+   large for the copy buffer - each of those is an error from the bind rather
+   than a surprise halfway through an insert, and the statement is still usable
+   afterwards. A parameter nobody bound stops the statement and writes no row.
+
+The engine copies the bytes of variable-width values rather than keeping the
+caller's pointer, so every varlen case here **overwrites or frees the source
+buffer between the bind and the step**. Had the pointer been kept, those checks
+would read freed memory - which is the failure the copy exists to make
+impossible, and the reason it is worth the copy.
+
+The last two checks are the loop the feature is for: two thousand binds and
+steps with lengths that grow and shrink, against a 32 KiB buffer. A slot reuses
+the bytes it already owns when the new value fits, so the buffer cursor stops
+moving once each slot has held its largest value. Without that, 2,000 rounds of
+up to 512 bytes would be sixty times the buffer and the run would end in
+`CybouDB_NOMEM`.
+
 ## Argument register lint
 
 * `tests/abi_arg_lint.py`: reads every `.asm` file for the one mistake this

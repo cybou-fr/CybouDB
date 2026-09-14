@@ -288,6 +288,68 @@ int main(int argc, char **argv) {
               count(db, "SELECT COUNT(*) FROM grow WHERE b = 9") == 205);
     }
 
+    /* --- the same matrix, with the values arriving after prepare ----------
+       A bound statement is a prepared statement whose cells are written again
+       between executions, which is exactly the thing this file exists to
+       distrust. What is checked is not that binding works - tests/bind_test.c
+       does that - but that the bound form and the literal form are the same
+       statement: three executions of each, and the rows they leave behind have
+       to match. If a bind had leaked into the plan, the third execution is
+       where these two columns would stop agreeing.
+
+       The table is grown between the second and third execution for the same
+       reason the UPDATE case above does it. */
+    check("a table for the bound half of the matrix",
+          cyboudb_exec(db, "CREATE TABLE bound (a INT64, t TEXT)")
+              == CybouDB_OK);
+    check("a prepared INSERT with a hole in it",
+          cyboudb_prepare(db, "INSERT INTO bound VALUES (?, ?)", &st)
+              == CybouDB_OK && cyboudb_bind_parameter_count(st) == 2);
+    if (st) {
+        int ok = 1;
+        for (i = 0; i < 3; i++) {
+            char t[32];
+            int n = sprintf(t, "row-%d", i);
+            if (cyboudb_bind_int64(st, 0, i) != CybouDB_OK) ok = 0;
+            if (cyboudb_bind_text(st, 1, t, n) != CybouDB_OK) ok = 0;
+            memset(t, 0, sizeof t);     /* the engine kept the bytes, not this */
+            if (cyboudb_step(st) != CybouDB_DONE) ok = 0;
+            if (cyboudb_reset(st) != CybouDB_OK) ok = 0;
+            if (i == 1) {
+                int k;
+                for (k = 0; k < 50; k++) {
+                    cyboudb_exec(db, "INSERT INTO bound VALUES (99, 'filler')");
+                }
+            }
+        }
+        check("bound, stepped and re-bound three times", ok);
+        cyboudb_finalize(st);
+        st = NULL;
+    }
+    check("three bound rows, each with the value it was bound to",
+          count(db, "SELECT COUNT(*) FROM bound WHERE a = 0") == 1 &&
+          count(db, "SELECT COUNT(*) FROM bound WHERE a = 1") == 1 &&
+          count(db, "SELECT COUNT(*) FROM bound WHERE a = 2") == 1);
+    check("and each text is its own, not the last one bound",
+          every_text_is(db, "SELECT t FROM bound WHERE a = 2", "row-2", 1) &&
+          every_text_is(db, "SELECT t FROM bound WHERE a = 0", "row-0", 1));
+
+    /* The literal half: the same three rows, written the way they would have
+       been without parameters. Same plan shape, same execution path. */
+    check("a table for the literal half",
+          cyboudb_exec(db, "CREATE TABLE literal (a INT64, t TEXT)")
+              == CybouDB_OK &&
+          cyboudb_exec(db, "INSERT INTO literal VALUES (0, 'row-0')")
+              == CybouDB_OK &&
+          cyboudb_exec(db, "INSERT INTO literal VALUES (1, 'row-1')")
+              == CybouDB_OK &&
+          cyboudb_exec(db, "INSERT INTO literal VALUES (2, 'row-2')")
+              == CybouDB_OK);
+    check("the bound rows and the literal rows are the same rows",
+          count(db, "SELECT COUNT(*) FROM bound WHERE a < 3") ==
+          count(db, "SELECT COUNT(*) FROM literal") &&
+          every_text_is(db, "SELECT t FROM literal WHERE a = 2", "row-2", 1));
+
     check("the file is still coherent", cyboudb_close(db) == CybouDB_OK);
 
     printf("prepared re-run suite: %d passed, %d failed\n", checks - failures,

@@ -27,6 +27,7 @@ err_expected_values: db "expected VALUES keyword", 0
 err_expected_from:   db "expected FROM keyword", 0
 err_expected_ident:  db "expected identifier", 0
 err_expected_expr:   db "expected expression", 0
+err_too_many_params: db "more parameters than a statement may hold", 0
 err_bad_number:      db "malformed numeric literal", 0
 err_overflow:        db "integer literal overflow", 0
 err_float_range:     db "FLOAT32 literal exceeds range or 128 digits", 0
@@ -42,6 +43,10 @@ section .bss
 ; and unwound early cannot leave the next statement believing it is already
 ; deep.
 expr_depth:          resq 1
+; Placeholders seen so far in this statement. sql_parse resets it, the same way
+; and for the same reason as expr_depth: a parse that failed and unwound early
+; must not leave the next statement counting from where it stopped.
+param_count:         resq 1
 
 section .text
 
@@ -524,6 +529,10 @@ parse_primary:
     ; Check NULL
     cmp     rax, TOK_NULL
     je      .is_null
+
+    ; A placeholder, whose value arrives before the statement is stepped
+    cmp     rax, TOK_PARAM
+    je      .is_param
 
     ; Check '('
     cmp     rax, TOK_LPAREN
@@ -1168,6 +1177,45 @@ parse_primary:
     FRAME_END
     ret
 
+.is_param:
+    ; Positional and unnamed: the node carries the index this `?` has in the
+    ; statement, and nothing else about it is known until it is bound. The
+    ; value itself never reaches the plan - see the immutability note in
+    ; sql.inc - so what the binder builds from this is a slot to fill, not a
+    ; value.
+    mov     ARG1, [rbp - 8]
+    lea     ARG2, [rbp - 64]
+    call    sql_tok_next
+
+    mov     rax, [param_count]
+    cmp     rax, SQL_MAX_PARAMS
+    jae     .too_many_params
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, AST_EXPR_SIZE
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+    mov     qword [rax + EXPR_KIND], EXPR_PARAM
+    mov     qword [rax + EXPR_OP], 0
+    mov     rdx, [param_count]
+    mov     [rax + EXPR_LIT_VAL], rdx   ; its index, not its value
+    mov     dword [rax + EXPR_LIT_TYPE], 0
+    inc     qword [param_count]
+    mov     edx, [rbp - 64 + TOK_OFFSET]
+    mov     [rax + EXPR_TOK_OFFSET], edx
+    FRAME_END
+    ret
+
+.too_many_params:
+    mov     ARG1, [rbp - 32]
+    mov     ARG2, SQL_ERR_SYNTAX
+    lea     ARG3, [rbp - 64]
+    lea     ARG4, [err_too_many_params]
+    call    set_error
+    xor     eax, eax
+    FRAME_END
+    ret
+
 .is_paren:
     ; Consume '('
     mov     ARG1, [rbp - 8]
@@ -1639,6 +1687,7 @@ sql_parse:
     mov     [rbp - 40], rax             ; out_err
     SQL_CLEAR_ERROR rax
     mov     qword [expr_depth], 0
+    mov     qword [param_count], 0
 
     ; Init tokenizer in local frame: [rbp-160] is SQL_TOKENIZER (80 bytes: -160 to -81)
     lea     ARG1, [rbp - 160]
@@ -3283,6 +3332,13 @@ sql_parse:
     call    sql_tok_next
     cmp     qword [rbp - 192 + TOK_TYPE], TOK_EOF
     jne     .bad_trailing
+
+    ; The one place a parse succeeds, so the one place the statement learns
+    ; how many placeholders it turned out to hold.
+    mov     r10, [rbp - 32]
+    mov     r10, [r10]
+    mov     rax, [param_count]
+    mov     [r10 + AST_STMT_PARAMS], rax
 
     xor     eax, eax
     FRAME_END

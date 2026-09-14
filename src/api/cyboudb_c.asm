@@ -55,6 +55,15 @@ global cyboudb_create
 global cyboudb_column_vector_dimensions
 global cyboudb_column_vector_f32
 global cyboudb_exec
+global cyboudb_bind_parameter_count
+global cyboudb_bind_null
+global cyboudb_bind_int32
+global cyboudb_bind_int64
+global cyboudb_bind_bool
+global cyboudb_bind_float
+global cyboudb_bind_text
+global cyboudb_bind_blob
+global cyboudb_bind_vector_f32
 
 section .rodata
 str_ok:         db "ok", 0
@@ -1335,6 +1344,342 @@ cyboudb_reset:
 
 .reset_misuse:
     mov     eax, CybouDB_C_MISUSE
+    ret
+
+
+
+; =============================================================================
+;  Parameter binding
+;
+;  A value bound here is input to one execution, not part of the prepared plan
+;  - see the note in include/sql.inc. The slots live in the plan's arena and
+;  the engine copies the bytes of TEXT, BLOB and VECTOR values into a buffer it
+;  owns, so that the caller's memory stops mattering the moment the call
+;  returns. The buffer is bounded, and a value it cannot hold is CybouDB_NOMEM
+;  at the call rather than a use-after-free at commit.
+;
+;  A binding survives cyboudb_reset. Re-binding a parameter reuses the bytes it
+;  already owns when the new value fits, which is what lets a prepared INSERT
+;  be bound and stepped in a loop without walking the buffer to its end.
+; =============================================================================
+
+; -----------------------------------------------------------------------------
+;  api_param_slot(stmt, idx) -> RAX: slot pointer, or 0 if the call is misuse
+; -----------------------------------------------------------------------------
+api_param_slot:
+    test    ARG1, ARG1
+    jz      .no
+    mov     rax, STMT_MAGIC_VAL
+    cmp     [ARG1 + STMT_H_MAGIC], rax
+    jne     .no
+    ; A bind in the middle of a scan would change values a cursor is already
+    ; reading. Reset first, and say so rather than doing it quietly.
+    cmp     dword [ARG1 + STMT_H_STATE], STMT_STATE_SCANNING
+    je      .no
+    mov     r10, [ARG1 + STMT_H_PLAN]
+    test    r10, r10
+    jz      .no
+    mov     r11, [r10 + PLAN_PARAM_SLOTS]
+    test    r11, r11
+    jz      .no
+    ; The index arrives as a C int, so its upper half is not to be trusted.
+    movsxd  rax, ARG2d
+    test    rax, rax
+    js      .no
+    cmp     rax, [r10 + PLAN_PARAM_COUNT]
+    jae     .no
+    shl     rax, 6                      ; PARAM_SLOT_SIZE
+    add     rax, r11
+    ret
+.no:
+    xor     eax, eax
+    ret
+
+; -----------------------------------------------------------------------------
+;  api_param_scalar(stmt, idx, want_type, value) -> EAX: status
+; -----------------------------------------------------------------------------
+api_param_scalar:
+    FRAME_BEGIN 32, 0
+    mov     [rbp - 8], ARG3
+    mov     [rbp - 16], ARG4
+    call    api_param_slot
+    test    rax, rax
+    jz      .misuse
+    mov     r10, [rbp - 8]
+    cmp     [rax + PARAM_TYPE], r10
+    jne     .misuse
+    mov     r10, [rbp - 16]
+    mov     [rax + PARAM_VAL], r10
+    mov     qword [rax + PARAM_LEN], 0
+    mov     qword [rax + PARAM_STATE], PARAM_BOUND
+    xor     eax, eax
+    FRAME_END
+    ret
+.misuse:
+    mov     eax, CybouDB_C_MISUSE
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  api_param_bytes(stmt, idx, want_type, src, len) -> EAX: status
+;
+;  The copy. A slot that already owns enough bytes keeps them, so binding the
+;  same parameter again and again costs nothing and the buffer cursor only
+;  moves when a value is larger than anything that slot has held.
+; -----------------------------------------------------------------------------
+api_param_bytes:
+    FRAME_BEGIN 64, 1
+    mov     [rbp - 8], ARG1             ; stmt
+    mov     [rbp - 16], ARG3            ; want_type
+    mov     [rbp - 24], ARG4            ; src
+    mov     rax, IN_ARG5
+    mov     [rbp - 32], rax             ; len
+    call    api_param_slot
+    test    rax, rax
+    jz      .misuse
+    mov     [rbp - 40], rax             ; slot
+    mov     r10, [rbp - 16]
+    cmp     [rax + PARAM_TYPE], r10
+    jne     .misuse
+    mov     r10, [rbp - 32]
+    test    r10, r10
+    js      .misuse                     ; a negative length is not a length
+    cmp     qword [rbp - 24], 0
+    jne     .have_src
+    test    r10, r10
+    jnz     .misuse                     ; bytes promised, no pointer given
+.have_src:
+    ; The plan's copy buffer.
+    mov     r11, [rbp - 8]
+    mov     r11, [r11 + STMT_H_PLAN]
+    mov     r11, [r11 + PLAN_PARAM_BUF]
+    test    r11, r11
+    jz      .nomem
+    mov     [rbp - 48], r11
+
+    mov     rax, [rbp - 40]
+    cmp     r10, [rax + PARAM_CAP]
+    jbe     .place_known                ; it fits in what this slot owns
+
+    ; Carve a fresh region, rounded up so the next one stays aligned.
+    mov     rdx, r10
+    add     rdx, 7
+    jc      .nomem
+    and     rdx, ~7
+    mov     rcx, [r11 + PARAM_BUF_USED]
+    mov     r8, rcx
+    add     r8, rdx
+    jc      .nomem
+    cmp     r8, CybouDB_PARAM_BUF_SIZE
+    ja      .nomem
+    mov     [r11 + PARAM_BUF_USED], r8
+    mov     [rax + PARAM_VAL], rcx
+    mov     [rax + PARAM_CAP], rdx
+
+.place_known:
+    mov     [rax + PARAM_LEN], r10
+    mov     qword [rax + PARAM_STATE], PARAM_BOUND
+
+    ; Copy, byte by byte: this is a bind, not a scan, and the lengths are
+    ; small enough that being clever about it would only add a branch.
+    mov     r9, [rbp - 48]
+    add     r9, PARAM_BUF_BYTES
+    add     r9, [rax + PARAM_VAL]       ; destination
+    mov     r8, [rbp - 24]              ; source
+    xor     ecx, ecx
+.copy:
+    cmp     rcx, r10
+    jae     .copied
+    mov     dl, [r8 + rcx]
+    mov     [r9 + rcx], dl
+    inc     rcx
+    jmp     .copy
+.copied:
+    xor     eax, eax
+    FRAME_END
+    ret
+
+.misuse:
+    mov     eax, CybouDB_C_MISUSE
+    FRAME_END
+    ret
+.nomem:
+    mov     eax, CybouDB_C_NOMEM
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  cyboudb_bind_parameter_count(stmt) -> int
+;
+;  A statement says how many placeholders it has; a caller does not declare
+;  them. Answers for every statement kind, so that a SELECT holding a `?` -
+;  which this release refuses to bind - still reports it honestly.
+; -----------------------------------------------------------------------------
+cyboudb_bind_parameter_count:
+    test    ARG1, ARG1
+    jz      .none
+    mov     rax, STMT_MAGIC_VAL
+    cmp     [ARG1 + STMT_H_MAGIC], rax
+    jne     .none
+    mov     r10, [ARG1 + STMT_H_PLAN]
+    test    r10, r10
+    jz      .none
+    mov     eax, [r10 + PLAN_PARAM_COUNT]
+    ret
+.none:
+    xor     eax, eax
+    ret
+
+; -----------------------------------------------------------------------------
+;  cyboudb_bind_null(stmt, idx) -> int
+; -----------------------------------------------------------------------------
+cyboudb_bind_null:
+    FRAME_BEGIN 16, 0
+    call    api_param_slot
+    test    rax, rax
+    jz      .misuse
+    ; A column that does not accept NULL says so now. The alternative is an
+    ; insert that fails later with the row already half built.
+    test    qword [rax + PARAM_FLAGS], CAT_NULLABLE
+    jz      .misuse
+    mov     qword [rax + PARAM_VAL], 0
+    mov     qword [rax + PARAM_LEN], 0
+    mov     qword [rax + PARAM_STATE], PARAM_NULL
+    xor     eax, eax
+    FRAME_END
+    ret
+.misuse:
+    mov     eax, CybouDB_C_MISUSE
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  The scalar binds. Each one names the column type it is for, and a column of
+;  any other type is refused here rather than converted: a bind that silently
+;  widened an int into a float would make the stored value depend on which
+;  function the caller happened to reach for.
+; -----------------------------------------------------------------------------
+cyboudb_bind_int64:
+    mov     ARG4, ARG3
+    mov     ARG3, CAT_INT64
+    jmp     api_param_scalar
+
+cyboudb_bind_int32:
+    movsxd  ARG4, ARG3d
+    mov     ARG3, CAT_INT32
+    jmp     api_param_scalar
+
+cyboudb_bind_bool:
+    xor     eax, eax
+    test    ARG3d, ARG3d
+    setne   al
+    mov     ARG4, rax
+    mov     ARG3, CAT_BOOL
+    jmp     api_param_scalar
+
+; A float arrives in a vector register, and which one depends on the ABI: the
+; third argument slot on Windows, the first floating one elsewhere. The stored
+; cell is the raw 32-bit pattern, the same thing a float literal becomes.
+cyboudb_bind_float:
+%ifdef CybouDB_WINDOWS
+    movd    eax, xmm2
+%else
+    movd    eax, xmm0
+%endif
+    mov     ARG4, rax
+    mov     ARG3, CAT_FLOAT32
+    jmp     api_param_scalar
+
+; -----------------------------------------------------------------------------
+;  cyboudb_bind_text(stmt, idx, const char *text, int64_t len) -> int
+;
+;  A negative length means the text is NUL-terminated and the engine measures
+;  it. The terminator itself is not stored: TEXT is bytes and a length.
+; -----------------------------------------------------------------------------
+cyboudb_bind_text:
+    FRAME_BEGIN 32, 1
+    mov     [rbp - 8], ARG1
+    mov     [rbp - 16], ARG2
+    mov     [rbp - 24], ARG3
+    mov     rax, ARG4
+    test    rax, rax
+    jns     .have_len
+    mov     r8, ARG3
+    test    r8, r8
+    jz      .misuse
+    xor     ecx, ecx
+.measure:
+    cmp     byte [r8 + rcx], 0
+    je      .measured
+    inc     rcx
+    jmp     .measure
+.measured:
+    mov     rax, rcx
+.have_len:
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [rbp - 16]
+    mov     ARG3, CAT_TEXT
+    mov     ARG4, [rbp - 24]
+    PASS_ARG5 rax
+    call    api_param_bytes
+    FRAME_END
+    ret
+.misuse:
+    mov     eax, CybouDB_C_MISUSE
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  cyboudb_bind_blob(stmt, idx, const void *data, int64_t len) -> int
+; -----------------------------------------------------------------------------
+cyboudb_bind_blob:
+    FRAME_BEGIN 16, 1
+    mov     rax, ARG4
+    mov     ARG4, ARG3
+    mov     ARG3, CAT_BLOB
+    PASS_ARG5 rax
+    call    api_param_bytes
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  cyboudb_bind_vector_f32(stmt, idx, const float *values, int dims) -> int
+;
+;  The dimension is part of the column's type, so a vector of the wrong width
+;  is refused here. Nothing downstream would catch it: the cell is bytes.
+; -----------------------------------------------------------------------------
+cyboudb_bind_vector_f32:
+    FRAME_BEGIN 32, 1
+    mov     [rbp - 8], ARG1
+    mov     [rbp - 16], ARG2
+    mov     [rbp - 24], ARG3
+    movsxd  rax, ARG4d
+    test    rax, rax
+    jle     .misuse
+    mov     [rbp - 32], rax
+    call    api_param_slot              ; ARG1, ARG2 still in place
+    test    rax, rax
+    jz      .misuse
+    cmp     qword [rax + PARAM_TYPE], CAT_VECTOR
+    jne     .misuse
+    mov     r10, [rax + PARAM_FLAGS]
+    shr     r10, 16
+    cmp     r10, [rbp - 32]
+    jne     .misuse
+
+    mov     rax, [rbp - 32]
+    shl     rax, 2                      ; dimensions to bytes
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [rbp - 16]
+    mov     ARG3, CAT_VECTOR
+    mov     ARG4, [rbp - 24]
+    PASS_ARG5 rax
+    call    api_param_bytes
+    FRAME_END
+    ret
+.misuse:
+    mov     eax, CybouDB_C_MISUSE
+    FRAME_END
     ret
 
 

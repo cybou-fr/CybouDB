@@ -73,6 +73,10 @@
 %define TOK_READ            95
 %define TOK_TRIM            96
 %define TOK_BEFORE          97
+; A parameter placeholder. Positional and unnamed: the first `?` in a
+; statement is parameter 0, and a statement says how many it has rather
+; than the caller declaring them.
+%define TOK_PARAM           98          ; ?
 
 ; Types
 %define TOK_TYPE_INT32      30
@@ -183,7 +187,10 @@
 ; --- AST Statement header and statement-specific payload --------------------
 %define AST_STMT_TYPE       0           ; qword: STMT_*
 %define AST_STMT_PAYLOAD    8           ; qword: CREATE/INSERT/SELECT payload
-%define AST_STMT_SIZE       16
+; Placeholders the statement holds, counted while it was parsed. A statement
+; says how many it has; a caller does not declare them.
+%define AST_STMT_PARAMS     16          ; qword: how many `?` it holds
+%define AST_STMT_SIZE       24
 
 ; Legacy-compatible common prefix used while CREATE/INSERT call sites migrate.
 %define STMT_NAME_PTR       0           ; qword: pointer to table name
@@ -295,6 +302,10 @@
 %define EXPR_COLUMN         2
 %define EXPR_BINARY         3
 %define EXPR_UNARY          4
+; A value the statement does not carry: supplied by cyboudb_bind_* before
+; the statement is stepped. EXPR_LIT_VAL holds its index, and nothing else
+; about it is known until it is bound.
+%define EXPR_PARAM          5
 
 ; Expression Operators
 %define OP_EQ               1
@@ -360,6 +371,9 @@
 ; otherwise decide how much stack CybouDB uses. The parser enforces the limit
 ; once and everything downstream inherits a tree it can safely recurse over.
 %define SQL_MAX_EXPR_DEPTH  64
+; Placeholders one statement may hold. The same 64 the column count is, and
+; for the same reason: the arrays that carry them are sized once.
+%define SQL_MAX_PARAMS      64
 
 ; --- SQL Error Structure (96 bytes) ------------------------------------------
 %define SQL_ERR_CODE        0           ; qword: 0 or code interpreted by SQL_ERR_DOMAIN
@@ -425,7 +439,7 @@
 %define PLAN_UPDATE_IS_NULL 264         ; qword boolean
 %define PLAN_VECTOR_TOPK_EXPR 272       ; qword: bound vector distance expr
 %define PLAN_DELETE_ROWS    280         ; qword rows a DELETE removed
-%define BOUND_PLAN_SIZE     352
+%define BOUND_PLAN_SIZE     384
 %define PLAN_PROJ_RIGHT_BIT 0x80000000  ; u32 projection index belongs to RHS
 %define PLAN_FLAG_LIMIT     2           ; bit 1: LIMIT clause is present
 %define PLAN_FLAG_ORDER     4           ; bit 2: ORDER BY is present
@@ -463,6 +477,48 @@
 ; PLAN_INSERT_CELLS is the number of qwords in it, not bytes.
 %define PLAN_INSERT_PRISTINE 336
 %define PLAN_INSERT_CELLS    344
+
+; --- Parameters --------------------------------------------------------------
+; A prepared plan is immutable across executions, and a bound value is not part
+; of the plan: it is input to one execution. What the plan holds is three
+; pointers the binder allocates once and never re-points - the slots a caller
+; binds into, and the buffer the engine copies variable-width bytes into. Their
+; contents change between executions the way the batch's own values array does;
+; the plan itself does not.
+;
+; The copy is deliberate. A slot could have held the caller's pointer, which is
+; cheaper and is what SQLITE_STATIC does, but it makes the lifetime of the
+; caller's buffer part of this library's contract, and the failure when it is
+; broken is a use-after-free at commit time. Copying turns that into
+; CybouDB_NOMEM at the call, which is the same bounded-buffer-and-an-honest-
+; refusal shape the change-set and the flush runs already have.
+%define PLAN_PARAM_SLOTS     352        ; qword: SQL_MAX_PARAMS slots, or 0
+%define PLAN_PARAM_BUF       360        ; qword: copy buffer, or 0
+%define PLAN_PARAM_COUNT     368        ; qword: placeholders this plan holds
+
+; One parameter. The first three fields are what the binder resolved - where
+; the value goes and what it has to be - and are written once; the rest is what
+; a caller bound and is rewritten by every bind.
+%define PARAM_CELL          0           ; qword: index into the batch values
+%define PARAM_TYPE          8           ; qword: CAT_* of the target column
+%define PARAM_FLAGS         16          ; qword: column flags, incl. dimension
+%define PARAM_VAL           24          ; qword: scalar, or offset into the buffer
+%define PARAM_LEN           32          ; qword: bytes, for TEXT/BLOB/VECTOR
+%define PARAM_CAP           40          ; qword: bytes this slot already owns
+%define PARAM_STATE         48          ; qword: PARAM_UNBOUND / _BOUND / _NULL
+%define PARAM_SLOT_SIZE     64
+
+%define PARAM_UNBOUND       0
+%define PARAM_BOUND         1
+%define PARAM_NULL          2
+
+; The buffer opens with how much of it is spent, so that the plan holds only
+; pointers it never rewrites. A slot that is bound again reuses the bytes it
+; already owns when the new value fits, which is what keeps binding in a loop
+; from walking the cursor forward until it runs out.
+%define PARAM_BUF_USED      0
+%define PARAM_BUF_BYTES     8
+%define CybouDB_PARAM_BUF_SIZE 32768
 
 ; Projection descriptor passed to batch result sinks (aliases PLAN_DATA1..3).
 %define RESULT_PROJ_COUNT   0           ; qword: projection count, 1..64

@@ -184,6 +184,25 @@ Gates:
   and identical counters;
 * the C ABI stays additive: a `0.5` program compiles and links unchanged.
 
+**Done.** Nine functions, `?` in `INSERT ... VALUES`, and the engine copies the
+bytes of variable-width values rather than keeping the caller's pointer - the
+reasoning is in `CHANGELOG.md` and in `include/sql.inc`. The re-run matrix grew
+its bound-value axis as planned (`tests/prepared_rerun_test.c`, 50 checks now),
+and the surface itself got a suite of its own beside it rather than inside it:
+`tests/bind_test.c`, 39 checks, because what it holds - what a bind refuses,
+and that the copy outlives the caller's buffer - is not a re-run question.
+
+Two gates are met, and the middle one is met in part: results are compared
+between the bound and the literal form, counters are not. Comparing counters
+needs the probe harness, which reaches the engine below `cyboudb_bind_*`, and
+that is worth doing when the counters are next being read anyway rather than
+as a detour here.
+
+`?` is accepted only in `INSERT ... VALUES`. A placeholder in a `WHERE` clause
+is a syntax error that names the restriction; widening it is a separate piece
+of work, because a predicate placeholder has to survive kernel resolution and
+zone pruning, both of which read the literal at bind time.
+
 ### Queue leases
 
 `DEQUEUE` takes a message inside the transaction that commits the work. That
