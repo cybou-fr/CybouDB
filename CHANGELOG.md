@@ -32,7 +32,8 @@ migration path, and is not something a minor release does quietly.
 
 ### Parameter binding
 
-`INSERT ... VALUES` takes `?` placeholders, and ten new C functions supply
+`INSERT ... VALUES` and `WHERE` comparisons take `?` placeholders, and ten new
+C functions supply
 their values: `cyboudb_bind_int32`, `_int64`, `_float`, `_bool`, `_text`,
 `_blob`, `_vector_f32`, `_null`, `cyboudb_bind_parameter_count`, and
 `cyboudb_clear_bindings`.
@@ -69,10 +70,23 @@ Three decisions worth stating, because each one could have gone the other way:
   reached for. A parameter nobody bound stops the statement; it does not
   quietly become NULL.
 
-`?` is accepted only in `INSERT ... VALUES` in this release. Anywhere else it is
-a syntax error that says so.
+A predicate parameter is applied per execution, over the zero the binder left
+in the bound expression node, so the plan still holds no value. The kernel was
+never the problem - `sql_kernel_resolve` picks from the column's physical type
+and never from the literal's - and zone pruning already read the literal when it
+ran rather than when the plan was built. What does not yet work is an index
+seek: its key bounds are arithmetic on the literal done at bind time, so a
+parameterised predicate declines the seek and scans with zone pruning instead.
+Correct, and slower than it should be; recomputing the bounds per execution is
+named in `ROADMAP.md` rather than left implied.
 
-`tests/bind_test.c` (39 checks) runs on both platforms in CI.
+`?` is accepted in `INSERT ... VALUES` and on the value side of a `WHERE`
+comparison. Anywhere else it is a syntax error that says so.
+
+`tests/bind_test.c` (77 checks) runs on both platforms in CI. Its gate compares
+the engine's zone-pruning counters between a bound predicate and the literal
+one, not just the rows: a bound predicate that lost its pruning would still
+answer correctly and read the whole table to do it.
 
 ## [0.5.0-preview.2] - 2026-09-14
 

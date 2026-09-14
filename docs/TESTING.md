@@ -218,7 +218,7 @@ A year from now that would not have been true.
 
 ## Values that arrive after prepare
 
-`tests/bind_test.c`, 49 checks, built with `--c-tests` and run against a
+`tests/bind_test.c`, 77 checks, built with `--c-tests` and run against a
 `create-large` database. A `?` is a hole in a statement, and the suite is
 organised around what happens at the edges of the hole rather than in it.
 
@@ -253,6 +253,20 @@ Clearing has its own small group, and the check that matters there is eight
 binds of 30 KiB each through a 32 KiB buffer: it passes only if a cleared
 parameter actually gives its bytes back, and fails on the second bind if
 `cyboudb_clear_bindings` merely marks slots unbound.
+
+**The zone gate is the one worth reading the code for.** A bound predicate and
+the literal it stands for have to be the same question all the way down, and
+comparing the rows they return only proves the answer. So the suite reads the
+engine's own pruning counters - `sql_zone_leaf_total`, `_none`, `_all`,
+`_unknown` - around each form and requires all four to match. A bound predicate
+that had lost its pruning would still return the right rows, and would read the
+table to do it; nothing about the result would say so.
+
+It is guarded against being vacuous, which is the failure mode this kind of
+check usually has: before comparing, it requires the *literal* query to have
+looked at more than one leaf and skipped at least one. Ten rows would be a
+single leaf, and two queries that both look at one leaf agree about pruning
+while proving nothing - so `b_pred` holds four thousand rows.
 
 The last two checks are the loop the feature is for: two thousand binds and
 steps with lengths that grow and shrink, against a 32 KiB buffer. A slot reuses

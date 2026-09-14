@@ -36,6 +36,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The engine's own zone-pruning counters. A bound predicate and the literal it
+   stands for have to be the same question all the way down, and comparing the
+   answers only proves the rows. These prove the work: how many leaves were
+   looked at, how many were skipped outright, how many were taken whole. If a
+   bound predicate had lost its pruning it would still return the right rows,
+   and it would read the table to do it. */
+extern int sql_zone_trace;
+extern uint64_t sql_zone_leaf_total, sql_zone_leaf_none, sql_zone_leaf_all;
+extern uint64_t sql_zone_leaf_unknown;
+
 void *cyboudb_test_mem_alloc(size_t size) { return malloc(size); }
 void cyboudb_test_mem_free(void *ptr, size_t size) { (void)size; free(ptr); }
 
@@ -315,8 +325,201 @@ int main(int argc, char **argv) {
     cyboudb_finalize(st);
     st = NULL;
 
-    check("a `?` outside INSERT ... VALUES is refused at prepare",
-          cyboudb_prepare(db, "SELECT a FROM b_ints WHERE a = ?", &st)
+    /* --- predicates, which is the other half of the CRUD path ------------- */
+    check("a scratch table with known contents",
+          cyboudb_exec(db, "CREATE TABLE b_pred (a INT64, b INT32, "
+                           "f FLOAT32, o BOOL)") == CybouDB_OK);
+    {
+        /* Ten rows would be one leaf, and two queries that both look at one
+           leaf agree about pruning without proving anything. This is sized so
+           that the zone gate below has leaves to skip. */
+        int i, made = 1;
+        char q[8192];
+        for (i = 0; i < 4000 && made; i += 200) {
+            int j, n = sprintf(q, "INSERT INTO b_pred VALUES ");
+            for (j = 0; j < 200; j++) {
+                n += sprintf(q + n, "%s(%d, %d, %d.5, %s)", j ? ", " : "",
+                             i + j, (i + j) * 10, i + j,
+                             ((i + j) % 2) ? "true" : "false");
+            }
+            if (cyboudb_exec(db, q) != CybouDB_OK) made = 0;
+        }
+        check("four thousand rows to select from", made &&
+              count(db, "SELECT COUNT(*) FROM b_pred") == 4000);
+    }
+
+    check("a bound predicate prepares and counts what it should",
+          cyboudb_prepare(db, "SELECT COUNT(*) FROM b_pred WHERE a = ?", &st)
+              == CybouDB_OK &&
+          cyboudb_bind_parameter_count(st) == 1);
+    if (st) {
+        cyboudb_stmt *q = st;
+        long long n = -1;
+        check("bound to 3", cyboudb_bind_int64(q, 0, 3) == CybouDB_OK);
+        if (cyboudb_step(q) == CybouDB_ROW) n = cyboudb_column_int64(q, 0);
+        check("matches one row", n == 1);
+        /* The point of the whole feature: the same plan, a different value,
+           and an answer that belongs to the new value rather than the old. */
+        n = -1;
+        cyboudb_reset(q);
+        check("re-bound to a value no row has",
+              cyboudb_bind_int64(q, 0, 99999) == CybouDB_OK);
+        if (cyboudb_step(q) == CybouDB_ROW) n = cyboudb_column_int64(q, 0);
+        check("matches nothing, and not what the last execution matched",
+              n == 0);
+        n = -1;
+        cyboudb_reset(q);
+        cyboudb_bind_int64(q, 0, 7);
+        if (cyboudb_step(q) == CybouDB_ROW) n = cyboudb_column_int64(q, 0);
+        check("and back to matching one", n == 1);
+    }
+    cyboudb_finalize(st);
+    st = NULL;
+
+    /* A bound predicate and the literal it stands for must be the same
+       question. This is the comparison the INSERT gates could only half make. */
+    {
+        struct { const char *bound; const char *literal; long long v; } same[] = {
+            { "SELECT COUNT(*) FROM b_pred WHERE a > ?",
+              "SELECT COUNT(*) FROM b_pred WHERE a > 3600", 3600 },
+            { "SELECT COUNT(*) FROM b_pred WHERE a <= ?",
+              "SELECT COUNT(*) FROM b_pred WHERE a <= 400", 400 },
+            { "SELECT COUNT(*) FROM b_pred WHERE a <> ?",
+              "SELECT COUNT(*) FROM b_pred WHERE a <> 2", 2 },
+            /* The value on the left, so the binder's operator flip is exercised
+               with a placeholder rather than only with a literal. */
+            { "SELECT COUNT(*) FROM b_pred WHERE ? < a",
+              "SELECT COUNT(*) FROM b_pred WHERE 3600 < a", 3600 },
+        };
+        size_t i;
+        for (i = 0; i < sizeof same / sizeof same[0]; i++) {
+            long long bound = -1, literal = count(db, same[i].literal);
+            if (cyboudb_prepare(db, same[i].bound, &st) == CybouDB_OK) {
+                if (cyboudb_bind_int64(st, 0, same[i].v) == CybouDB_OK &&
+                    cyboudb_step(st) == CybouDB_ROW) {
+                    bound = cyboudb_column_int64(st, 0);
+                }
+                cyboudb_finalize(st);
+                st = NULL;
+            }
+            check(same[i].bound,
+                  bound >= 0 && bound == literal);
+        }
+    }
+
+    check("an INT32 predicate parameter",
+          cyboudb_prepare(db, "SELECT COUNT(*) FROM b_pred WHERE b = ?", &st)
+              == CybouDB_OK &&
+          cyboudb_bind_int32(st, 0, 40) == CybouDB_OK &&
+          cyboudb_step(st) == CybouDB_ROW &&
+          cyboudb_column_int64(st, 0) == 1);
+    cyboudb_finalize(st);
+    st = NULL;
+
+    check("a BOOL predicate parameter",
+          cyboudb_prepare(db, "SELECT COUNT(*) FROM b_pred WHERE o = ?", &st)
+              == CybouDB_OK &&
+          cyboudb_bind_bool(st, 0, 1) == CybouDB_OK &&
+          cyboudb_step(st) == CybouDB_ROW &&
+          cyboudb_column_int64(st, 0) == 2000);
+    cyboudb_finalize(st);
+    st = NULL;
+
+    check("a FLOAT32 predicate parameter",
+          cyboudb_prepare(db, "SELECT COUNT(*) FROM b_pred WHERE f > ?", &st)
+              == CybouDB_OK &&
+          cyboudb_bind_float(st, 0, 4.5f) == CybouDB_OK &&
+          cyboudb_step(st) == CybouDB_ROW &&
+          cyboudb_column_int64(st, 0) ==
+              count(db, "SELECT COUNT(*) FROM b_pred WHERE f > 4.5"));
+    cyboudb_finalize(st);
+    st = NULL;
+
+    check("two parameters in one predicate, each its own",
+          cyboudb_prepare(db, "SELECT COUNT(*) FROM b_pred "
+                              "WHERE a >= ? AND a <= ?", &st) == CybouDB_OK &&
+          cyboudb_bind_parameter_count(st) == 2 &&
+          cyboudb_bind_int64(st, 0, 3) == CybouDB_OK &&
+          cyboudb_bind_int64(st, 1, 6) == CybouDB_OK &&
+          cyboudb_step(st) == CybouDB_ROW &&
+          cyboudb_column_int64(st, 0) == 4);
+    cyboudb_finalize(st);
+    st = NULL;
+
+    check("an unbound predicate parameter stops the statement",
+          cyboudb_prepare(db, "SELECT COUNT(*) FROM b_pred WHERE a = ?", &st)
+              == CybouDB_OK &&
+          cyboudb_step(st) != CybouDB_ROW);
+    cyboudb_finalize(st);
+    st = NULL;
+
+    check("the wrong type for the column is refused at the bind",
+          cyboudb_prepare(db, "SELECT COUNT(*) FROM b_pred WHERE a = ?", &st)
+              == CybouDB_OK &&
+          cyboudb_bind_float(st, 0, 1.0f) == CybouDB_MISUSE &&
+          cyboudb_bind_text(st, 0, "x", 1) == CybouDB_MISUSE);
+    if (st) {
+        /* `x = NULL` is unknown rather than a comparison against a value, so a
+           bound NULL there would silently match nothing while looking like a
+           question. IS NULL is how to ask it, and needs no parameter. */
+        check("and so is a NULL, which is not a value to compare against",
+              cyboudb_bind_null(st, 0) == CybouDB_MISUSE);
+    }
+    cyboudb_finalize(st);
+    st = NULL;
+
+    /* --- the gate: a bound predicate must prune what the literal prunes ---- */
+    {
+        struct { const char *bound; const char *literal; long long v; } pair[] = {
+            { "SELECT b FROM b_pred WHERE a = ?",
+              "SELECT b FROM b_pred WHERE a = 3", 3 },
+            { "SELECT b FROM b_pred WHERE a > ?",
+              "SELECT b FROM b_pred WHERE a > 3600", 3600 },
+            { "SELECT b FROM b_pred WHERE a < ?",
+              "SELECT b FROM b_pred WHERE a < 200", 200 },
+        };
+        size_t i;
+        sql_zone_trace = 1;
+        for (i = 0; i < sizeof pair / sizeof pair[0]; i++) {
+            uint64_t lt, ln, la, lu, bt, bn, ba, bu;
+            int rows_l = 0, rows_b = 0;
+
+            sql_zone_leaf_total = sql_zone_leaf_none = 0;
+            sql_zone_leaf_all = sql_zone_leaf_unknown = 0;
+            if (cyboudb_prepare(db, pair[i].literal, &st) == CybouDB_OK) {
+                while (cyboudb_step(st) == CybouDB_ROW) rows_l++;
+                cyboudb_finalize(st);
+                st = NULL;
+            }
+            lt = sql_zone_leaf_total; ln = sql_zone_leaf_none;
+            la = sql_zone_leaf_all;   lu = sql_zone_leaf_unknown;
+
+            sql_zone_leaf_total = sql_zone_leaf_none = 0;
+            sql_zone_leaf_all = sql_zone_leaf_unknown = 0;
+            if (cyboudb_prepare(db, pair[i].bound, &st) == CybouDB_OK) {
+                if (cyboudb_bind_int64(st, 0, pair[i].v) == CybouDB_OK) {
+                    while (cyboudb_step(st) == CybouDB_ROW) rows_b++;
+                }
+                cyboudb_finalize(st);
+                st = NULL;
+            }
+            bt = sql_zone_leaf_total; bn = sql_zone_leaf_none;
+            ba = sql_zone_leaf_all;   bu = sql_zone_leaf_unknown;
+
+            check(pair[i].bound, rows_b == rows_l && rows_l > 0);
+            /* Non-vacuity first: if the literal query pruned nothing then the
+               two agreeing about pruning says nothing, and the table is too
+               small rather than the engine being right. */
+            check("  the literal query actually pruned something",
+                  lt > 1 && (ln + la) > 0);
+            check("  and the bound one skipped exactly the same leaves",
+                  lt == bt && ln == bn && la == ba && lu == bu);
+        }
+        sql_zone_trace = 0;
+    }
+
+    check("a `?` that is not compared against a column is still refused",
+          cyboudb_prepare(db, "SELECT a FROM b_pred WHERE ?", &st)
               != CybouDB_OK);
     cyboudb_finalize(st);
     st = NULL;

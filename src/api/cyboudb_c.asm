@@ -23,6 +23,7 @@ extern db_var_read_chain
 extern sql_select_open, sql_select_next
 extern sql_arena_init, sql_arena_alloc
 extern sql_parse, sql_bind, sql_execute_batch
+extern sql_params_apply_predicates
 extern os_mem_alloc, os_mem_free
 
 %ifdef CybouDB_WINDOWS
@@ -1067,6 +1068,17 @@ api_select_next:
     je .done
     cmp dword [r12 + STMT_H_STATE], STMT_STATE_INIT
     jne .next
+    ; A pulled SELECT opens its cursor here and never reaches
+    ; sql_execute_batch, so predicate parameters go on at this door as well.
+    ; Applying them twice would write the same field from the same slot, so
+    ; the two doors do not have to know about each other.
+    mov ARG1, [r12 + STMT_H_PLAN]
+    call sql_params_apply_predicates
+    test eax, eax
+    jz .params_ok
+    mov eax, CybouDB_E_STATE
+    jmp .error
+.params_ok:
     mov r10, [r12 + STMT_H_PLAN]
     cmp qword [r10 + PLAN_JOIN_TYPE], 0
     jne .join_pull_pending
@@ -1539,6 +1551,12 @@ cyboudb_bind_null:
     call    api_param_slot
     test    rax, rax
     jz      .misuse
+    ; Not in a predicate. `x = NULL` is unknown rather than a comparison
+    ; against a value, so a bound NULL there would quietly match nothing while
+    ; looking like it asked a question. `IS NULL` is the way to ask it, and it
+    ; needs no parameter.
+    cmp     qword [rax + PARAM_KIND], PARAM_TO_BEXPR
+    je      .misuse
     ; A column that does not accept NULL says so now. The alternative is an
     ; insert that fails later with the row already half built.
     test    qword [rax + PARAM_FLAGS], CAT_NULLABLE

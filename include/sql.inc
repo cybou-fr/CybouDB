@@ -499,14 +499,23 @@
 ; One parameter. The first three fields are what the binder resolved - where
 ; the value goes and what it has to be - and are written once; the rest is what
 ; a caller bound and is rewritten by every bind.
-%define PARAM_CELL          0           ; qword: index into the batch values
+%define PARAM_TARGET        0           ; qword: where the value goes, per PARAM_KIND
+%define PARAM_CELL          PARAM_TARGET ; INSERT: index into the batch values
 %define PARAM_TYPE          8           ; qword: CAT_* of the target column
 %define PARAM_FLAGS         16          ; qword: column flags, incl. dimension
 %define PARAM_VAL           24          ; qword: scalar, or offset into the buffer
 %define PARAM_LEN           32          ; qword: bytes, for TEXT/BLOB/VECTOR
 %define PARAM_CAP           40          ; qword: bytes this slot already owns
 %define PARAM_STATE         48          ; qword: PARAM_UNBOUND / _BOUND / _NULL
+; What PARAM_TARGET names. A placeholder in VALUES fills a cell of the batch;
+; one in a predicate fills the literal field of a bound expression node. The
+; two differ in where the value lands and in nothing else, which is why they
+; share a slot rather than getting a second mechanism.
+%define PARAM_KIND          56          ; qword: PARAM_TO_CELL / PARAM_TO_BEXPR
 %define PARAM_SLOT_SIZE     64
+
+%define PARAM_TO_CELL       0
+%define PARAM_TO_BEXPR      1
 
 %define PARAM_UNBOUND       0
 %define PARAM_BOUND         1

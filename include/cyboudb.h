@@ -387,9 +387,16 @@ int cyboudb_reset(cyboudb_stmt *stmt);
 /*
  * Parameters.
  *
- * A `?` in INSERT ... VALUES is a placeholder whose value arrives before the
- * statement is stepped. Placeholders are positional and unnamed: the first `?`
- * in a statement is parameter 0, and the statement says how many it has.
+ * A `?` is a placeholder whose value arrives before the statement is stepped.
+ * Placeholders are positional and unnamed: the first `?` in a statement is
+ * parameter 0, and the statement says how many it has.
+ *
+ * They are accepted in INSERT ... VALUES and on the value side of a WHERE
+ * comparison. A predicate parameter takes the four scalar types a comparison
+ * already takes - INT32, INT64, FLOAT32 and BOOL - and not TEXT, BLOB or
+ * VECTOR, which is where predicate comparisons already stopped. NULL is not
+ * bindable in a predicate either: `x = NULL` is unknown rather than a
+ * comparison against a value, and IS NULL is how to ask that.
  *
  * A bound value is input to one execution, not part of the prepared plan, so
  * binding never changes what prepare produced and a statement may be bound,

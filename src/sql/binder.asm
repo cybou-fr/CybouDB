@@ -21,13 +21,26 @@ err_col_not_found:   db "column not found in schema", 0
 err_dup_table:       db "table already exists", 0
 err_dup_col:         db "duplicate column name in table definition", 0
 err_type_mismatch:   db "type mismatch in expression or literal", 0
-err_param_placement: db "a parameter is only allowed in INSERT ... VALUES", 0
+err_param_placement: db "a parameter must be compared against a column", 0
 err_not_nullable:    db "cannot insert NULL into non-nullable column", 0
 err_val_count:       db "row value count does not match column count", 0
 err_no_pax:          db "database does not have PAX table storage enabled", 0
 err_tbl_name_len:    db "table name exceeds 31 characters", 0
 err_col_name_len:    db "column name exceeds 23 characters", 0
 err_unsupported_op:  db "unsupported expression comparison", 0
+
+section .bss
+    align 8
+; The parameter slots of the plan being bound. A file-scope pointer rather than
+; a sixth argument threaded through bind_expr's recursion: the parser already
+; keeps expr_depth and param_count this way, and one bind at a time is an
+; assumption this engine has held since it had one writer.
+bind_param_slots:    resq 1
+; Set when a predicate in this statement holds a placeholder. plan_index_eq
+; reads it to decline an index seek whose bounds it cannot compute yet.
+bind_param_predicate: resq 1
+
+section .data
 err_join_pending:    db "JOIN WHERE predicates are not implemented yet", 0
 err_join_condition:  db "JOIN ON currently requires column = column", 0
 err_join_projection: db "JOIN projections must be explicitly qualified", 0
@@ -746,7 +759,10 @@ bind_expr:
 
 .col_on_left:
     cmp     qword [r12 + EXPR_KIND], EXPR_LITERAL
+    je      .left_value_ok
+    cmp     qword [r12 + EXPR_KIND], EXPR_PARAM
     jne     .unsupported
+.left_value_ok:
 
     mov     [rbp - 40], r11             ; col_expr
     mov     [rbp - 48], r12             ; lit_expr
@@ -756,7 +772,10 @@ bind_expr:
 
 .col_on_right:
     cmp     qword [r11 + EXPR_KIND], EXPR_LITERAL
+    je      .right_value_ok
+    cmp     qword [r11 + EXPR_KIND], EXPR_PARAM
     jne     .unsupported
+.right_value_ok:
 
     mov     [rbp - 40], r12             ; col_expr
     mov     [rbp - 48], r11             ; lit_expr
@@ -800,8 +819,14 @@ bind_expr:
     mov     edx, [rax + 4]              ; col_flags
     mov     [rbp - 80], rdx
 
-    ; Coerce literal value to column type
+    ; A placeholder carries an index where a literal carries a value, and its
+    ; EXPR_LIT_TYPE is zero - which is also how a NULL literal spells itself.
+    ; So the kind is checked before anything reads the type.
     mov     r10, [rbp - 48]             ; lit_expr
+    cmp     qword [r10 + EXPR_KIND], EXPR_PARAM
+    je      .comp_param
+
+    ; Coerce literal value to column type
     cmp     dword [r10 + EXPR_LIT_TYPE], 0 ; TYPE_NULL
     je      .comp_is_null_lit
     mov     rax, [r10 + EXPR_LIT_VAL]
@@ -832,6 +857,69 @@ bind_expr:
     FRAME_END
     ret
 
+
+.comp_param:
+    ; Everything the plan can know about this comparison is known: the column,
+    ; its type, the operator, and therefore the kernel - which sql_kernel_resolve
+    ; picks from the column's physical type and never from the literal's. Only
+    ; the value is missing, and it is the one thing that is not the plan's.
+    ;
+    ; The node is built with a zero where the value goes and the slot is told
+    ; to fill that field. Nothing reads it before then: a statement with an
+    ; unbound parameter does not execute.
+    mov     rax, [rbp - 48]
+    mov     rax, [rax + EXPR_LIT_VAL]   ; the index this `?` has
+    mov     [rbp - 88], rax
+
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, BOUND_EXPR_SIZE
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .fail
+
+    mov     qword [rax + BEXPR_KIND], BEXPR_COMPARE_COL_LIT
+    mov     rdx, [rbp - 56]
+    mov     [rax + BEXPR_OP], rdx
+    mov     rdx, [rbp - 64]
+    mov     [rax + BEXPR_COL_IDX], rdx
+    mov     rdx, [rbp - 72]
+    mov     [rax + BEXPR_COL_TYPE], rdx
+    mov     qword [rax + BEXPR_LIT_VAL], 0
+    mov     [rbp - 96], rax
+
+    ; The same resolution a literal comparison gets. It refuses TEXT, BLOB and
+    ; VECTOR columns, which is where predicate comparisons already stopped -
+    ; a placeholder inherits that limit rather than introducing one.
+    mov     ARG1, [rbp - 72]
+    mov     ARG2, [rbp - 56]
+    call    sql_kernel_resolve
+    test    rax, rax
+    jz      .unsupported
+    mov     r10, [rbp - 96]
+    mov     [r10 + BEXPR_KERNEL], rax
+
+    ; Point the slot at the field to fill.
+    ; rcx and not rdi: rdi is callee-saved on Windows and bind_expr does not
+    ; save it. Nothing is called after this point, so an argument register is
+    ; free to use as a scratch.
+    mov     rcx, [bind_param_slots]
+    test    rcx, rcx
+    jz      .unsupported                ; a `?` the parser did not count
+    mov     rax, [rbp - 88]
+    shl     rax, 6                      ; PARAM_SLOT_SIZE
+    add     rcx, rax
+    mov     [rcx + PARAM_TARGET], r10
+    mov     rax, [rbp - 72]
+    mov     [rcx + PARAM_TYPE], rax
+    mov     rax, [rbp - 80]
+    mov     [rcx + PARAM_FLAGS], rax
+    mov     qword [rcx + PARAM_STATE], PARAM_UNBOUND
+    mov     qword [rcx + PARAM_KIND], PARAM_TO_BEXPR
+    mov     qword [bind_param_predicate], 1
+
+    mov     rax, r10
+    FRAME_END
+    ret
 
 .comp_int32:
     cmp     dword [r10 + EXPR_LIT_TYPE], CAT_FLOAT32
@@ -987,6 +1075,36 @@ sql_bind:
     mov     r10, [rbp - 48]
     mov     [r10 + PLAN_PARAM_COUNT], rdx
     mov     [rbp - 16], r11             ; all binders consume the payload
+    mov     [rbp - 240], rax            ; the statement type, across the calls
+
+    ; The parameter area. Allocated here rather than inside one binder because
+    ; a placeholder can now appear in a predicate as well as in VALUES, and
+    ; both want the same slots. Only a statement that has placeholders pays.
+    mov     qword [bind_param_slots], 0
+    mov     qword [bind_param_predicate], 0
+    test    rdx, rdx
+    jz      .no_params
+
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, rdx
+    shl     ARG2, 6                     ; PARAM_SLOT_SIZE
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+    mov     [bind_param_slots], rax
+    mov     r10, [rbp - 48]
+    mov     [r10 + PLAN_PARAM_SLOTS], rax
+
+    mov     ARG1, [rbp - 24]
+    mov     ARG2, PARAM_BUF_BYTES + CybouDB_PARAM_BUF_SIZE
+    call    sql_arena_alloc
+    test    rax, rax
+    jz      .oom
+    mov     r10, [rbp - 48]
+    mov     [r10 + PLAN_PARAM_BUF], rax
+
+.no_params:
+    mov     rax, [rbp - 240]
 
     cmp     rax, STMT_CREATE_TABLE
     je      .bind_create
@@ -1320,34 +1438,10 @@ sql_bind:
     mov     [rax + BATCH_VAR_LENGTHS], r10
     mov     qword [rax + BATCH_FLAGS], 0    ; VALUES carries bytes, not roots
 
-    ; The parameter area, allocated before the cell loop starts so that filling
-    ; a cell never has to call the arena with the loop's registers live. Only a
-    ; statement that has placeholders pays for it.
-    mov     qword [rbp - 232], 0
-    mov     r10, [rbp - 48]
-    mov     rax, [r10 + PLAN_PARAM_COUNT]
-    test    rax, rax
-    jz      .ins_no_params
-
-    mov     ARG1, [rbp - 24]
-    mov     ARG2, rax
-    shl     ARG2, 6                     ; PARAM_SLOT_SIZE
-    call    sql_arena_alloc
-    test    rax, rax
-    jz      .oom
+    ; The slots were allocated by the common prologue; the cell loop only fills
+    ; them, and so never calls the arena with its own registers live.
+    mov     rax, [bind_param_slots]
     mov     [rbp - 232], rax
-    mov     r10, [rbp - 48]
-    mov     [r10 + PLAN_PARAM_SLOTS], rax
-
-    mov     ARG1, [rbp - 24]
-    mov     ARG2, PARAM_BUF_BYTES + CybouDB_PARAM_BUF_SIZE
-    call    sql_arena_alloc
-    test    rax, rax
-    jz      .oom
-    mov     r10, [rbp - 48]
-    mov     [r10 + PLAN_PARAM_BUF], rax
-
-.ins_no_params:
     ; Fill batch cells
     mov     r10, [rbp - 16]
     mov     r15, [r10 + STMT_EXTRA4]    ; rows array ptr
@@ -1506,6 +1600,7 @@ sql_bind:
     mov     [rdi + PARAM_TYPE], r10
     mov     [rdi + PARAM_FLAGS], r11
     mov     qword [rdi + PARAM_STATE], PARAM_UNBOUND
+    mov     qword [rdi + PARAM_KIND], PARAM_TO_CELL
 
     ; The cell is left NULL. Nothing reads it in that state: execution refuses
     ; a statement with an unbound parameter, and a bound one writes over all
@@ -3224,6 +3319,17 @@ plan_index_eq:
     test r11, r11
     jz .no
     cmp qword [r11 + BEXPR_KIND], BEXPR_COMPARE_COL_LIT
+    jne .no
+    ; The bounds below are arithmetic on the literal, done here because the
+    ; plan is built once. A placeholder has no value yet, so there is nothing
+    ; to compute them from - and computing them from the zero standing in for
+    ; it would seek the wrong key. The seek is declined and the scan falls back
+    ; to zone pruning, which reads the value when it runs rather than now.
+    ;
+    ; Declining is correct and slower, and it is not the end state: the bounds
+    ; want to be recomputed per execution. That is its own change with its own
+    ; measurement, and it is named in ROADMAP.md rather than left implied.
+    cmp qword [bind_param_predicate], 0
     jne .no
     mov rax, [r11 + BEXPR_COL_TYPE]
     cmp rax, CAT_INT32

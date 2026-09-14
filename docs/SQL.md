@@ -64,11 +64,17 @@ INSERT INTO table_name VALUES (val1, val2, ...), (val1, val2, ...);
 - **Parameters**: `?` stands in for a value supplied before the statement is
   stepped, through `cyboudb_bind_*`. Placeholders are positional and unnamed -
   the first `?` in a statement is parameter 0 - and a statement reports how many
-  it has rather than the caller declaring them. They are accepted only in
-  `INSERT ... VALUES`; a `?` anywhere else is a syntax error naming that,
-  because the alternative message ("type mismatch") describes the wrong problem.
+  it has rather than the caller declaring them. They are accepted in
+  `INSERT ... VALUES` and on the value side of a `WHERE` comparison, on either
+  side of the operator; a `?` elsewhere is a syntax error naming that, because
+  the alternative message ("type mismatch") describes the wrong problem.
+  A predicate parameter takes the four scalar types a comparison already takes
+  - `INT32`, `INT64`, `FLOAT32`, `BOOL` - and not `TEXT`, `BLOB` or `VECTOR`,
+  which is where predicate comparisons already stopped. `NULL` is not bindable
+  in a predicate: `x = NULL` is unknown rather than a comparison against a
+  value, and `IS NULL` is how to ask that.
   A bound value is input to one execution and never enters the plan, so a
-  prepared INSERT may be bound, stepped, reset and bound again - see
+  prepared statement may be bound, stepped, reset and bound again - see
   [section 5](#5-regression-tests) and the immutability rule in `include/sql.inc`.
   A parameter nobody bound stops the statement at execution; it does not become
   a NULL.

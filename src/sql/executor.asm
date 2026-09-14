@@ -81,6 +81,7 @@ extern cyboudb_vector_normalize_f32
 extern for8_eq, for8_ne, for8_lt, for8_le, for8_gt, for8_ge
 extern for16_eq, for16_ne, for16_lt, for16_le, for16_gt, for16_ge
 global sql_execute_batch
+global sql_params_apply_predicates
 global eval_predicate
 global eval_predicate_encoded
 
@@ -553,6 +554,55 @@ eval_predicate_encoded:
 
 
 
+
+; -----------------------------------------------------------------------------
+;  sql_params_apply_predicates(plan) -> RAX: 0 applied, 1 something is unbound
+;
+;  A placeholder in a predicate fills the literal field of a bound expression
+;  node. Doing it here rather than at bind time is what keeps the rule the
+;  engine already holds: the plan is what prepare produced, and a bound value
+;  is input to one execution. The node carries a zero until this runs, and
+;  running it again writes the same field from the same slot - so applying it
+;  twice is applying it once, and nothing has to be undone between executions.
+;
+;  Cells are not touched here. An INSERT restores its batch from the binder's
+;  pristine copy at the top of its own execution, so its parameters have to go
+;  on after that, and they do.
+; -----------------------------------------------------------------------------
+sql_params_apply_predicates:
+    mov     r10, ARG1
+    test    r10, r10
+    jz      .ok
+    mov     r11, [r10 + PLAN_PARAM_SLOTS]
+    test    r11, r11
+    jz      .ok
+    mov     rcx, [r10 + PLAN_PARAM_COUNT]
+    test    rcx, rcx
+    jz      .ok
+.next:
+    dec     rcx
+    mov     rdx, rcx
+    shl     rdx, 6                      ; PARAM_SLOT_SIZE
+    add     rdx, r11
+    cmp     qword [rdx + PARAM_KIND], PARAM_TO_BEXPR
+    jne     .more
+    cmp     qword [rdx + PARAM_STATE], PARAM_UNBOUND
+    je      .unbound
+    mov     r8, [rdx + PARAM_TARGET]
+    test    r8, r8
+    jz      .more
+    mov     rax, [rdx + PARAM_VAL]
+    mov     [r8 + BEXPR_LIT_VAL], rax
+.more:
+    test    rcx, rcx
+    jnz     .next
+.ok:
+    xor     eax, eax
+    ret
+.unbound:
+    mov     eax, 1
+    ret
+
 ; -----------------------------------------------------------------------------
 ;  sql_execute_batch(db, plan, arena, batch_cb, cb_ctx, out_err)
 ;  batch_cb(ctx, batch_view, projection, selection_mask) returns one of
@@ -572,6 +622,19 @@ sql_execute_batch:
     mov     [rbp - 128], rax
     SQL_CLEAR_ERROR rax
     mov     qword [rbp - 136], SQL_DOMAIN_SQL
+
+    ; Predicate parameters go on before anything reads the predicate. They are
+    ; input to this execution, so they are applied per execution and the plan
+    ; keeps the zero the binder left. After the arguments are in locals,
+    ; because out_err has to be there for the refusal below to say anything.
+    mov     ARG1, [rbp - 16]
+    call    sql_params_apply_predicates
+    test    eax, eax
+    jz      .params_ok
+    lea     r11, [exec_unbound_param_msg]
+    jmp     .custom_exec_err
+.params_ok:
+
     mov     r10, [rbp - 16]
     mov     rax, [r10 + PLAN_TYPE]
     cmp     rax, STMT_CREATE_TABLE

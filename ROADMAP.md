@@ -212,7 +212,7 @@ that would mean either narrowing the promise or making the first thing anyone
 notices be the thing that is missing. The promise stays; the work finishes:
 
 ```text
-1. SELECT predicate parameters
+1. SELECT predicate parameters      done
 2. UPDATE SET values
 3. UPDATE predicate
 4. DELETE predicate
@@ -223,23 +223,30 @@ The CRUD path, not parameters everywhere. `?` in a projection list, in an
 `ORDER BY`, in a `LIMIT` or as a table name is not part of this and is not
 missed by an application writing ordinary queries.
 
-**What makes the predicate case harder than the INSERT case**, and what the
-design has to answer before the assembly: a bound predicate value is read at
-*bind* time by two things that an INSERT cell is not. The comparison kernel is
-resolved against the literal's type, and zone pruning decides which pages can
-be skipped by comparing the literal against per-zone minima and maxima. Both
-happen while building the plan, and the plan is immutable across executions -
-so neither may capture a value that has not arrived yet.
+**Step 1 is done, and two of the three things that looked hard were not.**
+The note that used to stand here said a bound predicate value is read at bind
+time by the kernel resolver and by zone pruning. Reading the code says
+otherwise: `sql_kernel_resolve` takes the column's physical type and the
+operator and never looks at the literal, and `sql_zone_eval` is called from the
+scan and reads `BEXPR_LIT_VAL` when it runs. So both work unchanged once the
+value is in the node before the scan opens, which is where it is now put - on
+each execution, over the zero the binder left, at the two doors a predicate can
+arrive through.
 
-The shape that follows from the rule already in force: the kernel is resolved
-from the *column's* type rather than the literal's, which it already has; and
-zone pruning becomes a per-execution decision taken against the bound value
-rather than a plan-time one. That second part is the real work, and it is the
-part worth measuring, because pruning is where the scan gets its speed.
+**The one that is real is the index seek.** `plan_index_eq` turns the literal
+into key bounds - `PLAN_INDEX_LO` and `PLAN_INDEX_HI` - at bind time, because
+the plan is built once. There is nothing to compute them from when the value
+has not arrived, and computing them from the zero standing in for it would seek
+the wrong key. So a parameterised predicate declines the seek and falls back to
+a scan with zone pruning. That is correct and slower, and it is the remaining
+work: the index *choice* stays in the plan, the *bounds* move to execution.
 
-Then the gate: a bound `SELECT` must prune the same zones as the equivalent
-literal `SELECT` - which is also the counter comparison the INSERT gates only
-half met, arriving where it is actually load-bearing rather than as a detour.
+The gate is met for the scan path: `tests/bind_test.c` compares the engine's
+zone-pruning counters between a bound predicate and the literal one and
+requires all four to match, having first required the literal query to actually
+prune something so the comparison is not vacuous. That is the counter
+comparison the INSERT gates only half made, arriving where it is load-bearing.
+The same gate against `PLAN_FLAG_INDEX_SEEK` is what step 1b has to meet.
 
 ### Queue leases
 
