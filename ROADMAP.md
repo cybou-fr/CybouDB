@@ -238,20 +238,27 @@ value is in the node before the scan opens, which is where it is now put - on
 each execution, over the zero the binder left, at the two doors a predicate can
 arrive through.
 
-**The one that is real is the index seek.** `plan_index_eq` turns the literal
-into key bounds - `PLAN_INDEX_LO` and `PLAN_INDEX_HI` - at bind time, because
-the plan is built once. There is nothing to compute them from when the value
-has not arrived, and computing them from the zero standing in for it would seek
-the wrong key. So a parameterised predicate declines the seek and falls back to
-a scan with zone pruning. That is correct and slower, and it is the remaining
-work: the index *choice* stays in the plan, the *bounds* move to execution.
+**The one that was real is the index seek, and it is done too.**
+`plan_index_eq` turned the literal into key bounds at bind time, because the
+plan is built once - and there is nothing to compute them from before the value
+arrives. The split it wanted: which index, over which column, follows from the
+operator and the column and stays in the plan; the arithmetic on the value
+moves to execution. The arithmetic itself is now one routine, `sql_index_bounds`,
+called by the binder for a literal and by the execution for a bound value, so
+the two cannot drift into disagreeing about what range a comparison means.
 
-The gate is met for the scan path: `tests/bind_test.c` compares the engine's
-zone-pruning counters between a bound predicate and the literal one and
-requires all four to match, having first required the literal query to actually
-prune something so the comparison is not vacuous. That is the counter
-comparison the INSERT gates only half made, arriving where it is load-bearing.
-The same gate against `PLAN_FLAG_INDEX_SEEK` is what step 1b has to meet.
+Two gates, both counter-based and both guarded against being vacuous, in
+`tests/bind_test.c`:
+
+* **zone pruning** - the four `sql_zone_leaf_*` counters must match between the
+  bound form and the literal one, after the literal form is required to have
+  looked at more than one leaf and skipped at least one;
+* **the index** - `index_lookups` must match, after the literal form is
+  required to have used the index at all.
+
+Both would pass trivially on a small table, so the fixtures are four thousand
+rows and two thousand rows respectively. That is the counter comparison the
+INSERT gates only half made, arriving where it is load-bearing.
 
 ### Queue leases
 

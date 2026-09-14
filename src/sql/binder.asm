@@ -11,7 +11,8 @@ default rel
 
 extern sql_arena_alloc, sql_kernel_resolve, vector_l2sq_f32_resolve, vector_cosine_normalized_f32_resolve
 extern db_index_of_table
-global sql_bind, catalog_find_table, catalog_find_index
+global sql_bind
+global sql_index_bounds, catalog_find_table, catalog_find_index
 global catalog_find_object, schema_find_col
 
 section .data
@@ -39,6 +40,10 @@ bind_param_slots:    resq 1
 ; Set when a predicate in this statement holds a placeholder. plan_index_eq
 ; reads it to decline an index seek whose bounds it cannot compute yet.
 bind_param_predicate: resq 1
+; The comparison node whose value is a placeholder, so that plan_index_eq can
+; tell *this* comparison from a literal one in the same statement rather than
+; guessing from a statement-wide flag.
+bind_param_bexpr:    resq 1
 
 section .data
 err_join_pending:    db "JOIN WHERE predicates are not implemented yet", 0
@@ -916,6 +921,7 @@ bind_expr:
     mov     qword [rcx + PARAM_STATE], PARAM_UNBOUND
     mov     qword [rcx + PARAM_KIND], PARAM_TO_BEXPR
     mov     qword [bind_param_predicate], 1
+    mov     [bind_param_bexpr], r10
 
     mov     rax, r10
     FRAME_END
@@ -1082,6 +1088,7 @@ sql_bind:
     ; both want the same slots. Only a statement that has placeholders pays.
     mov     qword [bind_param_slots], 0
     mov     qword [bind_param_predicate], 0
+    mov     qword [bind_param_bexpr], 0
     test    rdx, rdx
     jz      .no_params
 
@@ -3339,6 +3346,93 @@ sql_bind:
 ;
 ; Locals: [rbp-8]=ctx, [rbp-16]=plan, [rbp-24]=predicate, [rbp-32]=id walked
 ;         past, [rbp-40]=this index's id, [rbp-48]=lo, [rbp-56]=hi
+; -----------------------------------------------------------------------------
+;  sql_index_bounds(bexpr, out_lo, out_hi) -> EAX: 1 a range, 0 not an operator
+;  that is one
+;
+;  The key range an index seek walks, from a comparison's operator and value.
+;  Lifted out of plan_index_eq because it now has two callers at two different
+;  times: the binder, for a literal it can see; and the execution, for a value
+;  that arrived afterwards. One routine so the two cannot drift apart - a seek
+;  range that disagreed with the predicate it came from would return the wrong
+;  rows on one path and the right ones on the other.
+;
+;  The range only has to be a *superset* of what the predicate matches. Every
+;  row the seek yields is still evaluated by the comparison kernel, so a range
+;  that is too wide costs work and a range that is too narrow loses rows. That
+;  is what lets the two saturated cases - `> the largest key`, `< the smallest`
+;  - answer with the key itself rather than with an empty range whose meaning
+;  would depend on how the tree walk treats lo > hi. Both match nothing, the
+;  kernel says so, and neither needs the walk to agree about a range that runs
+;  backwards.
+; -----------------------------------------------------------------------------
+sql_index_bounds:
+    ; Every argument into a register of its own before any of them is used as
+    ; scratch: ARG3 first, because on Windows it is r8 and r8 becomes the low
+    ; bound; then ARG2, which is rdx there and rdx becomes the key.
+    mov r9, ARG3                        ; out_hi
+    mov rax, ARG2                       ; out_lo
+    mov r10, ARG1                       ; bexpr
+
+    ; The key, sign-extended the way the tree orders it.
+    mov rdx, [r10 + BEXPR_LIT_VAL]
+    cmp qword [r10 + BEXPR_COL_TYPE], CAT_INT32
+    jne .key_ready
+    movsxd rdx, edx
+.key_ready:
+    mov rcx, [r10 + BEXPR_OP]
+    mov r10, rax                        ; out_lo; the node is read out
+
+    mov rax, 0x8000000000000000
+    mov r8, rax                         ; nothing sorts below this
+    not rax
+    mov r11, rax                        ; nor above this
+
+    cmp rcx, OP_EQ
+    je .b_eq
+    cmp rcx, OP_GTE
+    je .b_from
+    cmp rcx, OP_GT
+    je .b_after
+    cmp rcx, OP_LTE
+    je .b_to
+    cmp rcx, OP_LT
+    je .b_below
+    xor eax, eax                        ; <> names everything but one key
+    ret
+.b_eq:
+    mov r8, rdx
+    mov r11, rdx
+    jmp .b_done
+.b_from:
+    mov r8, rdx
+    jmp .b_done
+.b_after:
+    cmp rdx, r11
+    je .b_saturated                     ; above the largest key there is
+    inc rdx
+    mov r8, rdx
+    jmp .b_done
+.b_to:
+    mov r11, rdx
+    jmp .b_done
+.b_below:
+    cmp rdx, r8
+    je .b_saturated                     ; below the smallest key there is
+    dec rdx
+    mov r11, rdx
+    jmp .b_done
+.b_saturated:
+    ; Matches nothing. One key is the narrowest range that is certainly a
+    ; superset of nothing, and the kernel rejects the row it yields.
+    mov r8, rdx
+    mov r11, rdx
+.b_done:
+    mov [r10], r8
+    mov [r9], r11
+    mov eax, 1
+    ret
+
 plan_index_eq:
     FRAME_BEGIN 64, 0
     mov [rbp - 8], ARG1                 ; ctx
@@ -3352,17 +3446,6 @@ plan_index_eq:
     jz .no
     cmp qword [r11 + BEXPR_KIND], BEXPR_COMPARE_COL_LIT
     jne .no
-    ; The bounds below are arithmetic on the literal, done here because the
-    ; plan is built once. A placeholder has no value yet, so there is nothing
-    ; to compute them from - and computing them from the zero standing in for
-    ; it would seek the wrong key. The seek is declined and the scan falls back
-    ; to zone pruning, which reads the value when it runs rather than now.
-    ;
-    ; Declining is correct and slower, and it is not the end state: the bounds
-    ; want to be recomputed per execution. That is its own change with its own
-    ; measurement, and it is named in ROADMAP.md rather than left implied.
-    cmp qword [bind_param_predicate], 0
-    jne .no
     mov rax, [r11 + BEXPR_COL_TYPE]
     cmp rax, CAT_INT32
     je .type_ok
@@ -3370,50 +3453,17 @@ plan_index_eq:
     jne .no
 .type_ok:
 
-    ; The key, sign-extended the way the tree orders it.
-    mov rdx, [r11 + BEXPR_LIT_VAL]
-    cmp qword [r11 + BEXPR_COL_TYPE], CAT_INT32
-    jne .key_ready
-    movsxd rdx, edx
-.key_ready:
-    mov rax, 0x8000000000000000
-    mov [rbp - 48], rax                 ; nothing sorts below this
-    not rax
-    mov [rbp - 56], rax                 ; nor above this
-    mov rcx, [r11 + BEXPR_OP]
-    cmp rcx, OP_EQ
-    je .bound_eq
-    cmp rcx, OP_GTE
-    je .bound_from
-    cmp rcx, OP_GT
-    je .bound_after
-    cmp rcx, OP_LTE
-    je .bound_to
-    cmp rcx, OP_LT
-    je .bound_below
-    jmp .no                             ; <> names everything but one key
-.bound_eq:
-    mov [rbp - 48], rdx
-    mov [rbp - 56], rdx
-    jmp .bounds_ready
-.bound_from:
-    mov [rbp - 48], rdx
-    jmp .bounds_ready
-.bound_after:
-    cmp rdx, [rbp - 56]
-    je .no                              ; above the largest key there is
-    inc rdx
-    mov [rbp - 48], rdx
-    jmp .bounds_ready
-.bound_to:
-    mov [rbp - 56], rdx
-    jmp .bounds_ready
-.bound_below:
-    cmp rdx, [rbp - 48]
-    je .no                              ; below the smallest key there is
-    dec rdx
-    mov [rbp - 56], rdx
-.bounds_ready:
+    ; The bounds. A placeholder's value has not arrived, so what is computed
+    ; here is a placeholder's worth of nothing - the index is still chosen,
+    ; because which index over which column follows from the operator and the
+    ; column and not from the value, and only the arithmetic waits.
+    mov ARG1, [rbp - 24]
+    lea ARG2, [rbp - 48]
+    lea ARG3, [rbp - 56]
+    call sql_index_bounds
+    test eax, eax
+    jz .no
+    mov r11, [rbp - 24]
 
     ; An index of this table, over this column.
     mov r10, [rbp - 16]
@@ -3442,6 +3492,18 @@ plan_index_eq:
     mov rax, [rbp - 56]
     mov [r10 + PLAN_INDEX_HI], rax
     or qword [r10 + PLAN_FLAGS], PLAN_FLAG_INDEX_SEEK
+
+    ; If this comparison is the one holding a placeholder, the bounds just
+    ; written are arithmetic on a zero and mean nothing. The node is recorded
+    ; so that execution recomputes them once the value is there.
+    mov rax, [bind_param_bexpr]
+    test rax, rax
+    jz .seek_ready
+    cmp rax, [rbp - 24]
+    jne .seek_ready
+    mov [r10 + PLAN_INDEX_PARAM_BEXPR], rax
+    or qword [r10 + PLAN_FLAGS], PLAN_FLAG_INDEX_SEEK_PARAM
+.seek_ready:
     mov eax, 1
     FRAME_END
     ret

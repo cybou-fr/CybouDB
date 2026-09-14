@@ -61,6 +61,7 @@ extern db_pax_mark_dead, db_pax_dead_total
 extern db_catalog_put_index, db_catalog_set_index_root, db_index_of_table
 extern db_catalog_put_queue, db_queue_push, db_queue_pop, db_queue_peek
 extern db_queue_retire_all
+extern sql_index_bounds
 extern db_catalog_put_stream, db_stream_retire_all, db_stream_append
 extern db_stream_cursor_add, db_stream_cursor_drop
 extern db_stream_peek, db_stream_read, db_stream_trim
@@ -570,6 +571,8 @@ eval_predicate_encoded:
 ;  on after that, and they do.
 ; -----------------------------------------------------------------------------
 sql_params_apply_predicates:
+    FRAME_BEGIN 32, 0
+    mov     [rbp - 8], ARG1
     mov     r10, ARG1
     test    r10, r10
     jz      .ok
@@ -628,11 +631,34 @@ sql_params_apply_predicates:
 .more:
     test    rcx, rcx
     jnz     .next
+
+    ; The index seek's key bounds, when they are arithmetic on a value that
+    ; has just arrived. Which index the plan uses was decided at bind time and
+    ; stays decided; only the range moves, and it is recomputed by the same
+    ; routine the binder uses so the two cannot disagree.
+    mov     r10, [rbp - 8]
+    test    qword [r10 + PLAN_FLAGS], PLAN_FLAG_INDEX_SEEK_PARAM
+    jz      .ok
+    mov     ARG1, [r10 + PLAN_INDEX_PARAM_BEXPR]
+    test    ARG1, ARG1
+    jz      .ok
+    lea     ARG2, [rbp - 16]
+    lea     ARG3, [rbp - 24]
+    call    sql_index_bounds
+    test    eax, eax
+    jz      .ok                         ; the binder would not have set the flag
+    mov     r10, [rbp - 8]
+    mov     rax, [rbp - 16]
+    mov     [r10 + PLAN_INDEX_LO], rax
+    mov     rax, [rbp - 24]
+    mov     [r10 + PLAN_INDEX_HI], rax
 .ok:
     xor     eax, eax
+    FRAME_END
     ret
 .unbound:
     mov     eax, 1
+    FRAME_END
     ret
 
 ; -----------------------------------------------------------------------------

@@ -452,6 +452,8 @@
 ; The bounds are inclusive and both always present: an equality is the case
 ; where they are equal, and an open side is the extreme of the key's range.
 %define PLAN_FLAG_INDEX_SEEK 16
+; The seek's bounds are recomputed per execution from PLAN_INDEX_PARAM_BEXPR.
+%define PLAN_FLAG_INDEX_SEEK_PARAM 32
 %define PLAN_INDEX_ID       288         ; the index that lookup uses
 %define PLAN_INDEX_LO       296         ; the lowest key it wants
 %define PLAN_INDEX_HI       304         ; and the highest
@@ -495,6 +497,12 @@
 %define PLAN_PARAM_SLOTS     352        ; qword: SQL_MAX_PARAMS slots, or 0
 %define PLAN_PARAM_BUF       360        ; qword: copy buffer, or 0
 %define PLAN_PARAM_COUNT     368        ; qword: placeholders this plan holds
+; The comparison node an index seek takes its key bounds from, when those
+; bounds cannot be computed until a parameter is bound. Zero otherwise. The
+; index the plan chose is still the plan's - which index, over which column,
+; is decided by the operator and the column and not by the value - and only
+; the arithmetic on the value moves to execution.
+%define PLAN_INDEX_PARAM_BEXPR 376
 
 ; One parameter. The first three fields are what the binder resolved - where
 ; the value goes and what it has to be - and are written once; the rest is what

@@ -42,6 +42,11 @@
    looked at, how many were skipped outright, how many were taken whole. If a
    bound predicate had lost its pruning it would still return the right rows,
    and it would read the table to do it. */
+/* How many times a scan entered an index tree instead of reading the table.
+   The second gate: a bound predicate should reach the index the literal one
+   reaches, and reach it the same number of times. */
+extern unsigned long long index_lookups;
+
 extern int sql_zone_trace;
 extern uint64_t sql_zone_leaf_total, sql_zone_leaf_none, sql_zone_leaf_all;
 extern uint64_t sql_zone_leaf_unknown;
@@ -517,6 +522,119 @@ int main(int argc, char **argv) {
         }
         sql_zone_trace = 0;
     }
+
+    /* --- the second gate: a bound predicate must use the index ------------ */
+    /* Two thousand rows, not five. A range seek is only taken when the range
+       names fewer entries than the table has row groups - on a five-row table
+       the index is never worth it and every range would fall back to a scan,
+       which would make the gate below agree about nothing. */
+    check("an indexed table",
+          cyboudb_exec(db, "CREATE TABLE b_idx (id INT64 NOT NULL, v INT64)")
+              == CybouDB_OK);
+    {
+        int i, made = 1;
+        char z[8192];
+        for (i = 0; i < 2000 && made; i += 200) {
+            int j, n = sprintf(z, "INSERT INTO b_idx VALUES ");
+            for (j = 0; j < 200; j++) {
+                n += sprintf(z + n, "%s(%d, %d)", j ? ", " : "",
+                             i + j, (i + j) * 10);
+            }
+            if (cyboudb_exec(db, z) != CybouDB_OK) made = 0;
+        }
+        check("two thousand rows and an index over them", made &&
+              cyboudb_exec(db, "CREATE UNIQUE INDEX b_idx_id ON b_idx (id)")
+                  == CybouDB_OK);
+    }
+    {
+        struct { const char *bound; const char *literal; long long v;
+                 int rows; } pair[] = {
+            { "SELECT v FROM b_idx WHERE id = ?",
+              "SELECT v FROM b_idx WHERE id = 3",  3, 1 },
+            { "SELECT v FROM b_idx WHERE id = ?",
+              "SELECT v FROM b_idx WHERE id = 99999", 99999, 0 },
+            { "SELECT v FROM b_idx WHERE id > ?",
+              "SELECT v FROM b_idx WHERE id > 1997",  1997, 2 },
+            { "SELECT v FROM b_idx WHERE id <= ?",
+              "SELECT v FROM b_idx WHERE id <= 1", 1, 2 },
+        };
+        size_t i;
+        for (i = 0; i < sizeof pair / sizeof pair[0]; i++) {
+            unsigned long long lk_l, lk_b;
+            int rows_l = 0, rows_b = 0;
+            long long sum_l = 0, sum_b = 0;
+
+            lk_l = index_lookups;
+            if (cyboudb_prepare(db, pair[i].literal, &st) == CybouDB_OK) {
+                while (cyboudb_step(st) == CybouDB_ROW) {
+                    rows_l++; sum_l += cyboudb_column_int64(st, 0);
+                }
+                cyboudb_finalize(st);
+                st = NULL;
+            }
+            lk_l = index_lookups - lk_l;
+
+            lk_b = index_lookups;
+            if (cyboudb_prepare(db, pair[i].bound, &st) == CybouDB_OK) {
+                if (cyboudb_bind_int64(st, 0, pair[i].v) == CybouDB_OK) {
+                    while (cyboudb_step(st) == CybouDB_ROW) {
+                        rows_b++; sum_b += cyboudb_column_int64(st, 0);
+                    }
+                }
+                cyboudb_finalize(st);
+                st = NULL;
+            }
+            lk_b = index_lookups - lk_b;
+
+            check(pair[i].literal,
+                  rows_l == pair[i].rows && rows_b == rows_l && sum_b == sum_l);
+            /* Non-vacuity: the literal form must actually have used the index,
+               or "the same number of lookups" is zero equals zero. */
+            check("  the literal form used the index", lk_l > 0);
+            check("  and the bound form used it the same number of times",
+                  lk_b == lk_l);
+        }
+    }
+
+    /* Re-binding must move the seek, not repeat it. A plan that had kept the
+       first execution's key bounds would return the first row again. */
+    check("a prepared indexed lookup, stepped with three different keys",
+          cyboudb_prepare(db, "SELECT v FROM b_idx WHERE id = ?", &st)
+              == CybouDB_OK);
+    if (st) {
+        long long got[3] = { -1, -1, -1 };
+        long long want[3] = { 20, 50, 10 };
+        long long keys[3] = { 2, 5, 1 };
+        int i, ok = 1;
+        for (i = 0; i < 3; i++) {
+            if (cyboudb_bind_int64(st, 0, keys[i]) != CybouDB_OK) ok = 0;
+            if (cyboudb_step(st) == CybouDB_ROW) got[i] = cyboudb_column_int64(st, 0);
+            if (cyboudb_reset(st) != CybouDB_OK) ok = 0;
+        }
+        check("each key finds its own row",
+              ok && got[0] == want[0] && got[1] == want[1] && got[2] == want[2]);
+    }
+    cyboudb_finalize(st);
+    st = NULL;
+
+    /* The saturated bounds. `> the largest key` and `< the smallest` cannot be
+       widened by one without overflowing, and the engine answers them with the
+       key itself - a range that is a superset of nothing, filtered by the
+       kernel. What matters is the row count, which must be zero. */
+    check("a bound key at the top of the range matches nothing",
+          cyboudb_prepare(db, "SELECT v FROM b_idx WHERE id > ?", &st)
+              == CybouDB_OK &&
+          cyboudb_bind_int64(st, 0, 9223372036854775807LL) == CybouDB_OK &&
+          cyboudb_step(st) == CybouDB_DONE);
+    cyboudb_finalize(st);
+    st = NULL;
+    check("and one at the bottom likewise",
+          cyboudb_prepare(db, "SELECT v FROM b_idx WHERE id < ?", &st)
+              == CybouDB_OK &&
+          cyboudb_bind_int64(st, 0, -9223372036854775807LL - 1) == CybouDB_OK &&
+          cyboudb_step(st) == CybouDB_DONE);
+    cyboudb_finalize(st);
+    st = NULL;
 
     /* --- UPDATE and DELETE: the rest of the CRUD path --------------------- */
     check("a table to mutate",
