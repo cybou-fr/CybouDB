@@ -29,6 +29,11 @@ What this reads:
     made the decision consciously;
   * routines are top-level labels; `.local` labels belong to the routine above
     them, which is how a jump target that shares a body is handled;
+  * a `%macro` body is not a routine. Its writes are charged to whatever
+    routine invokes it, because that is where the saving has to happen - the
+    crypto code keeps its accumulators in callee-saved registers inside macros
+    defined above the routine that uses them, and reading those bodies as
+    stray code reported five bugs that were not there;
   * RDI and RSI are only the caller's on Windows, so code that cannot be
     assembled for Windows is exempt: `src/platform/linux/` entirely, and any
     `%ifdef CybouDB_LINUX` / `%ifndef CybouDB_WINDOWS` region elsewhere. RBX
@@ -81,11 +86,44 @@ PUSH_RE = re.compile(r"^\s*push\s+([a-z][a-z0-9]*)\s*$")
 # not a save - it is a use - and reading it as one hid a live bug in the REPL.
 STORE_RE = re.compile(r"^\s*mov\s+\[\s*r[bs]p\s*[-+][^\]]*\]\s*,\s*([a-z][a-z0-9]*)\s*$")
 LABEL_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_$#@~.?]*):")
+MACRO_RE = re.compile(r"^\s*%macro\s+([A-Za-z_][A-Za-z0-9_]*)\s", re.I)
+ENDMACRO_RE = re.compile(r"^\s*%endmacro", re.I)
+INVOKE_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\b")
+
+
+def macro_writes(path):
+    """Which callee-saved registers each macro in this file writes."""
+    writes, current = {}, None
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for raw in fh:
+            line = raw.split(";")[0].rstrip()
+            m = MACRO_RE.match(line)
+            if m:
+                current = m.group(1)
+                writes[current] = set()
+                continue
+            if ENDMACRO_RE.match(line):
+                current = None
+                continue
+            if current is None:
+                continue
+            m = WRITE_RE.match(line)
+            if not m:
+                continue
+            op, dst = m.group(1), m.group(2)
+            if op not in WRITES and not op.startswith("set"):
+                continue
+            reg = CANON.get(dst)
+            if reg is not None:
+                writes[current].add(reg)
+    return writes
 
 
 def scan(path):
     """Report (routine, register, line) for each unsaved write."""
     findings = []
+    macros = macro_writes(path)
+    in_macro = False
     routine, first_line = os.path.basename(path), 0
     saved, written = set(), {}
     # A stack of booleans: is the region we are inside assembled for Windows?
@@ -116,6 +154,23 @@ def scan(path):
             if stripped.startswith("%endif"):
                 if len(windows) > 1:
                     windows.pop()
+                continue
+
+            if MACRO_RE.match(line):
+                in_macro = True
+                continue
+            if ENDMACRO_RE.match(line):
+                in_macro = False
+                continue
+            if in_macro:
+                continue                # charged to the caller, below
+
+            m = INVOKE_RE.match(line)
+            if m and m.group(1) in macros:
+                for reg in macros[m.group(1)]:
+                    if reg in WINDOWS_ONLY and not windows[-1]:
+                        continue
+                    written.setdefault(reg, n)
                 continue
 
             m = LABEL_RE.match(line)

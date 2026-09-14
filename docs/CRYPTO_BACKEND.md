@@ -193,7 +193,8 @@ official vectors does not ship.
 | :--- | :--- |
 | ~~a vectorised ChaCha20, measured~~ | done: 2.25 GB/s with AVX2, 1.49 with SSE2, and the expectation it was testing turned out to be 1.75x optimistic |
 | ~~a parallel Poly1305~~ | done: four chains with precomputed powers, 1.6x, and a sealed page at 2.6 µs |
-| an assembly implementation | **the cipher is done**: `src/crypto/chacha20.asm` runs three blocks interleaved, 1.6 GB/s, matching the C four-block version. Held to RFC 8439 and to a C reference at every length from 0 to 600, and to Win64's register contract by `tests/chacha20_abi.asm`. The MAC is still C |
+| an assembly implementation | **both halves exist now**: `src/crypto/chacha20.asm` runs three blocks interleaved at 1.6 GB/s, and `src/crypto/poly1305.asm` is the serial MAC at 2.2 GB/s. Each is held to its RFC 8439 vector and to an independent C reference at every length from 0 to 600, and the cipher to Win64's register contract by `tests/chacha20_abi.asm` |
+| the four-chain MAC in assembly | the serial one matches the serial C; the four-chain C is 1.6x faster, and that is the version a page seal should use |
 | XChaCha20 and the AEAD wiring in assembly | the C probe measures the pieces; nothing yet computes a whole sealed page in the engine's own language |
 | XChaCha20's own vectors | the HChaCha20 construction has published test vectors of its own; ChaCha20's do not cover it |
 | a Poly1305 one-time-key derivation check | the AEAD derives its MAC key from the cipher; that wiring has its own vector in RFC 8439 section 2.8.2 |

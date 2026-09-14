@@ -173,10 +173,11 @@ jobs:
           python3 tests/lease_format_tests.py ./cyboudb ./build/cyboudb_nolease
           python3 tests/lease_sql_tests.py ./cyboudb
 
-      - name: The assembly cipher against RFC 8439 and against C
+      - name: The assembly cipher and MAC, against RFC 8439 and against C
         run: |
           sh build.sh --crypto-tests
           ./build/chacha20_test
+          ./build/poly1305_test
 
       - name: Interactive REPL and pipe tests
         run: python3 tests/repl_tests.py ./cyboudb
@@ -399,6 +400,7 @@ jobs:
           build\leased_worker_example.exe
           call build.bat --crypto-tests
           build\chacha20_test.exe
+          build\poly1305_test.exe
           if errorlevel 1 exit /b 1
 
       # Split the way the other two-binary steps are: the build under cmd, the
