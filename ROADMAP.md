@@ -597,9 +597,8 @@ the release, not after it.
 ```text
  1. Threat model                     docs/ENCRYPTION.md          done
  2. Format design                    docs/ENCRYPTED_FORMAT.md    done
-2.5 Encrypted I/O spike              MAP_SHARED vs MAP_PRIVATE vs
-                                     read_at/write_at + page cache; plaintext
-                                     zero-regression; commit cost with seals
+2.5 Encrypted I/O spike              done - benchmarks/results/
+                                     2026-09-15-encrypted-io.md
  3. Reference crypto backend         nonce-misuse-resistant AEAD required
                                      unless uniqueness is proved across crash
                                      and retry; ML-KEM, ML-DSA candidate, KDF,

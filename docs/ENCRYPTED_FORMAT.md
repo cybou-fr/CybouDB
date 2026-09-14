@@ -451,14 +451,33 @@ B  MAP_PRIVATE + explicit writes    the address space cannot reach the file
 C  read_at / write_at + a bounded plaintext page cache
 ```
 
-**B is in the list to be eliminated on evidence rather than by argument.** A
-private mapping does stop the engine's stores from reaching the file, and it
-does not solve reading: the page arrives as ciphertext, and something has to
-turn it into plaintext before the first dereference. Without a page-access
-boundary the only remaining shapes are *decrypt the whole database at open* or
-platform-specific fault handling, and neither is a storage engine this project
-wants to own. C is the expected answer; the spike exists so that expectation
-has to survive contact with numbers.
+**B was in the list to be eliminated on evidence rather than by argument**, and
+it was: a private mapping reads *exactly* like a shared one, because for reads
+it is one. It stops the engine's stores from reaching the file and does nothing
+about the page arriving as the file's bytes, which is the half that matters
+here. No cost, no benefit, not the architecture.
+
+**The spike is done**, and C is the architecture:
+[2026-09-15-encrypted-io.md](../benchmarks/results/2026-09-15-encrypted-io.md).
+The results that change this document rather than confirm it:
+
+* **the dispatch is free** - the same read behind a function pointer stays
+  inside the run-to-run noise of the read itself, so a plaintext database pays
+  nothing for the existence of the encrypted path;
+* **the hit path costs 2x to 5x a pointer dereference**, which a release can
+  carry; **a miss costs 850 ns on tmpfs and 3.3 us on NTFS**, which decides
+  everything;
+* **the cryptography is amortised and the architecture is not.** At a 96.6% hit
+  rate the transform added 2 to 3 ns per access; at 10.9% it added 650. Same
+  code, a factor of 200, decided by the cache. The cost of encryption in this
+  engine is a memory-budget question wearing a cipher's clothes;
+* **a scan costs 478 to 496 ns per page through the cache against 137 through
+  the mapping**, at the hit rate that makes point access cost 80. A sequential
+  sweep evicts what it just brought in.
+
+So two things join the design that were not in it: **a page-cache budget as a
+first-class setting**, and **a scan path that does not evict everything it
+touches**. Neither is a tuning knob; both are shapes the engine has to have.
 
 What it has to report, per architecture:
 
