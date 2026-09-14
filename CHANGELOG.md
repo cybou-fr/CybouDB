@@ -99,6 +99,14 @@ out through `cyboudb_message`, the way a `DEQUEUE`'s do. A lease refusal has an
 error code of its own, because a stale ticket is what a worker whose lease was
 reclaimed is told rather than a programming mistake.
 
+`examples/leased_worker.c` is the loop, built and run by CI on both platforms.
+It sits beside `examples/worker.c` rather than replacing it, because that one
+argues the case leases do not fit - work short enough to finish inside the
+transaction that records it. The new one runs the semantics rather than
+describing them, including both halves of the lapsed lease: the late `ACK` that
+is accepted because nobody re-claimed the message, and the one that is refused
+because somebody did.
+
 ### Parameter binding
 
 `INSERT ... VALUES`, `WHERE` comparisons in `SELECT`, `UPDATE` and `DELETE`,
