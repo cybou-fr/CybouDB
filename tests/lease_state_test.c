@@ -45,6 +45,8 @@ void cyboudb_test_mem_free(void *ptr, size_t size) { (void)size; free(ptr); }
 #define Q_TAIL_OFF      48
 #define Q_CLAIM_OFF     56
 #define Q_NAME_OFF      64
+#define Q_AUX_ROOT_OFF  104
+#define Q_DIR_ROOT_OFF  112
 #define Q_TIME_FLOOR_OFF 120
 #define Q_ENTRIES_OFF   128
 
@@ -295,6 +297,29 @@ int main(int argc, char **argv) {
         db_catalog_seal(plain.qpage);
         check("both intact once it is put back",
               integrity_accepts(leased.path) && integrity_accepts(plain.path));
+    }
+
+    /* The two pointers the queue page now names. Both are zero until an engine
+       builds an index, with leases and without - see docs/QUEUE.md, "Where the
+       summary lives". Q_DIR_ROOT is not the leases feature's to use at all:
+       it belongs to a second directory level, and the queue that outgrows 495
+       segments is the one that most needs a bounded claim search. */
+    {
+        int i;
+        int offs[2] = { Q_AUX_ROOT_OFF, Q_DIR_ROOT_OFF };
+        const char *names[2] = { "a lease index root", "a second directory root" };
+        for (i = 0; i < 2; i++) {
+            char label[200];
+            put64(leased.qpage, offs[i], 12345);
+            db_catalog_seal(leased.qpage);
+            snprintf(label, sizeof label,
+                     "%s is refused until something builds one", names[i]);
+            check(label, !integrity_accepts(leased.path));
+            put64(leased.qpage, offs[i], 0);
+            db_catalog_seal(leased.qpage);
+        }
+        check("and the queue is intact with both at zero",
+              integrity_accepts(leased.path));
     }
 
     /* A claim cursor running ahead is the one thing a database without leases

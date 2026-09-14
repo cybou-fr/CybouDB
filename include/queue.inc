@@ -26,9 +26,21 @@
 %define Q_CLAIM 56
 %define Q_NAME 64                        ; aliases CAT_TABLE_NAME: one namespace
 %define Q_FIRST_SEG 96                   ; the segment index entry zero names
-; 16 bytes, zero. Room for what a second level of segment directory would need
-; when 495 segments stops being enough, which is the road PAX already took.
-%define Q_RESERVED2 104
+; The page holding the internal nodes of the lease index, or zero for a queue
+; that has none - which is legal, and means a claim searches by walking. A few
+; segments need no tree; the threshold at which one is built is a tuning
+; decision and is not in the file, which is what keeps it changeable.
+;
+; Zero and unused until an engine builds one.
+%define Q_AUX_ROOT 104                   ; u64, zero
+; What a second level of segment directory would need when 495 segments stops
+; being enough, which is the road PAX already took. Leases took the first half
+; of what used to be sixteen reserved bytes and deliberately left this: the
+; queue that outgrows 495 segments is the one that most needs a bounded claim
+; search, so a format letting either eat the other's bytes would have made that
+; combination the one it could not express.
+%define Q_DIR_ROOT 112                   ; u64, zero
+%define Q_RESERVED2 Q_AUX_ROOT           ; the pair, for the checks that span it
 ; The largest time this queue has ever used, in milliseconds since the Unix
 ; epoch. Reserved and zero until leases exist. A lease deadline is wall-clock
 ; time, because it is the only clock that still means anything after the crash
@@ -60,7 +72,20 @@
 %define QSEG_GENERATION 16
 %define QSEG_OWNER 24                    ; the queue id
 %define QSEG_FIRST 32                    ; the first position this segment holds
-%define QSEG_RESERVED 40                 ; 24 bytes, zero
+; When this segment next has something claimable: zero if it holds a free
+; message, the least deadline among its claims if it holds only claims, and
+; UINT64_MAX if it holds neither. One u64 that answers the only question a
+; search asks, and one a lapse changes without anything writing to it.
+;
+; It lives here rather than in a central index because every operation that
+; changes a slot is already rewriting this page - see docs/QUEUE.md, "Where the
+; summary lives", and the measurement it cites.
+;
+; Zero and unused until an engine builds the index. The check that it is zero
+; becomes conditional at that point, the way Q_TIME_FLOOR's did, and is not
+; deleted.
+%define QSEG_READY_AT 40                 ; u64, zero
+%define QSEG_RESERVED 48                 ; 16 bytes, zero
 %define QSEG_SLOTS 64
 %define QSEG_CRC 4092
 

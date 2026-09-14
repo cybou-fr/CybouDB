@@ -219,11 +219,14 @@ db_queue_segments_valid:
     mov rdx, [r11 + QSV_OWNER]
     cmp [r10 + QSEG_OWNER], rdx
     jne .bad                        ; a segment answers to the object naming it
+    ; Where the segment's claimable summary will go. Zero until an engine
+    ; builds the index; the check becomes conditional on QUEUE_LEASES then,
+    ; the way Q_TIME_FLOOR's did, and is not deleted.
+    cmp qword [r10 + QSEG_READY_AT], 0
+    jne .bad
     cmp qword [r10 + QSEG_RESERVED], 0
     jne .bad
     cmp qword [r10 + QSEG_RESERVED + 8], 0
-    jne .bad
-    cmp qword [r10 + QSEG_RESERVED + 16], 0
     jne .bad
     mov rax, [rbp - 16]
     add rax, [r11 + QSV_FIRST_SEG]

@@ -111,7 +111,8 @@ then:
 | 56 | 8 | `claim`: the position the next claim would take. Reserved |
 | 64 | 32 | Name, NUL-padded, sharing the table namespace |
 | 96 | 8 | First segment index the directory names |
-| 104 | 16 | Reserved, zero: room for a second level of directory |
+| 104 | 8 | `Q_AUX_ROOT`: the lease index page, or zero. Reserved, zero |
+| 112 | 8 | `Q_DIR_ROOT`: a second level of directory. Reserved, zero |
 | 120 | 8 | `Q_TIME_FLOOR`: the largest time this queue has used. Reserved, zero |
 | 128 | 8 per entry | Segment page ids, in segment order |
 | 4092 | 4 | CRC-32C over bytes `[0, 4092)` |
@@ -138,7 +139,8 @@ An ordinary payload page, allocated and retired like any other.
 | 16 | 8 | Creation generation |
 | 24 | 8 | Owner: the queue id |
 | 32 | 8 | The first position this segment holds |
-| 40 | 24 | Reserved, zero |
+| 40 | 8 | `QSEG_READY_AT`: when this segment next has something. Reserved, zero |
+| 48 | 16 | Reserved, zero |
 | 64 | 64 per slot | 62 message slots |
 | 4032 | 60 | Reserved, zero |
 | 4092 | 4 | CRC-32C over bytes `[0, 4092)` |
@@ -804,10 +806,126 @@ a segment and not by the backlog. The ceiling is an `ack` in a segment whose
 claims all share one deadline - 62 slots every time, still flat, and not a
 shape a real workload produces, since workers claim at different moments.
 
-**Nothing on disk is decided.** `ready_at` would sit in `QSEG_RESERVED`, and a
-root pointer would want part of `Q_RESERVED2` - which is reserved for a second
-directory level and cannot be taken on a benchmark's say-so. That is the next
-design commit.
+### Where the summary lives
+
+Both halves are measured - the search in
+[2026-09-14-lease-ready-at-tree.md](../benchmarks/results/2026-09-14-lease-ready-at-tree.md),
+the maintenance in the same file - so the bytes can be assigned. This is the
+part that cannot be revised after the first file carries it, so it is written
+here before it is written anywhere else.
+
+#### Leaves live where the data is
+
+`ready_at` goes in the **segment page**, at offset 40, taking the first eight of
+the twenty-four bytes `QSEG_RESERVED` holds:
+
+| Offset | Bytes | Field |
+| ---: | ---: | --- |
+| 32 | 8 | The first position this segment holds |
+| 40 | 8 | `QSEG_READY_AT`. Zero without `QUEUE_LEASES` |
+| 48 | 16 | Reserved, zero |
+| 64 | 64 per slot | 62 message slots |
+
+Not in a central index, and that is the decision the maintenance measurement
+paid for. Every operation that changes a slot is already rewriting that
+segment's page, so a summary stored there costs nothing to write. A summary
+mirrored into an index page would make every enqueue rewrite two pages instead
+of one, to save a read the search does eight times at most.
+
+It moves no slot. The twenty-four reserved bytes were there for this kind of
+thing, and sixteen of them still are.
+
+#### Internal nodes live in one page of their own
+
+73 `u64` - 64 + 8 + 1 - is 584 bytes, and the queue page has four bytes left
+between its last directory entry and its checksum. So the nodes need a page,
+and it is an ordinary directory-reachable page owned by the queue, proved by
+the commit like everything else:
+
+| Offset | Bytes | Field |
+| ---: | ---: | --- |
+| 0 | 4 | Magic `ASQX`, as every page whose low three bytes are `ASQ` |
+| 4 | 4 | Page format version, 1 |
+| 8 | 8 | Physical page id |
+| 16 | 8 | Creation generation |
+| 24 | 8 | Owner: the queue's id |
+| 32 | 8 | Reserved, zero |
+| 40 | 8 | The root |
+| 48 | 64 | 8 nodes, each over 64 leaves |
+| 112 | 512 | 64 nodes, each over 8 leaves |
+| 624 | 3468 | Reserved, zero: room for a deeper tree |
+| 4092 | 4 | CRC-32C over `[0, 4092)` |
+
+The reserved tail is deliberate. 512 leaves is exactly the ring a 495-segment
+queue needs; if a second directory level ever raises that ceiling, the tree
+gains a level and the page has room for it without becoming two pages.
+
+#### The queue page keeps two pointers, not one
+
+`Q_RESERVED2` is sixteen bytes that the format reserved for *a second level of
+segment directory*. Leases take half:
+
+| Offset | Bytes | Field |
+| ---: | ---: | --- |
+| 104 | 8 | `Q_AUX_ROOT`: the lease index page, or zero |
+| 112 | 8 | `Q_DIR_ROOT`: still reserved, still zero |
+
+Taking all sixteen would have been the easy thing and would have spent someone
+else's reservation. The queue that outgrows 495 segments is the queue that most
+needs a bounded claim search, so the two capabilities are likeliest to be
+wanted together - and a format that let one of them eat the other's bytes would
+have made that combination the one it could not express.
+
+#### Zero means there is no index
+
+`Q_AUX_ROOT == 0` is legal in a queue that has leases, and means the search
+falls back to the walk. A queue of a few segments does not need a page, a tree
+or a maintenance rule, and the walk over it is bounded by how small it is.
+
+The engine builds the index when a queue grows past a threshold in segments.
+**That threshold is a tuning decision and not a format one**: a file written
+with a low threshold opens correctly under a build with a high one, because
+what the format says is only *there is an index or there is not*. Nothing about
+the threshold is in the file, which is what keeps it changeable.
+
+This is the same distinction the capability bit is built on, one level down:
+having an index and being able to have one are different facts.
+
+#### What the validator will have to prove
+
+Stated now so that step 6's table has a place to grow into rather than being
+reopened:
+
+```text
+without QUEUE_LEASES     Q_AUX_ROOT == 0
+                         every QSEG_READY_AT == 0
+
+with QUEUE_LEASES        Q_AUX_ROOT == 0, or a page that
+                             carries the ASQX magic,
+                             names itself,
+                             is owned by this queue,
+                             checksums,
+                             and whose reserved tail is zero
+
+                         QSEG_READY_AT agrees with the slots of its own
+                             segment: zero if any is HELD, else the least
+                             deadline among its CLAIMED, else UINT64_MAX
+
+                         each internal node is the minimum of its children,
+                             where a leaf outside the live segment range
+                             reads as UINT64_MAX
+```
+
+The second and third of those are the expensive ones - they are a full walk of
+the queue - so they belong to `cyboudb check` rather than to every commit, for
+the same reason and by the same rule as everything else the integrity check
+owns. A commit proves the pages it wrote; `check` proves the arithmetic.
+
+An index that disagrees with the slots it summarises is **damage, not
+staleness**. There is no legitimate way to produce one: the summary is written
+in the same transaction as the slot it describes, so a file where they differ
+was written by something that does not understand the format, or was damaged
+after it was.
 
 **So the order is the one `preview.2` established: instrument first.** Two
 counters, before any strategy is chosen:
@@ -983,6 +1101,7 @@ single page is written with a non-zero lease state:
 4. open-time validation  QUEUE_LEASES without QUEUE is a refusal               done
 5. an old-reader test    a build that does not know the bit must refuse        done
 6. conditional validation  the state table above, behind the bit            done
+7. the summary's bytes     named and required zero until something writes     done
 ```
 
 Step 5 is the one that makes the rest true rather than intended, and it is done

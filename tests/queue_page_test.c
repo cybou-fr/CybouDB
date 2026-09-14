@@ -48,7 +48,8 @@ void cyboudb_test_mem_free(void *ptr, size_t size) { (void)size; free(ptr); }
 #define QSEG_PAGE_ID_OFF   8
 #define QSEG_OWNER_OFF     24
 #define QSEG_FIRST_OFF     32
-#define QSEG_RESERVED_OFF  40
+#define QSEG_READY_AT_OFF   40
+#define QSEG_RESERVED_OFF  48
 #define QSEG_SLOTS_OFF     64
 #define QSEG_CRC_OFF       4092
 #define QMSG_LENGTH_OFF    0
@@ -290,6 +291,11 @@ int main(int argc, char **argv) {
               { "a segment that names another page",  QSEG_PAGE_ID_OFF,  8, 3, 1 },
               { "a segment owned by another queue",   QSEG_OWNER_OFF,    8, 5, 1 },
               { "a segment starting at another position", QSEG_FIRST_OFF, 8, 62, 1 },
+              /* Where the claimable summary will live, and what is left
+                 reserved beside it. Both must stay zero until an engine
+                 builds the index - a field nothing requires to be zero is a
+                 field the version that starts writing it cannot use. */
+              { "a summary on a segment that has none", QSEG_READY_AT_OFF, 8, 1, 1 },
               { "a reserved field of a segment",      QSEG_RESERVED_OFF, 8, 1, 1 },
               { "a slot, which the checksum covers",  QSEG_SLOTS_OFF + QMSG_LENGTH_OFF, 4, 9, 1 },
               { "a directory entry naming nothing",   Q_ENTRIES_OFF,     8, 0, 0 },
