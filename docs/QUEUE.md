@@ -784,12 +784,30 @@ Measured against the baseline on the same fixtures -
 and `empty` - nothing claimable anywhere - answers from the root alone: one
 summary node, no segment pages, no slots.
 
-**It is still a candidate.** What the summary costs to *maintain* at `ENQUEUE`,
-`CLAIM`, `ACK` and `NACK` is unmeasured, and a summary that is cheap to read
-and expensive to keep is not a win. Nothing on disk is decided: `ready_at`
-would sit in `QSEG_RESERVED`, and a root pointer would want part of
-`Q_RESERVED2` - which is reserved for a second directory level and cannot be
-taken on a benchmark's say-so.
+**And it is cheap to keep**, which was the other half of the question. Only
+two transitions can raise a segment's minimum - claiming the last free message
+in it, and acknowledging the claim that held the earliest deadline - so only
+those pay for a rescan, bounded by the 62 slots of one page that the operation
+is already rewriting. Enqueueing and handing a message back can only lower the
+minimum to zero and need no scan at all. Climbing to the root stops where a
+parent's minimum does not move, so at most three node writes.
+
+| operation | slots re-read, mean (max) | nodes |
+| :--- | ---: | ---: |
+| enqueue | 0 | 0 |
+| claim | ~32 (62) | ≤3 |
+| nack | 0 | ≤3 |
+| ack | 1.0 (62) | ≤3 |
+
+Flat across every depth, which is the whole question: maintenance is bounded by
+a segment and not by the backlog. The ceiling is an `ack` in a segment whose
+claims all share one deadline - 62 slots every time, still flat, and not a
+shape a real workload produces, since workers claim at different moments.
+
+**Nothing on disk is decided.** `ready_at` would sit in `QSEG_RESERVED`, and a
+root pointer would want part of `Q_RESERVED2` - which is reserved for a second
+directory level and cannot be taken on a benchmark's say-so. That is the next
+design commit.
 
 **So the order is the one `preview.2` established: instrument first.** Two
 counters, before any strategy is chosen:

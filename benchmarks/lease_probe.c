@@ -346,6 +346,136 @@ static int tree_scan(uint64_t now, uint64_t *out_position) {
     return 0;
 }
 
+
+/* --- what the summary costs to keep -----------------------------------------
+ *
+ * The search is bounded. The question that could still sink the design is the
+ * other one: a summary cheap to read and expensive to keep is not a win.
+ *
+ * Two costs per operation, and they are different in kind:
+ *
+ *   slots re-read   to recompute a segment's ready_at, when the change could
+ *                   have *raised* the minimum. A change that can only lower it
+ *                   needs no scan at all - enqueueing or handing back a message
+ *                   makes the segment's ready_at zero, and zero is already the
+ *                   floor.
+ *   nodes written   climbing from the segment to the root, stopping as soon as
+ *                   a parent's minimum does not move. Three levels, so three is
+ *                   the ceiling.
+ *
+ * The asymmetry is the whole of it. Only two transitions can raise a segment's
+ * minimum - claiming the last free message in it, and acknowledging the claim
+ * that held the earliest deadline - and only those pay for a rescan.
+ */
+static unsigned long long maint_slots, maint_nodes;
+static unsigned long long maint_ops, maint_slots_max, maint_nodes_max;
+
+/* Climb from a leaf, stopping where the minimum stops moving. */
+static void tree_propagate(int leaf) {
+    int i2 = leaf / 8, i1 = i2 / 8, c;
+    uint64_t m;
+
+    m = UINT64_MAX;
+    for (c = 0; c < 8; c++) if (t_leaf[i2 * 8 + c] < m) m = t_leaf[i2 * 8 + c];
+    if (m == t_l2[i2]) return;
+    t_l2[i2] = m;
+    maint_nodes++;
+
+    m = UINT64_MAX;
+    for (c = 0; c < 8; c++) if (t_l2[i1 * 8 + c] < m) m = t_l2[i1 * 8 + c];
+    if (m == t_l1[i1]) return;
+    t_l1[i1] = m;
+    maint_nodes++;
+
+    m = UINT64_MAX;
+    for (c = 0; c < 8; c++) if (t_l1[c] < m) m = t_l1[c];
+    if (m == t_l0) return;
+    t_l0 = m;
+    maint_nodes++;
+}
+
+/* A change that can only lower the minimum: no scan, just take it. */
+static void tree_lower(uint64_t seg, uint64_t value) {
+    int leaf = (int)(seg & (TREE_LEAVES - 1));
+    if (value >= t_leaf[leaf]) return;
+    t_leaf[leaf] = value;
+    tree_propagate(leaf);
+}
+
+/* A change that may have raised it: the segment has to be read again. */
+static void tree_rescan(uint64_t seg, uint64_t head, uint64_t tail) {
+    int leaf = (int)(seg & (TREE_LEAVES - 1));
+    uint64_t lo = seg * QUEUE_SEG_SLOTS, hi = lo + QUEUE_SEG_SLOTS, p;
+    uint64_t best = UINT64_MAX;
+    if (lo < head) lo = head;
+    if (hi > tail) hi = tail;
+    for (p = lo; p < hi; p++) {
+        unsigned char *s = slot_at(p);
+        uint32_t st;
+        if (!s) continue;
+        maint_slots++;
+        memcpy(&st, s + QMSG_STATE_OFF, 4);
+        if (st == STATE_HELD) { best = 0; break; }   /* the floor; stop early */
+        if (st == STATE_CLAIMED) {
+            uint64_t d = u64(s, QMSG_LEASE_UNTIL_OFF);
+            if (d < best) best = d;
+        }
+    }
+    if (best == t_leaf[leaf]) return;
+    t_leaf[leaf] = best;
+    tree_propagate(leaf);
+}
+
+static void maint_begin(void) { maint_slots = 0; maint_nodes = 0; }
+static void maint_end(void) {
+    maint_ops++;
+    if (maint_slots > maint_slots_max) maint_slots_max = maint_slots;
+    if (maint_nodes > maint_nodes_max) maint_nodes_max = maint_nodes;
+}
+
+/* One operation each, with the maintenance a real implementation would do. */
+static void op_enqueue_like(uint64_t pos, uint64_t head, uint64_t tail) {
+    (void)head; (void)tail;
+    maint_begin();
+    set_state(pos, STATE_HELD, 0, 0);
+    tree_lower(pos / QUEUE_SEG_SLOTS, 0);       /* a free message is the floor */
+    maint_end();
+}
+
+static void op_nack(uint64_t pos, uint64_t head, uint64_t tail) {
+    (void)head; (void)tail;
+    maint_begin();
+    set_state(pos, STATE_HELD, 0, 9);           /* NACK raises the token */
+    tree_lower(pos / QUEUE_SEG_SLOTS, 0);
+    maint_end();
+}
+
+static void op_claim(uint64_t pos, uint64_t head, uint64_t tail) {
+    maint_begin();
+    /* Distinct deadlines, because workers claim at different moments and a
+       summary that only ever sees one deadline is a fixture, not a workload. */
+    set_state(pos, STATE_CLAIMED, FUTURE + pos, 5);
+    /* Taking the last free message in a segment raises its minimum, and
+       nothing short of reading the segment can tell whether it was the last -
+       though the scan stops at the first free one it finds, which is why this
+       is cheap while the segment still has any. */
+    tree_rescan(pos / QUEUE_SEG_SLOTS, head, tail);
+    maint_end();
+}
+
+static void op_ack(uint64_t pos, uint64_t head, uint64_t tail) {
+    uint64_t seg = pos / QUEUE_SEG_SLOTS;
+    int leaf = (int)(seg & (TREE_LEAVES - 1));
+    unsigned char *s = slot_at(pos);
+    uint64_t was = s ? u64(s, QMSG_LEASE_UNTIL_OFF) : 0;
+    maint_begin();
+    set_state(pos, STATE_ACKED, 0, 6);
+    /* Only the claim that held the earliest deadline can raise the minimum.
+       Acknowledging any other one changes nothing the summary can see. */
+    if (was == t_leaf[leaf]) tree_rescan(seg, head, tail);
+    maint_end();
+}
+
 int main(int argc, char **argv) {
     cyboudb_db *db = NULL;
     static unsigned char image[4096];
@@ -426,6 +556,76 @@ int main(int argc, char **argv) {
             return 1;
         }
     }
+    /* --- and what keeping the summary costs ---------------------------- */
+    if (!strcmp(want, "all")) {
+        uint64_t head, tail, n, slots[4], nodes[4], smax[4], nmax[4], count = 0;
+        /* In the order seq[] runs them, which is the order a worker does:
+           take a free message, claim it, hand it back, claim and finish. */
+        const char *names[4] = { "enqueue", "claim", "nack", "ack" };
+        int k;
+
+        for (k = 0; k < 4; k++) { slots[k] = nodes[k] = smax[k] = nmax[k] = 0; }
+
+        /* The cycle a worker actually runs, over a queue that starts with
+           everything free: take a message, hand it back, take it again,
+           finish it. Measuring each verb against a fixture built for it would
+           measure the fixture. */
+        shape("front", depth);
+        head = u64(qpage, Q_HEAD_OFF);
+        tail = u64(qpage, Q_TAIL_OFF);
+        tree_build(head, tail);
+        for (n = head; n < tail; n++) {
+            void (*seq[4])(uint64_t, uint64_t, uint64_t) = {
+                op_enqueue_like, op_claim, op_nack, op_ack };
+            /* enqueue-like first so the slot is free, then claim, hand back,
+               and claim-then-ack; nack is measured where it belongs. */
+            for (k = 0; k < 4; k++) {
+                if (k == 3) op_claim(n, head, tail);   /* ack needs a claim */
+                maint_slots = 0; maint_nodes = 0;
+                seq[k](n, head, tail);
+                slots[k] += maint_slots;
+                nodes[k] += maint_nodes;
+                if (maint_slots > smax[k]) smax[k] = maint_slots;
+                if (maint_nodes > nmax[k]) nmax[k] = maint_nodes;
+            }
+            count++;
+        }
+
+        printf("\n| operation | depth | ops | slots re-read, mean (max) | nodes written, mean (max) |\n");
+        printf("| :--- | ---: | ---: | ---: | ---: |\n");
+        for (k = 0; k < 4; k++) {
+            printf("| %s | %llu | %llu | %.2f (%llu) | %.2f (%llu) |\n",
+                   names[k], (unsigned long long)depth,
+                   (unsigned long long)count,
+                   count ? (double)slots[k] / (double)count : 0.0,
+                   (unsigned long long)smax[k],
+                   count ? (double)nodes[k] / (double)count : 0.0,
+                   (unsigned long long)nmax[k]);
+        }
+
+        /* And the worst case for a summary keyed on a minimum: every claim in
+           a segment sharing one deadline, so acknowledging any of them is
+           acknowledging the minimum and forces a rescan every time. */
+        {
+            uint64_t s_total = 0, s_max = 0, ops = 0;
+            shape("live", depth);
+            head = u64(qpage, Q_HEAD_OFF);
+            tail = u64(qpage, Q_TAIL_OFF);
+            tree_build(head, tail);
+            for (n = head; n + 1 < tail; n++) {
+                maint_slots = 0; maint_nodes = 0;
+                op_ack(n, head, tail);
+                s_total += maint_slots;
+                if (maint_slots > s_max) s_max = maint_slots;
+                ops++;
+            }
+            printf("| ack, one shared deadline | %llu | %llu | %.2f (%llu) | - |\n",
+                   (unsigned long long)depth, (unsigned long long)ops,
+                   ops ? (double)s_total / (double)ops : 0.0,
+                   (unsigned long long)s_max);
+        }
+    }
+
     cyboudb_close(db);
     return 0;
 }

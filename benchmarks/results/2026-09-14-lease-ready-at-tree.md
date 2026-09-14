@@ -93,13 +93,72 @@ kind of thing that would have produced a fast wrong answer.
 
 ---
 
-## What is not measured, and what is not decided
+## What it costs to keep
 
-The tree is **built** outside the measured region, because in the engine the
-summary is maintained where the segment page is already being rewritten - it is
-not work a claim does. What that maintenance costs at `ENQUEUE`, `CLAIM`, `ACK`
-and `NACK` is its own measurement, and it is the one that could still sink this
-design: a summary that is cheap to read and expensive to keep is not a win.
+The measurement that could have sunk this. A summary cheap to read and
+expensive to keep is not a win, so the other half is what each operation pays
+to leave the tree correct.
+
+Two costs, different in kind. **Slots re-read**, when a change could have
+*raised* a segment's minimum - and only two transitions can, claiming the last
+free message in a segment and acknowledging the claim that held the earliest
+deadline. A change that can only lower the minimum needs no scan at all:
+enqueueing or handing a message back makes the segment's `ready_at` zero, and
+zero is the floor. **Nodes written**, climbing to the root and stopping as soon
+as a parent's minimum does not move; three levels, so three is the ceiling.
+
+Measured over the cycle a worker actually runs - take a free message, claim it,
+hand it back, claim it again, finish it - across the whole queue:
+
+| operation | 100 | 1,000 | 10,000 | 29,700 | nodes |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| enqueue | 0 | 0 | 0 | 0 | 0 |
+| claim | 27.9 (62) | 32.3 (62) | 32.4 (62) | 32.5 (62) | ≤3 |
+| nack | 0 | 0 | 0 | 0 | ≤3 |
+| ack | 1.0 (62) | 1.0 (62) | 1.0 (62) | 1.0 (62) | ≤3 |
+
+Slots re-read, mean with the maximum in brackets. **Flat across depth**, which
+is the whole question: maintenance is bounded by a segment, not by the backlog.
+
+`enqueue` and `nack` are free of scans by construction. `claim` averages about
+half a segment because the rescan stops at the first free message it finds, and
+pays the full 62 only when it took the last one. `ack` averages one slot
+because while a segment still holds a free message its minimum is zero and
+acknowledging a claim cannot move it - the scan is entered only when the
+acknowledged claim *was* the minimum.
+
+**The worst case, stated rather than hidden:** when every claim in a segment
+shares one deadline, acknowledging any of them is acknowledging the minimum, so
+every `ack` rescans:
+
+| | 100 | 1,000 | 10,000 | 29,700 |
+| :--- | ---: | ---: | ---: | ---: |
+| ack, one shared deadline | 38.8 | 61.6 | 61.9 | 62.0 |
+
+62 slots per acknowledgement, and still flat across depth. That is the ceiling
+this design has, it is one page's worth of reads on a page the operation is
+already rewriting, and a real workload does not produce it - workers claim at
+different moments, so their deadlines differ.
+
+---
+
+## A measurement bug, found and fixed
+
+The first run of the maintenance table reported `claim` and `ack` at 62 slots
+every time, and `nack` at 1.00 with a maximum of 62 - which is impossible,
+since `nack` does not scan. The cause was that the array of names and the array
+of operations were written in different orders, so two rows carried each
+other's labels. Worth recording because the numbers were *plausible* rather
+than absurd: a table that is wrong in a believable way is the kind a
+measurement gets published with.
+
+---
+
+## What is not decided
+
+The tree is **built** outside the measured search region, because in the engine
+the summary is maintained where the segment page is already being rewritten -
+it is not work a claim does. The table above is what that maintenance costs.
 
 No timing here either, for the same reason as the baseline: the question a
 counter answers is whether the cost follows the work or the backlog, and it
