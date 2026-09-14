@@ -106,7 +106,7 @@ being right; this is about it being usable.
 0.6
  ├─ flush investigation    done
  ├─ parameter binding      done
- └─ queue leases
+ └─ queue leases           done
 ```
 
 Unlike `preview.2`, this release changes the public surface: new C entry
@@ -184,19 +184,20 @@ Gates:
   and identical counters;
 * the C ABI stays additive: a `0.5` program compiles and links unchanged.
 
-**Done.** Nine functions, `?` in `INSERT ... VALUES`, and the engine copies the
+**Done.** Ten functions, `?` in `INSERT ... VALUES`, and the engine copies the
 bytes of variable-width values rather than keeping the caller's pointer - the
 reasoning is in `CHANGELOG.md` and in `include/sql.inc`. The re-run matrix grew
-its bound-value axis as planned (`tests/prepared_rerun_test.c`, 50 checks now),
-and the surface itself got a suite of its own beside it rather than inside it:
-`tests/bind_test.c`, 39 checks, because what it holds - what a bind refuses,
-and that the copy outlives the caller's buffer - is not a re-run question.
+its bound-value axis as planned, and the surface itself got a suite of its own
+beside it rather than inside it, because what that holds - what a bind refuses,
+and that the copy outlives the caller's buffer - is not a re-run question. Both
+have grown since with the predicate work below: `tests/prepared_rerun_test.c`
+is 67 checks and `tests/bind_test.c` is 117.
 
-Two gates are met, and the middle one is met in part: results are compared
-between the bound and the literal form, counters are not. Comparing counters
-needs the probe harness, which reaches the engine below `cyboudb_bind_*`, and
-that is worth doing when the counters are next being read anyway rather than
-as a detour here.
+Two gates were met here and the middle one only in part - results were compared
+between the bound and the literal form, counters were not. *It is met in full
+now*, and by the predicate work rather than by a detour: the gate below reads
+the zone-pruning counters and `index_lookups`, which is where comparing them is
+load-bearing.
 
 **Half done, and the other half stays in `0.6`.** `?` is accepted only in
 `INSERT ... VALUES`. That leaves the release's own promise - *an application
@@ -345,10 +346,13 @@ year later, has to be answered in `docs/QUEUE.md` before any of it is assembly.
 
 **The format contract is in** - bit 65536, its dependency, a creator, and a
 reader built without the bit that refuses a leases file with the feature
-message rather than a damage one (`tests/lease_format_tests.py`). Before the
-release that fixture goes once against the actual released `preview.1` and
-`preview.2` binaries on both platforms, because a build made from today's
-source with one macro flipped models a `0.5` reader well and is not one.
+message rather than a damage one (`tests/lease_format_tests.py`). And the
+fixture has now gone against the actual released `preview.1` and `preview.2`
+binaries on both platforms, because a build made from today's source with one
+macro flipped models a `0.5` reader well and is not one. All four refuse it by
+name, still read an ordinary database, and leave the file byte-identical:
+[docs/RELEASE-GATE-0.6.md](docs/RELEASE-GATE-0.6.md), reproducible with
+`tests/release_gate_leases.sh`.
 
 **Both design questions are now answered there**, in *The clock a lease
 deadline is measured on* and *The shape of CLAIM, ACK, NACK and RENEW*: a
@@ -358,19 +362,39 @@ what keeps an acknowledgement honest, so no clock error can cost the queue's
 integrity; expiry is a predicate rather than an event, so a dead worker's
 message costs zero writes to recover; and a reopen clears nothing, because the
 engine does not know whether a lease holder is alive and guessing runs in the
-dangerous direction. What is left is the assembly and the measurements.
+dangerous direction.
 
-Gates:
+**The assembly and the measurements are done too.** `CLAIM`, `ACK`, `NACK` and
+`RENEW` are in the engine, in SQL and in C; head advancement retires what a
+drained queue no longer names; and the claim search - the one part of this that
+was a risk rather than a task - was measured before it was solved. A naive walk
+costs the whole retained queue; the per-segment `QSEG_READY_AT` summary that
+ships takes the slot term away and leaves the segment count, 480 at the
+ceiling. A hierarchy over those summaries would take that to eight and is
+modelled but **not in this release**:
+[2026-09-14-lease-search.md](benchmarks/results/2026-09-14-lease-search.md) and
+[2026-09-14-lease-ready-at-tree.md](benchmarks/results/2026-09-14-lease-ready-at-tree.md).
+
+Gates, and what holds each:
 
 * a claimed message is invisible to another claimant until its deadline passes
-  or it is `NACK`ed;
+  or it is `NACK`ed - `tests/lease_ops_test.c`, which also holds the case that
+  makes it safe: the reclaim raises the token, so the first worker's ticket is
+  refused and the new holder's is honoured;
 * a crash between `CLAIM` and `ACK` leaves the message claimable again once the
-  deadline passes, and leaves no other trace;
-* `ACK` and the work it acknowledges commit together or not at all - which is
-  the whole reason the queue lives in the same file;
+  deadline passes, and leaves no other trace - expiry is a predicate, so there
+  is no trace to leave;
+* `ACK` and the work it acknowledges commit together or not at all - the same
+  suite, with `cyboudb check` after each operation;
 * a `0.5` build refuses a leases file with *unsupported feature*, held to by a
-  frozen fixture rather than asserted;
-* the compatibility fixtures from both `0.5` releases still read.
+  frozen fixture rather than asserted - **and, once, by the released binaries
+  themselves**;
+* the compatibility fixtures from both `0.5` releases still read -
+  `tests/compat_tests.py`, unchanged.
+
+What `0.6` does not carry is the hierarchical `ready_at` index. The release
+notes say so rather than leaving the shape of the remaining cost to be
+discovered from a graph.
 
 ### Explicitly not in 0.6
 

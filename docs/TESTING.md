@@ -210,7 +210,7 @@ which is the only assertion covering the pages it did not mean to touch.
 
 ## The four lease operations
 
-`tests/lease_ops_test.c`, 70 checks, against a `create-leases` database. The
+`tests/lease_ops_test.c`, 85 checks, against a `create-leases` database. The
 first code in the engine that writes a lease, so every check asks two things:
 what the operation returned, and whether the file it left behind still passes
 an integrity check. An operation that writes a state the format forbids fails
@@ -280,7 +280,7 @@ turns every later claim into a walk over the whole backlog.
 
 ## Which lease states make a file valid
 
-`tests/lease_state_test.c`, 27 checks, run against two databases - one created
+`tests/lease_state_test.c`, 40 checks, run against two databases - one created
 with `create-leases` and one without.
 
 Nothing in the engine writes a lease state yet, so every state here is written

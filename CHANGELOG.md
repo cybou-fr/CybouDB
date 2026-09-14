@@ -156,7 +156,7 @@ error that says so. An assignment parameter also takes `TEXT` and `BLOB` and a
 bindable `NULL`, which a predicate parameter does not: assigning NULL is a
 value to write, comparing against it is a question with no answer.
 
-`tests/bind_test.c` (77 checks) runs on both platforms in CI. Its gate compares
+`tests/bind_test.c` (117 checks) runs on both platforms in CI. Its gate compares
 the engine's zone-pruning counters between a bound predicate and the literal
 one, not just the rows: a bound predicate that lost its pruning would still
 answer correctly and read the whole table to do it.

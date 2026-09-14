@@ -1148,7 +1148,7 @@ gate needs binaries that are not in this repository - but once per release, and
 the script exists so that *once* is a command rather than an afternoon.
 
 Step 6 is where the state table above stops being a document, and
-`tests/lease_state_test.c` is what holds it there: 27 checks that write each
+`tests/lease_state_test.c` is what holds it there: 40 checks that write each
 state by hand into a committed page, reseal it with an independent CRC-32C so
 the case proves its rule rather than the checksum, and ask the integrity check
 what it thinks. Every legal combination is accepted and every illegal one is
