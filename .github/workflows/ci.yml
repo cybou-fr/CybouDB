@@ -179,6 +179,7 @@ jobs:
           ./build/chacha20_test
           ./build/poly1305_test
           ./build/aead_test
+          ./build/keccak_test
           ./build/page_seal_test
 
       - name: Interactive REPL and pipe tests
@@ -404,6 +405,7 @@ jobs:
           build\chacha20_test.exe
           build\poly1305_test.exe
           build\aead_test.exe
+          build\keccak_test.exe
           build\page_seal_test.exe
           if errorlevel 1 exit /b 1
 

@@ -193,6 +193,11 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
             build/aead.o build/chacha20.o build/poly1305.o \
             -o build/aead_test
         echo "Build OK -> build/aead_test"
+        nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/crypto/keccak.asm \
+            -o build/keccak.o
+        "$CC" -O2 -no-pie -Wall -Wextra tests/keccak_test.c \
+            build/keccak.o -o build/keccak_test
+        echo "Build OK -> build/keccak_test"
         nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/crypto/page_seal.asm \
             -o build/page_seal.o
         nasm -f elf64 $INC -DCybouDB_LIBRARY=1 \

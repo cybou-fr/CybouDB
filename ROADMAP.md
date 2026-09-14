@@ -605,7 +605,10 @@ the release, not after it.
                                      Owes a vectorised ChaCha20, measured
 3.5 Key-hierarchy primitives         ML-KEM, ML-DSA, KDF - a different budget,
                                      since they run at open and not per page
- 4. Root key hierarchy
+ 4. Root key hierarchy               docs/KEY_HIERARCHY.md - designed;
+                                     SHAKE256 in assembly, against the
+                                     Keccak team vectors. Derivation, wrapping
+                                     and the crypto root still to build
  5. Opening with a PQ private key
  6. Independent 24-word recovery
  7. Authenticated page encryption

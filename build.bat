@@ -403,6 +403,11 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     cl.exe /O2 /W3 /nologo tests\aead_test.c build\aead.obj build\chacha20.obj build\poly1305.obj /Febuild\aead_test.exe /Fobuild\aead_test.obj
     if errorlevel 1 goto :fail
     echo Build OK -^> build\aead_test.exe
+    "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\crypto\keccak.asm -o build\keccak.obj
+    if errorlevel 1 goto :fail
+    cl.exe /O2 /W3 /nologo tests\keccak_test.c build\keccak.obj /Febuild\keccak_test.exe /Fobuild\keccak_test.obj
+    if errorlevel 1 goto :fail
+    echo Build OK -^> build\keccak_test.exe
     "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\crypto\page_seal.asm -o build\page_seal.obj
     if errorlevel 1 goto :fail
     "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\platform\windows\os_win.asm -o build\os_rand.obj
