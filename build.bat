@@ -254,6 +254,7 @@ if "%~1"=="--flush-probe" goto :build_lib
 if "%~1"=="--lease-probe" goto :build_lib
 if "%~1"=="--for-experiment" goto :build_lib
 if "%~1"=="--c-tests" goto :build_c_tests
+if "%~1"=="--io-spike" goto :build_io_spike
 
 rem --- locate a linker -------------------------------------------------------
 rem GoLink produces the smallest executable and needs no Visual Studio.
@@ -372,6 +373,23 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     exit /b 0
 )
 echo error: MSVC lib.exe not found.
+goto :fail
+
+rem The 0.7 I/O spike is plain C against the operating system, with no
+rem engine in it - it neither assembles nor links the library.
+:build_io_spike
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist "!VSWHERE!" (
+    for /f "usebackq tokens=*" %%i in (`"!VSWHERE!" -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do if exist "%%i\VC\Auxiliary\Build\vcvars64.bat" set "VSPATH=%%i"
+)
+if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
+    call "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+    cl.exe /O2 /W3 /nologo benchmarks\io_spike.c /Febuild\io_spike.exe /Fobuild\io_spike.obj
+    if errorlevel 1 goto :fail
+    echo Build OK -^> build\io_spike.exe
+    goto :eof
+)
+echo error: the I/O spike needs the MSVC C compiler.
 goto :fail
 
 :build_c_tests

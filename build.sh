@@ -100,7 +100,7 @@ if [ "${1:-}" = "--duckdb-bench" ]; then
     exit 0
 fi
 
-if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api-bench" ] || [ "${1:-}" = "--vector-bench" ] || [ "${1:-}" = "--delete-bench" ] || [ "${1:-}" = "--vector-example" ] || [ "${1:-}" = "--worker-example" ] || [ "${1:-}" = "--leased-worker-example" ] || [ "${1:-}" = "--queue-bench" ] || [ "${1:-}" = "--commit-probe" ] || [ "${1:-}" = "--flush-probe" ] || [ "${1:-}" = "--lease-probe" ] || [ "${1:-}" = "--for-experiment" ]; then
+if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api-bench" ] || [ "${1:-}" = "--vector-bench" ] || [ "${1:-}" = "--delete-bench" ] || [ "${1:-}" = "--vector-example" ] || [ "${1:-}" = "--worker-example" ] || [ "${1:-}" = "--leased-worker-example" ] || [ "${1:-}" = "--io-spike" ] || [ "${1:-}" = "--queue-bench" ] || [ "${1:-}" = "--commit-probe" ] || [ "${1:-}" = "--flush-probe" ] || [ "${1:-}" = "--lease-probe" ] || [ "${1:-}" = "--for-experiment" ]; then
     mkdir -p build/lib
     LIB_SOURCES="src/api/cyboudb_c.asm ${SOURCES#src/main.asm }"
     TEST_DEFS=""
@@ -171,6 +171,12 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         command -v gcc >/dev/null 2>&1 || CC=clang
         "$CC" -O2 -no-pie -Wall -Iinclude examples/worker.c build/libcyboudb.a -o build/worker_example
         echo "Build OK -> build/worker_example"
+    fi
+    if [ "${1:-}" = "--io-spike" ]; then
+        CC=gcc
+        command -v gcc >/dev/null 2>&1 || CC=clang
+        "$CC" -O2 -Wall -Wextra benchmarks/io_spike.c -o build/io_spike
+        echo "Build OK -> build/io_spike"
     fi
     if [ "${1:-}" = "--leased-worker-example" ]; then
         CC=gcc
