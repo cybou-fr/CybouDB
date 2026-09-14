@@ -59,7 +59,7 @@ global os_monotonic_ns
 global os_stdin_isatty, os_read_stdin, os_read_console
 global vfs_create_new, vfs_create_truncate, vfs_open_rw, vfs_open_ro
 global vfs_size, vfs_resize, vfs_map_rw, vfs_map_ro, vfs_unmap
-global vfs_sync, vfs_close
+global vfs_sync, vfs_close, vfs_flush_range
 global vfs_lock_writer, vfs_lock_reader, vfs_reclaim_safe
 global os_mem_alloc, os_mem_free, os_utf8_to_wide
 
@@ -1147,6 +1147,29 @@ global sync_ticks
 sync_ticks: dq 0
 
 section .text
+
+; -----------------------------------------------------------------------------
+;  vfs_flush_range(ARG1 = address, ARG2 = size) -> RAX: 0 on success
+;
+;  The first half of vfs_sync and nothing else: FlushViewOfFile pushes these
+;  pages of the view into the file system, and FlushFileBuffers - the part that
+;  makes it durable - is left to the vfs_sync that follows. A commit that wrote
+;  several separate runs flushes each this way and then calls vfs_sync once, so
+;  there is one barrier rather than one per run.
+; -----------------------------------------------------------------------------
+vfs_flush_range:
+    FRAME_BEGIN 16, 0
+    call    FlushViewOfFile
+    test    eax, eax
+    jz      .fail
+    xor     eax, eax
+    FRAME_END
+    ret
+.fail:
+    mov     rax, -1
+    FRAME_END
+    ret
+
 
 vfs_sync:
     FRAME_BEGIN 32, 0

@@ -175,6 +175,13 @@ hull says a page may have been written when it was not. Inheritance decisions
 made from a hull are conservative in the safe direction but give back most of
 the win, since one page near the end of the file widens the hull to everything.
 
+That is not hypothetical, and the flush found it first: once the allocator
+reuses pages from the bottom of a file that has reached its high-water, the
+hull becomes the whole file. `DB_RUNS` now keeps the same pages as a small set
+of contiguous runs, with the hull left in place as the fallback when there are
+more runs than fit and as the answer to "did this transaction write anything".
+[benchmarks/results/2026-09-14-flush.md](../benchmarks/results/2026-09-14-flush.md)
+
 ---
 
 ## 5. Incremental structural validation

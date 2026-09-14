@@ -161,6 +161,18 @@ Built with `--c-tests`:
   and requires the answer to go back, so the damage is provably what changed
   it. See [RECOVERY.md](RECOVERY.md).
 
+## The range a commit flushes
+
+* `tests/flush_range_tests.py` (2): a commit hands the kernel what it wrote and
+  not everything between its ends. The interesting case is the second: the same
+  database past the point where the file reaches its high-water and the
+  allocator starts reusing pages from the bottom, which is where the old hull
+  fell off a cliff - 7,999 pages flushed to publish a change of a few. The
+  first case is the control, because a regression that always flushed
+  everything would otherwise fail only one of them and look like noise. It runs
+  in under a second and it fails on the previous engine, which is the only
+  reason to keep it.
+
 ## The change-set audit
 
 ```sh

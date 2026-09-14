@@ -32,7 +32,7 @@ global os_monotonic_ns
 global os_stdin_isatty, os_read_stdin
 global vfs_create_new, vfs_create_truncate, vfs_open_rw, vfs_open_ro
 global vfs_size, vfs_resize, vfs_map_rw, vfs_map_ro, vfs_unmap
-global vfs_sync, vfs_close
+global vfs_sync, vfs_close, vfs_flush_range
 global vfs_lock_writer, vfs_lock_reader, vfs_reclaim_safe
 global os_mem_alloc, os_mem_free
 
@@ -697,6 +697,31 @@ global sync_ticks
 sync_ticks: dq 0
 
 section .text
+
+; -----------------------------------------------------------------------------
+;  vfs_flush_range(ARG1 = address, ARG2 = size) -> RAX: 0 on success
+;
+;  The first half of vfs_sync and nothing else: push these pages of the view
+;  into the file system, without asking the device to commit its cache. A
+;  commit that wrote several separate runs of pages flushes each of them this
+;  way and then calls vfs_sync once, so there is one barrier and not one per
+;  run. Alone this guarantees nothing; it is only ever the prefix of a
+;  vfs_sync.
+; -----------------------------------------------------------------------------
+vfs_flush_range:
+    mov     rdi, ARG1
+    mov     rsi, ARG2
+    mov     edx, MS_SYNC
+    mov     eax, SYS_msync
+    syscall
+    cmp     rax, -4096
+    jae     .fail
+    xor     eax, eax
+    ret
+.fail:
+    mov     rax, -1
+    ret
+
 
 vfs_sync:
     FRAME_BEGIN 32, 0

@@ -143,13 +143,13 @@ both are load-bearing for a proof the engine already depends on.
    question from the barrier - so nothing here promises to make a deep queue
    commit fast.*
 
-   *It did find one thing that is the engine's own doing: the flushed range is
-   a hull, and once the allocator starts reusing pages from the bottom of a
-   file that has reached its high-water, the hull becomes the whole file -
-   measured at `[5, 8001)` in an 8,000-page file, 7,999 pages flushed to
-   publish a change of a few. That is worth fixing on its own terms whatever it
-   costs, and it is small: a set rather than a hull, or not restarting the
-   reuse sweep at the bottom on every commit.)**
+   *It did find one thing that was the engine's own doing, and that is fixed:
+   the flushed range was a hull, and once the allocator reused pages from the
+   bottom of a file that had reached its high-water, the hull became the whole
+   file - `[5, 8001)` in an 8,000-page file, 7,999 pages flushed to publish a
+   change of a few. A transaction's writes are now kept as runs beside the
+   hull, and a commit flushes those: **9.50 pages where it used to be
+   7,999**.)**
 
 ### Parameter binding
 
@@ -488,10 +488,6 @@ part of the architecture for the weakest reason.
 
 ## Known gaps
 
-* [ ] the flushed range is a hull, so a commit on a file that has reached its
-      high-water asks the kernel to flush the whole file to publish a few
-      pages. Measured, understood, and small to fix; see
-      [benchmarks/results/2026-09-14-flush.md](benchmarks/results/2026-09-14-flush.md)
 * [ ] the double-free guard is a heuristic and will need a real allocation
       bitmap once pages carry data
 * [ ] `cyboudb --help` still describes the engine as an "mmap-backed storage

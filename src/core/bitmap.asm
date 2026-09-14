@@ -47,6 +47,7 @@ global db_bitmap_candidate_payload, db_bitmap_leaves
 global db_bitmap_retire, db_bitmap_recount, db_bitmap_headroom
 global db_bitmap_is_fresh, db_bitmap_deep
 global cs_record, cs_reset, cs_release, cs_audit, cs_leaf_explained
+global db_dirty_reset
 global cs_retires_are_unreachable
 extern catalog_entry_in
 extern os_mem_alloc, os_mem_free
@@ -102,7 +103,7 @@ mark_dirty:
     mov     [r10 + DB_DIRTY_LO], rax
     lea     r11, [rax + 1]
     mov     [r10 + DB_DIRTY_HI], r11
-    ret
+    jmp     .runs
 .extend:
     cmp     rax, [r10 + DB_DIRTY_LO]
     jae     .high
@@ -110,9 +111,74 @@ mark_dirty:
 .high:
     lea     r11, [rax + 1]
     cmp     r11, [r10 + DB_DIRTY_HI]
-    jbe     .done
+    jbe     .runs
     mov     [r10 + DB_DIRTY_HI], r11
+
+    ; And the same page as a run, so a commit can flush what was written
+    ; instead of everything between the lowest page and the highest. The
+    ; contract above says this clobbers r11, so rcx and rdx are borrowed and
+    ; given back: every caller of mark_dirty relies on keeping them, and
+    ; allocating anything here would need a call and clobber far more.
+.runs:
+    cmp     qword [r10 + DB_RUN_OVF], 0
+    jne     .done
+    push    rcx
+    push    rdx
+    mov     rcx, [r10 + DB_RUN_N]
+    lea     r11, [r10 + DB_RUNS]
+.scan:
+    test    rcx, rcx
+    jz      .append
+    mov     rdx, rax
+    sub     rdx, [r11 + RUN_FIRST]
+    jb      .before                     ; the page sits below this run
+    cmp     rdx, [r11 + RUN_COUNT]
+    jb      .recorded                   ; inside it already
+    je      .grow_up                    ; exactly one past its end
+    jmp     .next
+.before:
+    mov     rdx, rax
+    inc     rdx
+    cmp     rdx, [r11 + RUN_FIRST]
+    jne     .next                       ; not adjacent; some other run, or new
+    mov     [r11 + RUN_FIRST], rax
+    inc     qword [r11 + RUN_COUNT]
+    jmp     .recorded
+.grow_up:
+    inc     qword [r11 + RUN_COUNT]
+    jmp     .recorded
+.next:
+    add     r11, RUN_SIZE
+    dec     rcx
+    jmp     .scan
+.append:
+    mov     rcx, [r10 + DB_RUN_N]
+    cmp     rcx, CybouDB_DIRTY_RUNS_MAX
+    jae     .overflow
+    shl     rcx, 4                      ; * RUN_SIZE
+    lea     r11, [r10 + DB_RUNS]
+    add     r11, rcx
+    mov     [r11 + RUN_FIRST], rax
+    mov     qword [r11 + RUN_COUNT], 1
+    inc     qword [r10 + DB_RUN_N]
+    jmp     .recorded
+.overflow:
+    ; More scattered than the set can describe. The hull still covers every
+    ; page, so the commit falls back to it and flushes more than it needs.
+    mov     qword [r10 + DB_RUN_OVF], 1
+.recorded:
+    pop     rdx
+    pop     rcx
 .done:
+    ret
+
+; db_dirty_reset(ARG1 = ctx): forget the runs. The hull is cleared by the
+; caller, which has always done that where staged state is published or
+; discarded; this keeps the two in step.
+db_dirty_reset:
+    mov     r10, ARG1
+    mov     qword [r10 + DB_RUN_N], 0
+    mov     qword [r10 + DB_RUN_OVF], 0
     ret
 
 ; db_bitmap_leaves(total_pages) -> RAX = map pages per copy in the span layout.

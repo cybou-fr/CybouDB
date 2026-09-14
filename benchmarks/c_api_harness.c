@@ -101,12 +101,14 @@ int main(int argc, char **argv) {
     cyboudb_stmt *stmt = NULL;
     /* The internal path hands db_open a descriptor of its own rather than
      * going through cyboudb_open. CybouDB_DB_SIZE is not public, so this is
-     * sized well past it on purpose: it was uint64_t[20], which is 160 bytes
-     * against a descriptor that had already grown to 184, and the overrun
-     * landed on `arena` and `error` below it. It cost nothing until the
-     * descriptor grew again, and then showed up as two backends disagreeing
-     * about zone-pruning counters rather than as a crash. */
-    uint64_t ctx[64] = {0}, arena[4] = {0}, error[13] = {0}, mark = 0;
+     * sized at 4 KiB, which is what the library allocates for a handle, so it
+     * cannot be outgrown without the library noticing first. It was
+     * uint64_t[20] - 160 bytes against a descriptor already at 184 - and the
+     * overrun landed on `arena` and `error` below it. That cost nothing until
+     * the descriptor grew, and then showed up as two backends disagreeing
+     * about zone-pruning counters rather than as a crash. uint64_t[64] was the
+     * next guess and the descriptor outgrew that too. */
+    uint64_t ctx[512] = {0}, arena[4] = {0}, error[13] = {0}, mark = 0;
     void *ast = NULL, *plan = NULL, *memory = NULL;
     if (internal) {
         const void *path = argv[1];

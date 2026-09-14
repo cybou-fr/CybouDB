@@ -102,7 +102,29 @@
 ; describes - db_open is looking at generations this process did not write -
 ; so the leaf check would be asking a question that has no answer.
 %define DB_CS_PROVE       224           ; qword: 1 = a staged candidate, here
-%define CybouDB_DB_SIZE      232
+
+; --- what a transaction wrote, as runs rather than as a hull ----------------
+; DB_DIRTY_LO..HI is the smallest range covering every page a transaction
+; touched, and a hull is the wrong shape for a flush: one page far from the
+; rest widens it to everything in between. That happens in ordinary use - once
+; the allocator starts reusing retired pages it serves them from the bottom of
+; the file while the transaction still writes near the high-water - and it was
+; measured at 7,999 pages flushed to publish a change of a few. See
+; benchmarks/results/2026-09-14-flush.md.
+;
+; So the pages are also kept as a small set of contiguous runs. The hull stays:
+; it is still what says whether a transaction wrote anything at all, and it is
+; what a commit falls back to when there are more runs than fit here. Flushing
+; a superset is slow; flushing a subset loses data, so the fallback is the
+; hull and never the runs.
+%define DB_RUN_N          232           ; qword: runs recorded
+%define DB_RUN_OVF        240           ; qword: 1 = did not fit; use the hull
+%define DB_RUNS           248           ; CybouDB_DIRTY_RUNS_MAX entries
+%define RUN_FIRST         0
+%define RUN_COUNT         8
+%define RUN_SIZE          16
+%define CybouDB_DIRTY_RUNS_MAX 32
+%define CybouDB_DB_SIZE      (DB_RUNS + CybouDB_DIRTY_RUNS_MAX * RUN_SIZE)
 
 ; Entries in the log: page id, then the two states packed into one qword so an
 ; entry is 16 bytes and the whole thing is a flat array with no allocator.

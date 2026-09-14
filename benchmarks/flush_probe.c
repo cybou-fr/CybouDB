@@ -95,7 +95,10 @@ extern unsigned long long commit_validate_ticks;
 
 #define CHECK(expr, what) do { \
     int rc_ = (expr); \
-    if (rc_ != CybouDB_OK) { printf("FAIL %s: rc=%d\n", what, rc_); return 1; } \
+    if (rc_ != CybouDB_OK) { \
+        printf("FAIL %s: rc=%d %s\n", what, rc_, db ? cyboudb_errmsg(db) : ""); \
+        return 1; \
+    } \
 } while (0)
 
 int main(int argc, char **argv) {

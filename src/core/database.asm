@@ -51,7 +51,8 @@ extern test_commit_hook
 %endif
 extern crc32c
 extern db_cow_alloc_page
-extern cs_reset, cs_release, cs_audit
+extern cs_reset, cs_release, cs_audit, db_dirty_reset
+extern vfs_flush_range
 extern db_bitmap_init, db_bitmap_validate, db_bitmap_seal
 extern db_bitmap_leaves, db_bitmap_recount
 
@@ -1084,6 +1085,71 @@ db_free_page:
 ; -----------------------------------------------------------------------------
 %define CybouDB_SYNC_ALIGN 65536
 
+; -----------------------------------------------------------------------------
+;  sync_runs(ARG1 = ctx) -> RAX: 0, or -1 if a flush failed.
+;
+;  A transaction's writes are kept as runs as well as a hull, because a hull is
+;  the wrong shape: once the allocator reuses pages from the bottom of a file
+;  that has reached its high-water, one reused page widens it to everything
+;  between there and the top - measured at 7,999 pages flushed to publish a
+;  change of a few. benchmarks/results/2026-09-14-flush.md.
+;
+;  This flushes every run but the last without a barrier. The caller then syncs
+;  the last one through sync_pages, which carries the barrier, so a commit has
+;  one of those however many runs it wrote.
+;
+;  Local slots: [rbp-8]=ctx, [rbp-16]=index
+; -----------------------------------------------------------------------------
+sync_runs:
+    FRAME_BEGIN 32, 0
+    mov     [rbp - 8], ARG1
+    mov     qword [rbp - 16], 0
+.run:
+    mov     r10, [rbp - 8]
+    mov     rax, [r10 + DB_RUN_N]
+    dec     rax                         ; the last one is the caller's
+    cmp     [rbp - 16], rax
+    jae     .done
+    mov     r11, [rbp - 16]
+    shl     r11, 4                      ; * RUN_SIZE
+    lea     r11, [r10 + DB_RUNS + r11]
+    mov     rax, [r11 + RUN_COUNT]
+    add     qword [rel pages_flushed], rax
+    add     rax, [r11 + RUN_FIRST]
+    PAGES_TO_BYTES rax
+    ; Clamped the way sync_pages clamps, and for the same reason: a page one
+    ; past the end of the file reaches the dirty set, sync_pages has always
+    ; trimmed it silently, and msync on a range the file does not cover fails
+    ; the commit outright.
+    mov     r8, [r10 + DB_SIZE]
+    cmp     rax, r8
+    jbe     .end_known
+    mov     rax, r8
+.end_known:
+    mov     r9, [r11 + RUN_FIRST]
+    PAGES_TO_BYTES r9
+    cmp     r9, rax
+    jae     .skip                       ; nothing of it is inside the file
+    sub     rax, r9
+    mov     ARG2, rax
+    mov     rax, r9
+    add     rax, [r10 + DB_BASE]
+    mov     ARG1, rax
+    call    vfs_flush_range
+    cmp     rax, -1
+    je      .fail
+.skip:
+    inc     qword [rbp - 16]
+    jmp     .run
+.done:
+    xor     eax, eax
+    FRAME_END
+    ret
+.fail:
+    mov     rax, -1
+    FRAME_END
+    ret
+
 sync_pages:
     add qword [rel pages_flushed], ARG3
     FRAME_BEGIN 32, 0
@@ -1189,6 +1255,26 @@ db_commit:
     mov     ARG3, [r10 + DB_PAGES]
     jmp     .range_known
 .cow_range:
+    ; What was written, if it is known exactly; the hull if it is not. The
+    ; hull always covers the runs, so falling back flushes more than needed
+    ; and never less.
+    cmp     qword [r10 + DB_RUN_OVF], 0
+    jne     .cow_hull
+    cmp     qword [r10 + DB_RUN_N], 0
+    je      .cow_hull
+    mov     ARG1, r10
+    call    sync_runs                   ; all but the last, without a barrier
+    cmp     rax, -1
+    je      .e_sync
+    mov     r10, [rbp - 8]
+    mov     r11, [r10 + DB_RUN_N]
+    dec     r11
+    shl     r11, 4
+    lea     r11, [r10 + DB_RUNS + r11]
+    mov     ARG2, [r11 + RUN_FIRST]
+    mov     ARG3, [r11 + RUN_COUNT]
+    jmp     .range_known
+.cow_hull:
     mov     ARG2, [r10 + DB_DIRTY_LO]
     mov     rax, [r10 + DB_DIRTY_HI]
     cmp     rax, ARG2
@@ -1301,6 +1387,9 @@ db_commit:
     mov     qword [r10 + DB_DIRTY_HI], 0
     mov     qword [r10 + DB_VALIDATED], 0
     mov     ARG1, r10
+    call    db_dirty_reset
+    mov     r10, [rbp - 8]
+    mov     ARG1, r10
     call    cs_reset
     mov     r10, [rbp - 8]
     mov     ARG1, r10
@@ -1373,6 +1462,9 @@ db_rollback:
     mov     qword [r10 + DB_DIRTY_LO], 0
     mov     qword [r10 + DB_DIRTY_HI], 0
     mov     qword [r10 + DB_VALIDATED], 0
+    mov     ARG1, r10
+    call    db_dirty_reset
+    mov     r10, [rbp - 8]
     mov     ARG1, r10
     call    cs_reset
     mov     r10, [rbp - 8]

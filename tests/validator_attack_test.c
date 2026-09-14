@@ -65,7 +65,11 @@ extern int db_close(void *ctx);
 /* `cyboudb check`: deep, and asking about integrity rather than
  * recoverability. docs/RECOVERY.md. */
 static int integrity_check_refuses(const char *path) {
-    uint64_t vctx[64] = {0};
+    /* 4 KiB, which is what the library allocates for a cyboudb_db handle,
+     * so this cannot be outgrown without the library noticing first. It was
+     * uint64_t[64] until the descriptor grew past 512 bytes and the stack
+     * protector caught it. */
+    uint64_t vctx[512] = {0};
     const void *p = path;
 #ifdef _WIN32
     static wchar_t wide[32768];
