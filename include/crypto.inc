@@ -59,4 +59,27 @@
 %define CybouDB_AEAD_NONCE_SIZE   12    ; ChaCha20-Poly1305
 %define CybouDB_XAEAD_NONCE_SIZE  24    ; XChaCha20-Poly1305, what the format uses
 
+; --- key derivation ---------------------------------------------------------
+;  docs/KEY_HIERARCHY.md, Decision 2. A purpose is a number in a closed list,
+;  not a string a caller supplies: a KDF whose label comes from outside is an
+;  oracle with a helpful interface. Adding one is a format change.
+%define KDF_METADATA_KEK  1             ; wraps the data encryption keys
+%define KDF_PAGE_SEAL     2             ; seals pages, one key per epoch
+%define KDF_SEAL_TREE     3             ; the keyed tree over the seal directory
+%define KDF_SCOPE_KEK     4             ; wraps one namespace's keys
+%define KDF_MANIFEST      5             ; signs and verifies the access manifest
+%define KDF_PURPOSE_MAX   5
+
+%define CybouDB_KDF_ROOT_SIZE     32
+%define CybouDB_KDF_CONTEXT_MAX   64    ; a scope id or an epoch, not a document
+
+; --- a wrapped key ----------------------------------------------------------
+;  Nonce, ciphertext and tag, in that order, because that is the order they are
+;  produced in and a reader that gets the order wrong fails loudly rather than
+;  quietly.
+%define WRAP_NONCE   0                  ; 24 bytes, drawn per wrap
+%define WRAP_CT      24                 ; the 32-byte key, sealed
+%define WRAP_TAG     56                 ; 16
+%define CybouDB_WRAPPED_KEY_SIZE 72
+
 %endif ; CybouDB_CRYPTO_INC

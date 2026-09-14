@@ -206,6 +206,12 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
             build/page_seal.o build/aead.o build/chacha20.o \
             build/poly1305.o build/os_rand.o -o build/page_seal_test
         echo "Build OK -> build/page_seal_test"
+        nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/crypto/kdf.asm \
+            -o build/kdf.o
+        "$CC" -O2 -no-pie -Wall -Wextra tests/kdf_test.c \
+            build/kdf.o build/keccak.o build/aead.o build/chacha20.o \
+            build/poly1305.o build/os_rand.o -o build/kdf_test
+        echo "Build OK -> build/kdf_test"
     fi
     if [ "${1:-}" = "--crypto-probe" ]; then
         CC=gcc
