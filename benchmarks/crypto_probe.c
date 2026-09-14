@@ -206,6 +206,270 @@ static void chacha20_xor_hoisted(const uint8_t key[32], uint32_t counter,
     }
 }
 
+/* ----------------------------------------------------- ChaCha20, vectorised */
+/* One block at a time in four 128-bit registers: the state's four rows, with
+   the column and diagonal rounds turned into shuffles.
+
+   SSE2 only, and deliberately so. SSE2 is part of the x86-64 baseline, so this
+   path needs no CPUID question and no fallback - unlike POPCNT or AES-NI,
+   there is no machine this engine supports that lacks it. The rotations are
+   shift-or pairs rather than PSHUFB for the same reason: PSHUFB would be a
+   little faster and would drag SSSE3 and a dispatch decision in with it.
+
+   The output must be byte-identical to the scalar implementation. That is
+   asserted below, not assumed: it is the property that lets the format say
+   XChaCha20-Poly1305 without saying which instructions computed it. */
+#if defined(__x86_64__) || defined(_M_X64)
+#define HAVE_CHACHA_SSE2 1
+#ifdef _WIN32
+#include <emmintrin.h>
+#else
+#include <emmintrin.h>
+#endif
+
+static __m128i rotl_epi32(__m128i x, int n) {
+    return _mm_or_si128(_mm_slli_epi32(x, n), _mm_srli_epi32(x, 32 - n));
+}
+
+static void chacha20_xor_sse2(const uint8_t key[32], uint32_t counter,
+                              const uint8_t nonce[12], uint8_t *buf,
+                              size_t len) {
+    static const uint32_t C[4] = {0x61707865, 0x3320646e, 0x79622d32, 0x6b206574};
+    uint32_t s[16];
+    __m128i v0, v1, v2, v3;
+    size_t done = 0;
+    int i;
+
+    s[0] = C[0]; s[1] = C[1]; s[2] = C[2]; s[3] = C[3];
+    for (i = 0; i < 8; i++)
+        s[4 + i] = (uint32_t)key[4 * i] | ((uint32_t)key[4 * i + 1] << 8) |
+                   ((uint32_t)key[4 * i + 2] << 16) |
+                   ((uint32_t)key[4 * i + 3] << 24);
+    s[12] = counter;
+    for (i = 0; i < 3; i++)
+        s[13 + i] = (uint32_t)nonce[4 * i] | ((uint32_t)nonce[4 * i + 1] << 8) |
+                    ((uint32_t)nonce[4 * i + 2] << 16) |
+                    ((uint32_t)nonce[4 * i + 3] << 24);
+
+    v0 = _mm_loadu_si128((const __m128i *)(s + 0));
+    v1 = _mm_loadu_si128((const __m128i *)(s + 4));
+    v2 = _mm_loadu_si128((const __m128i *)(s + 8));
+    v3 = _mm_loadu_si128((const __m128i *)(s + 12));
+
+    while (done < len) {
+        __m128i a = v0, b = v1, c = v2, d = v3;
+        uint8_t ks[64];
+        size_t n = len - done < 64 ? len - done : 64;
+        size_t j;
+
+        for (i = 0; i < 10; i++) {
+            a = _mm_add_epi32(a, b); d = _mm_xor_si128(d, a); d = rotl_epi32(d, 16);
+            c = _mm_add_epi32(c, d); b = _mm_xor_si128(b, c); b = rotl_epi32(b, 12);
+            a = _mm_add_epi32(a, b); d = _mm_xor_si128(d, a); d = rotl_epi32(d, 8);
+            c = _mm_add_epi32(c, d); b = _mm_xor_si128(b, c); b = rotl_epi32(b, 7);
+
+            b = _mm_shuffle_epi32(b, 0x39);   /* rows slide: 1,2,3 lanes over */
+            c = _mm_shuffle_epi32(c, 0x4E);
+            d = _mm_shuffle_epi32(d, 0x93);
+
+            a = _mm_add_epi32(a, b); d = _mm_xor_si128(d, a); d = rotl_epi32(d, 16);
+            c = _mm_add_epi32(c, d); b = _mm_xor_si128(b, c); b = rotl_epi32(b, 12);
+            a = _mm_add_epi32(a, b); d = _mm_xor_si128(d, a); d = rotl_epi32(d, 8);
+            c = _mm_add_epi32(c, d); b = _mm_xor_si128(b, c); b = rotl_epi32(b, 7);
+
+            b = _mm_shuffle_epi32(b, 0x93);   /* and slide back */
+            c = _mm_shuffle_epi32(c, 0x4E);
+            d = _mm_shuffle_epi32(d, 0x39);
+        }
+
+        _mm_storeu_si128((__m128i *)(ks +  0), _mm_add_epi32(a, v0));
+        _mm_storeu_si128((__m128i *)(ks + 16), _mm_add_epi32(b, v1));
+        _mm_storeu_si128((__m128i *)(ks + 32), _mm_add_epi32(c, v2));
+        _mm_storeu_si128((__m128i *)(ks + 48), _mm_add_epi32(d, v3));
+        for (j = 0; j < n; j++) buf[done + j] ^= ks[j];
+
+        done += n;
+        v3 = _mm_add_epi32(v3, _mm_set_epi32(0, 0, 0, 1));
+    }
+}
+
+/* Four blocks at once, transposed: each register holds word i of four
+   different blocks, so a quarter-round is four independent quarter-rounds and
+   the shuffles disappear entirely - the diagonal round is just a different
+   choice of registers.
+
+   The single-block version above is only 1.6x the scalar code because its four
+   vectors form one dependency chain and the machine spends its time waiting.
+   This one has four chains, which is the whole trick. */
+static void chacha20_xor_sse2x4(const uint8_t key[32], uint32_t counter,
+                                const uint8_t nonce[12], uint8_t *buf,
+                                size_t len) {
+    static const uint32_t C[4] = {0x61707865, 0x3320646e, 0x79622d32, 0x6b206574};
+    uint32_t s[16];
+    size_t done = 0;
+    int i;
+
+    s[0] = C[0]; s[1] = C[1]; s[2] = C[2]; s[3] = C[3];
+    for (i = 0; i < 8; i++)
+        s[4 + i] = (uint32_t)key[4 * i] | ((uint32_t)key[4 * i + 1] << 8) |
+                   ((uint32_t)key[4 * i + 2] << 16) |
+                   ((uint32_t)key[4 * i + 3] << 24);
+    s[12] = counter;
+    for (i = 0; i < 3; i++)
+        s[13 + i] = (uint32_t)nonce[4 * i] | ((uint32_t)nonce[4 * i + 1] << 8) |
+                    ((uint32_t)nonce[4 * i + 2] << 16) |
+                    ((uint32_t)nonce[4 * i + 3] << 24);
+
+    while (done < len) {
+        __m128i x[16], o[16];
+        uint32_t words[16][4];
+        size_t chunk = len - done;
+        int blk;
+
+        for (i = 0; i < 16; i++) x[i] = _mm_set1_epi32((int)s[i]);
+        x[12] = _mm_set_epi32((int)(s[12] + 3), (int)(s[12] + 2),
+                              (int)(s[12] + 1), (int)(s[12] + 0));
+        for (i = 0; i < 16; i++) o[i] = x[i];
+
+#define QR4(a, b, c, d)                                                      \
+        x[a] = _mm_add_epi32(x[a], x[b]);                                    \
+        x[d] = _mm_xor_si128(x[d], x[a]); x[d] = rotl_epi32(x[d], 16);       \
+        x[c] = _mm_add_epi32(x[c], x[d]);                                    \
+        x[b] = _mm_xor_si128(x[b], x[c]); x[b] = rotl_epi32(x[b], 12);       \
+        x[a] = _mm_add_epi32(x[a], x[b]);                                    \
+        x[d] = _mm_xor_si128(x[d], x[a]); x[d] = rotl_epi32(x[d], 8);        \
+        x[c] = _mm_add_epi32(x[c], x[d]);                                    \
+        x[b] = _mm_xor_si128(x[b], x[c]); x[b] = rotl_epi32(x[b], 7)
+
+        for (i = 0; i < 10; i++) {
+            QR4(0, 4,  8, 12); QR4(1, 5,  9, 13);
+            QR4(2, 6, 10, 14); QR4(3, 7, 11, 15);
+            QR4(0, 5, 10, 15); QR4(1, 6, 11, 12);
+            QR4(2, 7,  8, 13); QR4(3, 4,  9, 14);
+        }
+#undef QR4
+
+        for (i = 0; i < 16; i++)
+            _mm_storeu_si128((__m128i *)words[i], _mm_add_epi32(x[i], o[i]));
+
+        for (blk = 0; blk < 4 && chunk > 0; blk++) {
+            uint8_t ks[64];
+            size_t n = chunk < 64 ? chunk : 64;
+            size_t j;
+            for (i = 0; i < 16; i++) {
+                uint32_t v = words[i][blk];
+                ks[4 * i]     = (uint8_t)v;
+                ks[4 * i + 1] = (uint8_t)(v >> 8);
+                ks[4 * i + 2] = (uint8_t)(v >> 16);
+                ks[4 * i + 3] = (uint8_t)(v >> 24);
+            }
+            for (j = 0; j < n; j++) buf[done + j] ^= ks[j];
+            done += n;
+            chunk -= n;
+        }
+        s[12] += 4;
+    }
+}
+#endif
+
+/* Eight blocks, the same transposed idea one register width up.
+   AVX2 is not baseline, so unlike the SSE2 paths this one is a dispatch
+   decision: CPUID leaf 7 EBX bit 5, checked before it is called. It exists to
+   answer how far this construction can go on a general-purpose core, which is
+   the number docs/CRYPTO_BACKEND.md's Decision 3 rests on. */
+/* The target attribute compiles this function for AVX2 without the whole
+   translation unit being built for it, so no -mavx2 and no separate object:
+   the guard is "does the compiler support that", not "was AVX2 requested". */
+#if defined(_MSC_VER) || defined(__GNUC__)
+#define HAVE_CHACHA_AVX2 1
+#include <immintrin.h>
+
+#ifdef _MSC_VER
+#define CHACHA_AVX2_TARGET
+#else
+#define CHACHA_AVX2_TARGET __attribute__((target("avx2")))
+#endif
+
+CHACHA_AVX2_TARGET
+static __m256i rotl_epi32_256(__m256i x, int n) {
+    return _mm256_or_si256(_mm256_slli_epi32(x, n), _mm256_srli_epi32(x, 32 - n));
+}
+
+CHACHA_AVX2_TARGET
+static void chacha20_xor_avx2(const uint8_t key[32], uint32_t counter,
+                              const uint8_t nonce[12], uint8_t *buf,
+                              size_t len) {
+    static const uint32_t C[4] = {0x61707865, 0x3320646e, 0x79622d32, 0x6b206574};
+    uint32_t s[16];
+    size_t done = 0;
+    int i;
+
+    s[0] = C[0]; s[1] = C[1]; s[2] = C[2]; s[3] = C[3];
+    for (i = 0; i < 8; i++)
+        s[4 + i] = (uint32_t)key[4 * i] | ((uint32_t)key[4 * i + 1] << 8) |
+                   ((uint32_t)key[4 * i + 2] << 16) |
+                   ((uint32_t)key[4 * i + 3] << 24);
+    s[12] = counter;
+    for (i = 0; i < 3; i++)
+        s[13 + i] = (uint32_t)nonce[4 * i] | ((uint32_t)nonce[4 * i + 1] << 8) |
+                    ((uint32_t)nonce[4 * i + 2] << 16) |
+                    ((uint32_t)nonce[4 * i + 3] << 24);
+
+    while (done < len) {
+        __m256i x[16], o[16];
+        uint32_t words[16][8];
+        size_t chunk = len - done;
+        int blk;
+
+        for (i = 0; i < 16; i++) x[i] = _mm256_set1_epi32((int)s[i]);
+        x[12] = _mm256_set_epi32((int)(s[12] + 7), (int)(s[12] + 6),
+                                 (int)(s[12] + 5), (int)(s[12] + 4),
+                                 (int)(s[12] + 3), (int)(s[12] + 2),
+                                 (int)(s[12] + 1), (int)(s[12] + 0));
+        for (i = 0; i < 16; i++) o[i] = x[i];
+
+#define QR8(a, b, c, d)                                                       \
+        x[a] = _mm256_add_epi32(x[a], x[b]);                                  \
+        x[d] = _mm256_xor_si256(x[d], x[a]); x[d] = rotl_epi32_256(x[d], 16); \
+        x[c] = _mm256_add_epi32(x[c], x[d]);                                  \
+        x[b] = _mm256_xor_si256(x[b], x[c]); x[b] = rotl_epi32_256(x[b], 12); \
+        x[a] = _mm256_add_epi32(x[a], x[b]);                                  \
+        x[d] = _mm256_xor_si256(x[d], x[a]); x[d] = rotl_epi32_256(x[d], 8);  \
+        x[c] = _mm256_add_epi32(x[c], x[d]);                                  \
+        x[b] = _mm256_xor_si256(x[b], x[c]); x[b] = rotl_epi32_256(x[b], 7)
+
+        for (i = 0; i < 10; i++) {
+            QR8(0, 4,  8, 12); QR8(1, 5,  9, 13);
+            QR8(2, 6, 10, 14); QR8(3, 7, 11, 15);
+            QR8(0, 5, 10, 15); QR8(1, 6, 11, 12);
+            QR8(2, 7,  8, 13); QR8(3, 4,  9, 14);
+        }
+#undef QR8
+
+        for (i = 0; i < 16; i++)
+            _mm256_storeu_si256((__m256i *)words[i],
+                                _mm256_add_epi32(x[i], o[i]));
+
+        for (blk = 0; blk < 8 && chunk > 0; blk++) {
+            uint8_t ks[64];
+            size_t n = chunk < 64 ? chunk : 64;
+            size_t j;
+            for (i = 0; i < 16; i++) {
+                uint32_t v = words[i][blk];
+                ks[4 * i]     = (uint8_t)v;
+                ks[4 * i + 1] = (uint8_t)(v >> 8);
+                ks[4 * i + 2] = (uint8_t)(v >> 16);
+                ks[4 * i + 3] = (uint8_t)(v >> 24);
+            }
+            for (j = 0; j < n; j++) buf[done + j] ^= ks[j];
+            done += n;
+            chunk -= n;
+        }
+        s[12] += 8;
+    }
+}
+#endif
+
 /* ------------------------------------------------------------------ Poly1305 */
 /* RFC 8439 section 2.5, in 26-bit limbs so that every product fits in 64 bits
    and the code needs no 128-bit type - MSVC does not have one. */
@@ -400,7 +664,10 @@ static void kat_poly1305(void) {
           memcmp(mac, want, 16) == 0);
 }
 
-/* The keystream must not depend on where the buffer is split. */
+/* The keystream must not depend on where the buffer is split, nor on which
+   instructions computed it. */
+static cpu_features host;
+
 static void kat_streaming(void) {
     uint8_t key[32], nonce[12], a[200], b[200];
     poly1305_ctx s1, s2;
@@ -419,6 +686,52 @@ static void kat_streaming(void) {
     chacha20_xor_hoisted(key, 0, nonce, b, 200);
     check("and the hoisted implementation agrees with the clear one",
           memcmp(a, b, 200) == 0);
+
+#ifdef HAVE_CHACHA_SSE2
+    /* Decision 3 of docs/CRYPTO_BACKEND.md in one assertion: the machine may
+       choose how fast, never what. Odd lengths included, because the tail is
+       where a vector implementation goes wrong. */
+    {
+        int ok = 1, len;
+        for (len = 1; len <= 200; len++) {
+            uint8_t p1[200], p2[200];
+            int k;
+            for (k = 0; k < len; k++) p1[k] = p2[k] = (uint8_t)(k * 11 + 3);
+            chacha20_xor_hoisted(key, 7, nonce, p1, (size_t)len);
+            chacha20_xor_sse2(key, 7, nonce, p2, (size_t)len);
+            if (memcmp(p1, p2, (size_t)len) != 0) { ok = 0; break; }
+        }
+        check("SSE2 ChaCha20 is byte-identical to scalar, every length 1..200",
+              ok);
+
+        ok = 1;
+        for (len = 1; len <= 400; len++) {
+            uint8_t p1[400], p2[400];
+            int k;
+            for (k = 0; k < len; k++) p1[k] = p2[k] = (uint8_t)(k * 11 + 3);
+            chacha20_xor_hoisted(key, 7, nonce, p1, (size_t)len);
+            chacha20_xor_sse2x4(key, 7, nonce, p2, (size_t)len);
+            if (memcmp(p1, p2, (size_t)len) != 0) { ok = 0; break; }
+        }
+        check("four-block SSE2 agrees too, every length 1..400 "
+              "(the tails a 4x implementation gets wrong)", ok);
+
+#ifdef HAVE_CHACHA_AVX2
+        if (host.avx2) {
+            ok = 1;
+            for (len = 1; len <= 700; len++) {
+                uint8_t p1[700], p2[700];
+                int k;
+                for (k = 0; k < len; k++) p1[k] = p2[k] = (uint8_t)(k * 11 + 3);
+                chacha20_xor_hoisted(key, 7, nonce, p1, (size_t)len);
+                chacha20_xor_avx2(key, 7, nonce, p2, (size_t)len);
+                if (memcmp(p1, p2, (size_t)len) != 0) { ok = 0; break; }
+            }
+            check("and AVX2 agrees, every length 1..700", ok);
+        }
+#endif
+    }
+#endif
 
     poly1305_init(&s1, key);
     poly1305_update(&s1, a, 200);
@@ -513,6 +826,7 @@ int main(void) {
     printf("CybouDB crypto backend probe\n\n");
 
     cpu_detect(&f);
+    host = f;
     printf("  CPU: AES-NI %s, PCLMULQDQ %s, SHA-NI %s, AVX2 %s, RDSEED %s\n\n",
            f.aesni ? "yes" : "NO", f.pclmul ? "yes" : "NO",
            f.sha_ni ? "yes" : "NO", f.avx2 ? "yes" : "NO",
@@ -544,6 +858,33 @@ int main(void) {
     printf("  %-40s %10.0f %10.2f\n", "ChaCha20, portable C",
            t * 1e9 / rounds, (double)PAGE_SIZE * rounds / t / 1e9);
 
+#ifdef HAVE_CHACHA_SSE2
+    t = now_seconds();
+    for (i = 0; i < (unsigned)rounds; i++)
+        chacha20_xor_sse2(key, i, nonce, page, PAGE_SIZE);
+    t = now_seconds() - t;
+    printf("  %-40s %10.0f %10.2f\n", "ChaCha20, SSE2, one block",
+           t * 1e9 / rounds, (double)PAGE_SIZE * rounds / t / 1e9);
+
+    t = now_seconds();
+    for (i = 0; i < (unsigned)rounds; i++)
+        chacha20_xor_sse2x4(key, i, nonce, page, PAGE_SIZE);
+    t = now_seconds() - t;
+    printf("  %-40s %10.0f %10.2f\n", "ChaCha20, SSE2, four blocks",
+           t * 1e9 / rounds, (double)PAGE_SIZE * rounds / t / 1e9);
+#endif
+
+#ifdef HAVE_CHACHA_AVX2
+    if (f.avx2) {
+        t = now_seconds();
+        for (i = 0; i < (unsigned)rounds; i++)
+            chacha20_xor_avx2(key, i, nonce, page, PAGE_SIZE);
+        t = now_seconds() - t;
+        printf("  %-40s %10.0f %10.2f\n", "ChaCha20, AVX2, eight blocks",
+               t * 1e9 / rounds, (double)PAGE_SIZE * rounds / t / 1e9);
+    }
+#endif
+
     t = now_seconds();
     for (i = 0; i < (unsigned)rounds; i++) {
         poly1305_ctx st;
@@ -564,8 +905,38 @@ int main(void) {
         poly1305_finish(&st, mac);
     }
     t = now_seconds() - t;
-    printf("  %-40s %10.0f %10.2f\n", "ChaCha20-Poly1305, sealing a page",
+    printf("  %-40s %10.0f %10.2f\n", "sealing a page, scalar",
            t * 1e9 / rounds, (double)PAGE_SIZE * rounds / t / 1e9);
+
+#ifdef HAVE_CHACHA_SSE2
+    t = now_seconds();
+    for (i = 0; i < (unsigned)rounds; i++) {
+        poly1305_ctx st;
+        chacha20_xor_sse2x4(key, i, nonce, page, PAGE_SIZE);
+        poly1305_init(&st, key);
+        poly1305_update(&st, page, PAGE_SIZE);
+        poly1305_finish(&st, mac);
+    }
+    t = now_seconds() - t;
+    printf("  %-40s %10.0f %10.2f\n", "sealing a page, SSE2 four-block cipher",
+           t * 1e9 / rounds, (double)PAGE_SIZE * rounds / t / 1e9);
+#endif
+
+#ifdef HAVE_CHACHA_AVX2
+    if (f.avx2) {
+        t = now_seconds();
+        for (i = 0; i < (unsigned)rounds; i++) {
+            poly1305_ctx st;
+            chacha20_xor_avx2(key, i, nonce, page, PAGE_SIZE);
+            poly1305_init(&st, key);
+            poly1305_update(&st, page, PAGE_SIZE);
+            poly1305_finish(&st, mac);
+        }
+        t = now_seconds() - t;
+        printf("  %-40s %10.0f %10.2f\n", "sealing a page, AVX2 cipher",
+               t * 1e9 / rounds, (double)PAGE_SIZE * rounds / t / 1e9);
+    }
+#endif
 
 #ifndef NO_AESNI_BUILD
     if (f.aesni) {

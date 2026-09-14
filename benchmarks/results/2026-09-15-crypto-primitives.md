@@ -26,12 +26,17 @@ from memory or from another implementation.
   ok   Poly1305 tag matches RFC 8439 section 2.5.2
   ok   ChaCha20 is the same stream whatever the chunking
   ok   and the hoisted implementation agrees with the clear one
+  ok   SSE2 ChaCha20 is byte-identical to scalar, every length 1..200
+  ok   four-block SSE2 agrees too, every length 1..400
+  ok   and AVX2 agrees, every length 1..700
   ok   Poly1305 is the same tag whatever the chunking
 ```
 
-Both passed on the first run on both platforms. The two chunking checks are
-there because an implementation that is right only when the caller hands it
-whole blocks is a bug waiting for a 4095-byte page.
+Both RFC vectors passed on the first run on both platforms. The chunking checks
+are there because an implementation that is right only when the caller hands it
+whole blocks is a bug waiting for a 4095-byte page, and the three equality
+checks are [Decision 3](../../docs/CRYPTO_BACKEND.md) made testable: the machine
+may choose how fast, never what.
 
 The AES-NI and PCLMULQDQ numbers below are **throughput only and unvalidated**.
 They answer *how much does hardware change the decision*, and nothing else. If
@@ -43,12 +48,22 @@ Both machines report AES-NI, PCLMULQDQ, SHA-NI, AVX2 and RDSEED present.
 
 | | Linux (gcc -O2) | Windows (cl /O2) |
 | :--- | ---: | ---: |
-| ChaCha20, portable C | 7,207 ns · 0.57 GB/s | 7,444 ns · 0.55 GB/s |
-| Poly1305, portable C | 1,989 ns · 2.06 GB/s | 1,716 ns · 2.39 GB/s |
-| **ChaCha20-Poly1305, sealing one page** | **9,300 ns** | **9,161 ns** |
-| AES-128-CTR, AES-NI | 286 ns · 14.3 GB/s | 280 ns · 14.6 GB/s |
-| carry-less multiply chain, PCLMULQDQ | 403 ns · 10.2 GB/s | 369 ns · 11.1 GB/s |
-| **hardware AEAD, the two terms together** | **~690 ns** | **~650 ns** |
+| ChaCha20, scalar C | 7,213 ns · 0.57 GB/s | 7,582 ns · 0.54 GB/s |
+| ChaCha20, SSE2, one block | 4,665 ns · 0.88 GB/s | 4,653 ns · 0.88 GB/s |
+| ChaCha20, SSE2, four blocks | 2,746 ns · 1.49 GB/s | 2,965 ns · 1.38 GB/s |
+| ChaCha20, AVX2, eight blocks | 1,822 ns · 2.25 GB/s | 1,935 ns · 2.12 GB/s |
+| Poly1305, scalar C | 2,137 ns · 1.92 GB/s | 2,655 ns · 1.54 GB/s |
+| **sealing a page, scalar** | **9,142 ns** | **9,602 ns** |
+| **sealing a page, SSE2 four-block** | **4,585 ns** | **5,457 ns** |
+| **sealing a page, AVX2** | **3,517 ns** | **4,557 ns** |
+| AES-128-CTR, AES-NI | 280 ns · 14.6 GB/s | 284 ns · 14.4 GB/s |
+| carry-less multiply chain, PCLMULQDQ | 427 ns · 9.6 GB/s | 354 ns · 11.6 GB/s |
+| **hardware AEAD, the two terms together** | **~700 ns** | **~640 ns** |
+
+**Every vector path is byte-identical to the scalar one**, asserted at every
+length from 1 to 700 rather than at a convenient multiple of 64 — the tail is
+where a four-at-a-time implementation goes wrong. That assertion is what lets
+the format name a primitive without naming instructions.
 
 The hardware line is a floor: a real GCM or GCM-SIV adds the field reduction
 and the key schedule, and GCM-SIV derives per-message keys. Call it under a
@@ -78,18 +93,53 @@ That is not an argument against a portable fallback. It is the reason the
 fallback cannot be described as *slower*: it changes which term dominates, and
 therefore changes what the engine should optimise on such a machine.
 
+### Vectorising the cipher moves the bottleneck rather than removing it
+
+`CRYPTO_BACKEND.md` Decision 3 rested on an expectation: that a vectorised
+ChaCha20 would bring a sealed page to **about 2 µs**, comparable to a page miss
+on NTFS. Measured, the expectation is **not met, and the reason is not the
+cipher**.
+
+```
+scalar            cipher 7,213   MAC 2,137   page 9,142 ns
+SSE2, 4 blocks    cipher 2,746   MAC 2,137   page 4,585 ns
+AVX2, 8 blocks    cipher 1,822   MAC 2,137   page 3,517 ns
+                          ^                        ^
+                  4x faster, and now            still 5x the
+                  the smaller half              hardware AEAD
+```
+
+The cipher came down 4x — 0.57 GB/s scalar to 2.25 GB/s with AVX2 — and
+**Poly1305, untouched, is now 61% of the work**. Making the cipher faster again
+cannot get to 2 µs, because 2.1 µs of MAC is already most of the budget.
+
+So the honest position for step 3 is: **a sealed page costs 3.5 µs at best on
+this hardware with this construction, and 4.6 µs on the SSE2 baseline that
+needs no dispatch at all.** Against the I/O it accompanies — 850 ns on tmpfs,
+3.3 µs on NTFS — sealing is comparable to a miss on NTFS and several times it
+on tmpfs.
+
+Reaching 2 µs needs a parallel Poly1305, which is real work: the MAC's
+sequential Horner evaluation has to become a multi-lane one with precomputed
+powers of the key. That is a task with a known shape and known vectors, and it
+belongs to step 3 rather than to an implementation note — **it is now the
+deciding term.**
+
 ## Two things this does not say
 
-**It does not say ChaCha20 is slow.** It says *this* ChaCha20 is 0.57 GB/s: a
-straightforward scalar implementation at `-O2`, with no SIMD. A vectorised
-ChaCha20 reaches several GB/s, and the gap to AES-NI narrows accordingly. What
-the measurement bounds is the cost of the implementation a project writing its
-own backend ships **first** — and the decision about what to ship first is
-exactly what step 3 is for.
+**It no longer guesses at the vectorised number.** The first version of this
+document said a vectorised ChaCha20 "reaches several GB/s" and left it there.
+It reaches 2.25 GB/s on this machine, which is several only by a generous
+reading, and the four-fold improvement bought less than half of what the seal
+costs. Guessing would have left Decision 3 resting on a number that is 1.75x
+optimistic.
 
 Hoisting the cipher state out of the per-block loop changed nothing (7,439 ns
 against 7,326 ns), which is how the measurement was confirmed to be timing the
-twenty rounds rather than the setup around them.
+twenty rounds rather than the setup around them. The single-block SSE2 version
+is in the table for the same reason: at 1.6x the scalar code it shows that the
+win comes from having four independent dependency chains, not from the
+registers being wider.
 
 **It does not measure a key schedule, a KDF, or a KEM.** ML-KEM and ML-DSA
 belong to the key hierarchy, not to the page path: they run when a database is

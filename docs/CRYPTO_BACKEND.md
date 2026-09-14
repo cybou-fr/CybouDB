@@ -109,14 +109,33 @@ The crypto backend does the same, and gains something the existing dispatches
 do not have: **the two paths must produce identical output**, which is a
 property a test can assert directly rather than a benchmark's opinion.
 
-Measured, the scalar path costs 9.3 µs per page. A vectorised ChaCha20 is
-expected to reach single-digit GB/s and bring a sealed page to roughly 2 µs —
-comparable to the 3.3 µs a page miss costs on NTFS. **That expectation is not
-yet a measurement, and step 3 is not finished until it is one.** If a vectorised
-implementation does not get there, the honest options are to accept that an
-encrypted database is slower by a stated factor, or to revisit Decision 2 with
-the cost of a bitsliced AES in hand — and not to quietly ship the slow one with
-the fast one's description.
+This document first argued that position from an expectation: that the scalar
+path's measured 9.3 µs per page would come down to roughly 2 µs once the cipher
+was vectorised, which would put a sealed page beside the 3.3 µs a page miss
+costs on NTFS.
+
+**That expectation has since been measured, and it was wrong.** A vectorised
+ChaCha20 does what it should — 0.57 GB/s scalar becomes 2.25 GB/s with AVX2,
+four times faster — and a sealed page still costs **3.5 µs**, not 2. The reason
+is that Poly1305 never moved: at 2.1 µs it is now **61% of the work**, and no
+further work on the cipher can reach the target.
+
+```
+scalar          cipher 7,213 ns   MAC 2,137 ns   page 9,142 ns
+SSE2 4-block    cipher 2,746 ns   MAC 2,137 ns   page 4,585 ns
+AVX2 8-block    cipher 1,822 ns   MAC 2,137 ns   page 3,517 ns
+```
+
+Two things follow. **The SSE2 four-block path is the one to build first**: it
+costs 4.6 µs, needs no CPUID question at all because SSE2 is x86-64 baseline,
+and is within 30% of the AVX2 path that does. And **the deciding term is now
+the MAC**: a parallel Poly1305, with precomputed powers of the key so the
+Horner chain becomes multi-lane, is what step 3 still owes — not more work on
+the cipher.
+
+The byte-identity requirement paid for itself immediately: every vector path is
+asserted equal to the scalar one at **every length from 1 to 700**, and the
+tail cases are exactly where a four-at-a-time implementation goes wrong.
 
 ---
 
@@ -152,7 +171,8 @@ official vectors does not ship.
 
 | | |
 | :--- | :--- |
-| a vectorised ChaCha20, measured | Decision 3 rests on an expectation |
+| ~~a vectorised ChaCha20, measured~~ | done: 2.25 GB/s with AVX2, 1.49 with SSE2, and the expectation it was testing turned out to be 1.75x optimistic |
+| a parallel Poly1305 | now the larger half of a sealed page, and the only way to the 2 µs the design wanted |
 | XChaCha20's own vectors | the HChaCha20 construction has published test vectors of its own; ChaCha20's do not cover it |
 | a Poly1305 one-time-key derivation check | the AEAD derives its MAC key from the cipher; that wiring has its own vector in RFC 8439 section 2.8.2 |
 | constant-time review of Poly1305's final reduction | the probe's version branches on nothing, but that is an assertion until someone checks the generated code |
