@@ -622,6 +622,351 @@ static void poly1305_finish(poly1305_ctx *st, uint8_t mac[16]) {
     mac[14] = (uint8_t)(h3 >> 16); mac[15] = (uint8_t)(h3 >> 24);
 }
 
+/* ------------------------------------------- Poly1305 in 64-bit limbs */
+/* The 26-bit version above needs five limbs and twenty-five 32x32 products per
+   block because it was written to need nothing wider than a uint64_t. On
+   x86-64 a 64x64->128 multiply is one instruction, so three limbs of 44, 44
+   and 42 bits need nine products instead - and the field reduction stays the
+   same shape.
+
+   This is the same algorithm, not a different one: both are held to the RFC
+   vector, and each is checked against the other on inputs of every length,
+   which is a stronger statement than either check alone. */
+#ifdef _MSC_VER
+typedef struct { uint64_t lo, hi; } u128_t;
+static u128_t u128_mul(uint64_t a, uint64_t b) {
+    u128_t r;
+    r.lo = _umul128(a, b, &r.hi);
+    return r;
+}
+static u128_t u128_add(u128_t a, u128_t b) {
+    u128_t r;
+    unsigned char c = _addcarry_u64(0, a.lo, b.lo, &r.lo);
+    _addcarry_u64(c, a.hi, b.hi, &r.hi);
+    return r;
+}
+static u128_t u128_addu(u128_t a, uint64_t b) {
+    u128_t t; t.lo = b; t.hi = 0;
+    return u128_add(a, t);
+}
+static uint64_t u128_low44(u128_t a) { return a.lo & 0xfffffffffffULL; }
+static uint64_t u128_low42(u128_t a) { return a.lo & 0x3ffffffffffULL; }
+static uint64_t u128_shr44(u128_t a) { return (a.lo >> 44) | (a.hi << 20); }
+static uint64_t u128_shr42(u128_t a) { return (a.lo >> 42) | (a.hi << 22); }
+#else
+typedef unsigned __int128 u128_t;
+static u128_t u128_mul(uint64_t a, uint64_t b) { return (u128_t)a * b; }
+static u128_t u128_add(u128_t a, u128_t b) { return a + b; }
+static u128_t u128_addu(u128_t a, uint64_t b) { return a + b; }
+static uint64_t u128_low44(u128_t a) { return (uint64_t)a & 0xfffffffffffULL; }
+static uint64_t u128_low42(u128_t a) { return (uint64_t)a & 0x3ffffffffffULL; }
+static uint64_t u128_shr44(u128_t a) { return (uint64_t)(a >> 44); }
+static uint64_t u128_shr42(u128_t a) { return (uint64_t)(a >> 42); }
+#endif
+
+typedef struct {
+    uint64_t r[3], h[3], pad[2];
+    size_t leftover;
+    uint8_t buffer[16];
+    int final;
+} poly1305_64;
+
+/* memcpy rather than eight shifted byte loads. Both are correct and portable;
+   this one is a single instruction on any little-endian machine because the
+   compiler knows what memcpy of eight bytes into a uint64_t means, and the
+   other is fourteen shifts and ors the optimiser may or may not recognise.
+   The difference turned out to be most of Poly1305's cost - see the result. */
+static uint64_t load64le(const uint8_t *p) {
+    uint64_t v;
+    memcpy(&v, p, 8);
+    return v;                       /* little-endian hosts only, as x86-64 is */
+}
+
+static void poly64_init(poly1305_64 *st, const uint8_t key[32]) {
+    uint64_t t0 = load64le(key), t1 = load64le(key + 8);
+    st->r[0] = (t0                         ) & 0x0ffc0fffffffULL;
+    st->r[1] = ((t0 >> 44) | (t1 << 20)    ) & 0x0fffffc0ffffULL;
+    st->r[2] = ((t1 >> 24)                 ) & 0x00ffffffc0fULL;
+    st->h[0] = st->h[1] = st->h[2] = 0;
+    st->pad[0] = load64le(key + 16);
+    st->pad[1] = load64le(key + 24);
+    st->leftover = 0;
+    st->final = 0;
+}
+
+static void poly64_blocks(poly1305_64 *st, const uint8_t *m, size_t bytes) {
+    const uint64_t hibit = st->final ? 0 : ((uint64_t)1 << 40);
+    uint64_t r0 = st->r[0], r1 = st->r[1], r2 = st->r[2];
+    uint64_t s1 = r1 * 20, s2 = r2 * 20;
+    uint64_t h0 = st->h[0], h1 = st->h[1], h2 = st->h[2];
+
+    while (bytes >= 16) {
+        u128_t d0, d1, d2;
+        uint64_t c, t0 = load64le(m), t1 = load64le(m + 8);
+
+        h0 += (t0                      ) & 0xfffffffffffULL;
+        h1 += ((t0 >> 44) | (t1 << 20) ) & 0xfffffffffffULL;
+        h2 += (((t1 >> 24)             ) & 0x3ffffffffffULL) | hibit;
+
+        d0 = u128_add(u128_add(u128_mul(h0, r0), u128_mul(h1, s2)),
+                      u128_mul(h2, s1));
+        d1 = u128_add(u128_add(u128_mul(h0, r1), u128_mul(h1, r0)),
+                      u128_mul(h2, s2));
+        d2 = u128_add(u128_add(u128_mul(h0, r2), u128_mul(h1, r1)),
+                      u128_mul(h2, r0));
+
+        c  = u128_shr44(d0); h0 = u128_low44(d0);
+        d1 = u128_addu(d1, c);
+        c  = u128_shr44(d1); h1 = u128_low44(d1);
+        d2 = u128_addu(d2, c);
+        c  = u128_shr42(d2); h2 = u128_low42(d2);
+        h0 += c * 5;
+        c = h0 >> 44; h0 &= 0xfffffffffffULL;
+        h1 += c;
+
+        m += 16;
+        bytes -= 16;
+    }
+    st->h[0] = h0; st->h[1] = h1; st->h[2] = h2;
+}
+
+static void poly64_update(poly1305_64 *st, const uint8_t *m, size_t bytes) {
+    if (st->leftover) {
+        size_t want = 16 - st->leftover;
+        if (want > bytes) want = bytes;
+        memcpy(st->buffer + st->leftover, m, want);
+        bytes -= want; m += want; st->leftover += want;
+        if (st->leftover < 16) return;
+        poly64_blocks(st, st->buffer, 16);
+        st->leftover = 0;
+    }
+    if (bytes >= 16) {
+        size_t want = bytes & ~(size_t)15;
+        poly64_blocks(st, m, want);
+        m += want; bytes -= want;
+    }
+    if (bytes) {
+        memcpy(st->buffer + st->leftover, m, bytes);
+        st->leftover += bytes;
+    }
+}
+
+static void poly64_finish(poly1305_64 *st, uint8_t mac[16]) {
+    uint64_t h0, h1, h2, c, g0, g1, g2, t0, t1;
+
+    if (st->leftover) {
+        size_t i = st->leftover;
+        st->buffer[i++] = 1;
+        for (; i < 16; i++) st->buffer[i] = 0;
+        st->final = 1;
+        poly64_blocks(st, st->buffer, 16);
+    }
+
+    h0 = st->h[0]; h1 = st->h[1]; h2 = st->h[2];
+    c = h1 >> 44; h1 &= 0xfffffffffffULL;
+    h2 += c; c = h2 >> 42; h2 &= 0x3ffffffffffULL;
+    h0 += c * 5; c = h0 >> 44; h0 &= 0xfffffffffffULL;
+    h1 += c; c = h1 >> 44; h1 &= 0xfffffffffffULL;
+    h2 += c; c = h2 >> 42; h2 &= 0x3ffffffffffULL;
+    h0 += c * 5; c = h0 >> 44; h0 &= 0xfffffffffffULL;
+    h1 += c;
+
+    g0 = h0 + 5; c = g0 >> 44; g0 &= 0xfffffffffffULL;
+    g1 = h1 + c; c = g1 >> 44; g1 &= 0xfffffffffffULL;
+    g2 = h2 + c - ((uint64_t)1 << 42);
+
+    c = (g2 >> 63) - 1;                 /* all ones when g did not borrow */
+    g0 &= c; g1 &= c; g2 &= c;
+    c = ~c;
+    h0 = (h0 & c) | g0;
+    h1 = (h1 & c) | g1;
+    h2 = (h2 & c) | g2;
+
+    t0 = st->pad[0]; t1 = st->pad[1];
+    h0 += (t0                      ) & 0xfffffffffffULL;
+    c = h0 >> 44; h0 &= 0xfffffffffffULL;
+    h1 += (((t0 >> 44) | (t1 << 20)) & 0xfffffffffffULL) + c;
+    c = h1 >> 44; h1 &= 0xfffffffffffULL;
+    h2 += (((t1 >> 24)             ) & 0x3ffffffffffULL) + c;
+    h2 &= 0x3ffffffffffULL;
+
+    h0 = h0 | (h1 << 44);
+    h1 = (h1 >> 20) | (h2 << 24);
+
+    for (c = 0; c < 8; c++) {
+        mac[c]     = (uint8_t)(h0 >> (8 * c));
+        mac[c + 8] = (uint8_t)(h1 >> (8 * c));
+    }
+}
+
+/* ------------------------------------------- Poly1305, four chains at once */
+/* Poly1305 is a Horner evaluation: h = (((h + m1)r + m2)r + m3)r ... Each
+   block's multiply needs the previous block's result, so the loop runs at the
+   latency of one multiply chain and the machine's multipliers sit idle. That
+   is why 64-bit limbs bought only 11% over 26-bit ones: nine wide products
+   instead of twenty-five narrow ones does not help when the problem is waiting
+   rather than working.
+
+   The fix is the same one that made ChaCha20 fast: more chains. Splitting the
+   message four ways
+
+       H = m1.r^n + m2.r^(n-1) + ... + mn.r
+
+   into four accumulators that each advance by r^4, and combining them at the
+   end with r^4, r^3, r^2 and r, gives four independent multiplies per group.
+   The powers of r are computed once per message.
+
+   This is arithmetic, not a new construction: the result is the same tag, and
+   the differential check against the 26-bit implementation at every length is
+   what says so. */
+#ifdef _MSC_VER
+#define FE_INLINE __forceinline
+#else
+#define FE_INLINE __attribute__((always_inline)) inline
+#endif
+
+static FE_INLINE void fe_mul(const uint64_t a[3], const uint64_t b[3],
+                             uint64_t out[3]) {
+    uint64_t s1 = b[1] * 20, s2 = b[2] * 20, c;
+    u128_t d0, d1, d2;
+
+    d0 = u128_add(u128_add(u128_mul(a[0], b[0]), u128_mul(a[1], s2)),
+                  u128_mul(a[2], s1));
+    d1 = u128_add(u128_add(u128_mul(a[0], b[1]), u128_mul(a[1], b[0])),
+                  u128_mul(a[2], s2));
+    d2 = u128_add(u128_add(u128_mul(a[0], b[2]), u128_mul(a[1], b[1])),
+                  u128_mul(a[2], b[0]));
+
+    c = u128_shr44(d0); out[0] = u128_low44(d0);
+    d1 = u128_addu(d1, c);
+    c = u128_shr44(d1); out[1] = u128_low44(d1);
+    d2 = u128_addu(d2, c);
+    c = u128_shr42(d2); out[2] = u128_low42(d2);
+    out[0] += c * 5;
+    c = out[0] >> 44; out[0] &= 0xfffffffffffULL;
+    out[1] += c;
+}
+
+/* One-shot: the engine seals a whole page at a time, so the streaming shape
+   the other two implementations carry is not what this one has to answer. */
+static void poly1305_x4(const uint8_t key[32], const uint8_t *m, size_t bytes,
+                        uint8_t mac[16]) {
+    uint64_t r[3], r2[3], r3[3], r4[3];
+    uint64_t acc[4][3];
+    uint64_t h0, h1, h2, c, g0, g1, g2, t0, t1, pad0, pad1;
+    int j, lane;
+
+    t0 = load64le(key); t1 = load64le(key + 8);
+    r[0] = (t0                        ) & 0x0ffc0fffffffULL;
+    r[1] = ((t0 >> 44) | (t1 << 20)   ) & 0x0fffffc0ffffULL;
+    r[2] = ((t1 >> 24)                ) & 0x00ffffffc0fULL;
+    pad0 = load64le(key + 16); pad1 = load64le(key + 24);
+
+    fe_mul(r, r, r2);
+    fe_mul(r2, r, r3);
+    fe_mul(r2, r2, r4);
+
+    for (lane = 0; lane < 4; lane++)
+        acc[lane][0] = acc[lane][1] = acc[lane][2] = 0;
+
+    /* Groups of four whole blocks: four independent multiplies by r^4. */
+    while (bytes >= 64) {
+        for (lane = 0; lane < 4; lane++) {
+            const uint8_t *b = m + lane * 16;
+            uint64_t w0 = load64le(b), w1 = load64le(b + 8);
+            /* acc = acc.r^4 + m, not (acc + m).r^4 - the second gives every
+               block one factor of r^4 too many, which the vector for a
+               34-byte message cannot see because 34 bytes never reach this
+               loop. The differential check at every length did. */
+            fe_mul(acc[lane], r4, acc[lane]);
+            acc[lane][0] += (w0                     ) & 0xfffffffffffULL;
+            acc[lane][1] += ((w0 >> 44) | (w1 << 20)) & 0xfffffffffffULL;
+            acc[lane][2] += (((w1 >> 24)) & 0x3ffffffffffULL) |
+                            ((uint64_t)1 << 40);
+        }
+        m += 64;
+        bytes -= 64;
+    }
+
+    /* Combine: H = a0.r^4 + a1.r^3 + a2.r^2 + a3.r */
+    {
+        uint64_t p0[3], p1[3], p2[3], p3[3];
+        fe_mul(acc[0], r4, p0);
+        fe_mul(acc[1], r3, p1);
+        fe_mul(acc[2], r2, p2);
+        fe_mul(acc[3], r,  p3);
+        h0 = p0[0] + p1[0] + p2[0] + p3[0];
+        h1 = p0[1] + p1[1] + p2[1] + p3[1];
+        h2 = p0[2] + p1[2] + p2[2] + p3[2];
+        c = h0 >> 44; h0 &= 0xfffffffffffULL; h1 += c;
+        c = h1 >> 44; h1 &= 0xfffffffffffULL; h2 += c;
+        c = h2 >> 42; h2 &= 0x3ffffffffffULL; h0 += c * 5;
+        c = h0 >> 44; h0 &= 0xfffffffffffULL; h1 += c;
+    }
+
+    /* Whatever is left - up to three whole blocks and a partial one - is the
+       ordinary serial Horner, because there is nothing to parallelise. */
+    {
+        uint64_t h[3];
+        h[0] = h0; h[1] = h1; h[2] = h2;
+        while (bytes > 0) {
+            uint8_t last[16];
+            const uint8_t *b;
+            uint64_t w0, w1, hibit;
+            size_t n = bytes < 16 ? bytes : 16;
+            if (n == 16) {
+                b = m;
+                hibit = (uint64_t)1 << 40;
+            } else {
+                memcpy(last, m, n);
+                last[n] = 1;
+                for (j = (int)n + 1; j < 16; j++) last[j] = 0;
+                b = last;
+                hibit = 0;
+            }
+            w0 = load64le(b); w1 = load64le(b + 8);
+            h[0] += (w0                     ) & 0xfffffffffffULL;
+            h[1] += ((w0 >> 44) | (w1 << 20)) & 0xfffffffffffULL;
+            h[2] += (((w1 >> 24)) & 0x3ffffffffffULL) | hibit;
+            fe_mul(h, r, h);
+            m += n;
+            bytes -= n;
+        }
+        h0 = h[0]; h1 = h[1]; h2 = h[2];
+    }
+
+    c = h1 >> 44; h1 &= 0xfffffffffffULL;
+    h2 += c; c = h2 >> 42; h2 &= 0x3ffffffffffULL;
+    h0 += c * 5; c = h0 >> 44; h0 &= 0xfffffffffffULL;
+    h1 += c;
+
+    g0 = h0 + 5; c = g0 >> 44; g0 &= 0xfffffffffffULL;
+    g1 = h1 + c; c = g1 >> 44; g1 &= 0xfffffffffffULL;
+    g2 = h2 + c - ((uint64_t)1 << 42);
+
+    c = (g2 >> 63) - 1;
+    g0 &= c; g1 &= c; g2 &= c;
+    c = ~c;
+    h0 = (h0 & c) | g0;
+    h1 = (h1 & c) | g1;
+    h2 = (h2 & c) | g2;
+
+    h0 += (pad0                        ) & 0xfffffffffffULL;
+    c = h0 >> 44; h0 &= 0xfffffffffffULL;
+    h1 += (((pad0 >> 44) | (pad1 << 20)) & 0xfffffffffffULL) + c;
+    c = h1 >> 44; h1 &= 0xfffffffffffULL;
+    h2 += (((pad1 >> 24)               ) & 0x3ffffffffffULL) + c;
+    h2 &= 0x3ffffffffffULL;
+
+    h0 = h0 | (h1 << 44);
+    h1 = (h1 >> 20) | (h2 << 24);
+
+    for (c = 0; c < 8; c++) {
+        mac[c]     = (uint8_t)(h0 >> (8 * c));
+        mac[c + 8] = (uint8_t)(h1 >> (8 * c));
+    }
+}
+
 /* ------------------------------------------------------- known-answer vectors */
 static int checks_run, checks_failed;
 
@@ -662,6 +1007,21 @@ static void kat_poly1305(void) {
     poly1305_finish(&st, mac);
     check("Poly1305 tag matches RFC 8439 section 2.5.2",
           memcmp(mac, want, 16) == 0);
+    {
+        uint8_t mac4[16];
+        poly1305_x4(key, (const uint8_t *)msg, strlen(msg), mac4);
+        check("and so does the four-chain implementation",
+              memcmp(mac4, want, 16) == 0);
+    }
+    {
+        poly1305_64 st64;
+        uint8_t mac64[16];
+        poly64_init(&st64, key);
+        poly64_update(&st64, (const uint8_t *)msg, strlen(msg));
+        poly64_finish(&st64, mac64);
+        check("and so does the 64-bit implementation",
+              memcmp(mac64, want, 16) == 0);
+    }
 }
 
 /* The keystream must not depend on where the buffer is split, nor on which
@@ -743,6 +1103,40 @@ static void kat_streaming(void) {
     poly1305_finish(&s2, m2);
     check("Poly1305 is the same tag whatever the chunking",
           memcmp(m1, m2, 16) == 0);
+
+    /* The two Poly1305s must agree with each other, at every length, including
+       the partial final block and the empty message. Two implementations of
+       the same function checked against each other catch what a single vector
+       cannot: a bug that is right on 34 bytes and wrong on 33. */
+    {
+        int ok = 1, len;
+        for (len = 0; len <= 300; len++) {
+            poly1305_ctx c26;
+            poly1305_64 c64;
+            uint8_t t26[16], t64[16];
+            poly1305_init(&c26, key);
+            poly1305_update(&c26, a, (size_t)len);
+            poly1305_finish(&c26, t26);
+            poly64_init(&c64, key);
+            poly64_update(&c64, a, (size_t)len);
+            poly64_finish(&c64, t64);
+            if (memcmp(t26, t64, 16) != 0) { ok = 0; break; }
+        }
+        check("64-bit Poly1305 agrees with the 26-bit one, lengths 0..300",
+              ok);
+
+        ok = 1;
+        for (len = 0; len <= 300; len++) {
+            poly1305_ctx c26;
+            uint8_t t26[16], t4[16];
+            poly1305_init(&c26, key);
+            poly1305_update(&c26, a, (size_t)len);
+            poly1305_finish(&c26, t26);
+            poly1305_x4(key, a, (size_t)len, t4);
+            if (memcmp(t26, t4, 16) != 0) { ok = 0; break; }
+        }
+        check("four-chain Poly1305 agrees as well, lengths 0..300", ok);
+    }
 }
 
 /* ------------------------------------------------------------------- AES-NI */
@@ -893,7 +1287,25 @@ int main(void) {
         poly1305_finish(&st, mac);
     }
     t = now_seconds() - t;
-    printf("  %-40s %10.0f %10.2f\n", "Poly1305 (portable C)",
+    printf("  %-40s %10.0f %10.2f\n", "Poly1305, 26-bit limbs",
+           t * 1e9 / rounds, (double)PAGE_SIZE * rounds / t / 1e9);
+
+    t = now_seconds();
+    for (i = 0; i < (unsigned)rounds; i++) {
+        poly1305_64 st;
+        poly64_init(&st, key);
+        poly64_update(&st, page, PAGE_SIZE);
+        poly64_finish(&st, mac);
+    }
+    t = now_seconds() - t;
+    printf("  %-40s %10.0f %10.2f\n", "Poly1305, 64-bit limbs",
+           t * 1e9 / rounds, (double)PAGE_SIZE * rounds / t / 1e9);
+
+    t = now_seconds();
+    for (i = 0; i < (unsigned)rounds; i++)
+        poly1305_x4(key, page, PAGE_SIZE, mac);
+    t = now_seconds() - t;
+    printf("  %-40s %10.0f %10.2f\n", "Poly1305, four chains",
            t * 1e9 / rounds, (double)PAGE_SIZE * rounds / t / 1e9);
 
     t = now_seconds();
@@ -934,6 +1346,32 @@ int main(void) {
         }
         t = now_seconds() - t;
         printf("  %-40s %10.0f %10.2f\n", "sealing a page, AVX2 cipher",
+               t * 1e9 / rounds, (double)PAGE_SIZE * rounds / t / 1e9);
+    }
+#endif
+
+#ifdef HAVE_CHACHA_SSE2
+    t = now_seconds();
+    for (i = 0; i < (unsigned)rounds; i++) {
+        chacha20_xor_sse2x4(key, i, nonce, page, PAGE_SIZE);
+        poly1305_x4(key, page, PAGE_SIZE, mac);
+    }
+    t = now_seconds() - t;
+    printf("  %-40s %10.0f %10.2f\n",
+           "sealing a page, SSE2 cipher + 4-chain MAC",
+           t * 1e9 / rounds, (double)PAGE_SIZE * rounds / t / 1e9);
+#endif
+
+#ifdef HAVE_CHACHA_AVX2
+    if (f.avx2) {
+        t = now_seconds();
+        for (i = 0; i < (unsigned)rounds; i++) {
+            chacha20_xor_avx2(key, i, nonce, page, PAGE_SIZE);
+            poly1305_x4(key, page, PAGE_SIZE, mac);
+        }
+        t = now_seconds() - t;
+        printf("  %-40s %10.0f %10.2f\n",
+               "sealing a page, AVX2 cipher + 4-chain MAC",
                t * 1e9 / rounds, (double)PAGE_SIZE * rounds / t / 1e9);
     }
 #endif

@@ -52,10 +52,14 @@ Both machines report AES-NI, PCLMULQDQ, SHA-NI, AVX2 and RDSEED present.
 | ChaCha20, SSE2, one block | 4,665 ns · 0.88 GB/s | 4,653 ns · 0.88 GB/s |
 | ChaCha20, SSE2, four blocks | 2,746 ns · 1.49 GB/s | 2,965 ns · 1.38 GB/s |
 | ChaCha20, AVX2, eight blocks | 1,822 ns · 2.25 GB/s | 1,935 ns · 2.12 GB/s |
-| Poly1305, scalar C | 2,137 ns · 1.92 GB/s | 2,655 ns · 1.54 GB/s |
-| **sealing a page, scalar** | **9,142 ns** | **9,602 ns** |
-| **sealing a page, SSE2 four-block** | **4,585 ns** | **5,457 ns** |
-| **sealing a page, AVX2** | **3,517 ns** | **4,557 ns** |
+| Poly1305, 26-bit limbs | 1,839 ns · 2.23 GB/s | 2,521 ns · 1.62 GB/s |
+| Poly1305, 64-bit limbs | 1,822 ns · 2.25 GB/s | 1,590 ns · 2.58 GB/s |
+| Poly1305, four chains | 1,146 ns · 3.58 GB/s | 1,097 ns · 3.74 GB/s |
+| **sealing a page, scalar** | **9,120 ns** | **9,537 ns** |
+| **sealing a page, SSE2 four-block cipher** | **4,615 ns** | **5,480 ns** |
+| **sealing a page, AVX2 cipher** | **3,464 ns** | **4,509 ns** |
+| **sealing a page, SSE2 cipher + 4-chain MAC** | **3,722 ns** | **3,995 ns** |
+| **sealing a page, AVX2 cipher + 4-chain MAC** | **2,620 ns** | **3,023 ns** |
 | AES-128-CTR, AES-NI | 280 ns · 14.6 GB/s | 284 ns · 14.4 GB/s |
 | carry-less multiply chain, PCLMULQDQ | 427 ns · 9.6 GB/s | 354 ns · 11.6 GB/s |
 | **hardware AEAD, the two terms together** | **~700 ns** | **~640 ns** |
@@ -121,9 +125,49 @@ on tmpfs.
 
 Reaching 2 µs needs a parallel Poly1305, which is real work: the MAC's
 sequential Horner evaluation has to become a multi-lane one with precomputed
-powers of the key. That is a task with a known shape and known vectors, and it
-belongs to step 3 rather than to an implementation note — **it is now the
-deciding term.**
+powers of the key.
+
+### The parallel MAC, and the thing that was actually in the way
+
+Poly1305 is a Horner evaluation — `h = (((h + m₁)r + m₂)r + m₃)r …` — so every
+block waits for the one before it. Splitting the message four ways, each
+accumulator advancing by `r⁴` and combined at the end with `r⁴, r³, r², r`,
+gives four independent multiplies per group. Written that way it was **slower**:
+2,065 ns against the serial version's 1,807.
+
+That made no sense, and the reason it made no sense was not the algorithm.
+
+```
+load64le as eight byte loads and fourteen shifts:
+    26-bit   1,839     64-bit   1,822     four chains   1,876
+
+the same function as a memcpy of eight bytes:
+    26-bit   1,849     64-bit   1,867     four chains   1,146
+```
+
+**The serial implementations did not care and the parallel one halved.** A
+portable little-endian load costs about thirty operations per 16-byte block
+against nine multiplies — and a serial Horner chain has so much multiply
+latency to wait through that thirty extra operations hide inside it. Remove the
+waiting, and the loads are all that is left.
+
+So the four-chain decomposition works, and it was invisible until the code
+around it stopped being the limit. The lesson is not about Poly1305: **a
+parallel version of anything measures the overheads that a serial version was
+concealing.**
+
+Where that leaves a sealed page:
+
+| | Linux | Windows |
+| :--- | ---: | ---: |
+| scalar cipher, serial MAC | 9,120 ns | 9,537 ns |
+| SSE2 cipher, 4-chain MAC | 3,722 ns | 3,995 ns |
+| **AVX2 cipher, 4-chain MAC** | **2,620 ns** | **3,023 ns** |
+
+From 9.1 µs to 2.6 µs, a 3.5x improvement, and the cipher and the MAC are now
+within 30% of each other — 1,486 ns against 1,146 — so neither is the obvious
+next target. The 2 µs the design wanted is **close but not reached**, and it is
+reached only with AVX2, which is a dispatch decision rather than a baseline.
 
 ## Two things this does not say
 

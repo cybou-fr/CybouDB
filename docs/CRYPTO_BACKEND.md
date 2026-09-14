@@ -126,12 +126,32 @@ SSE2 4-block    cipher 2,746 ns   MAC 2,137 ns   page 4,585 ns
 AVX2 8-block    cipher 1,822 ns   MAC 2,137 ns   page 3,517 ns
 ```
 
-Two things follow. **The SSE2 four-block path is the one to build first**: it
-costs 4.6 µs, needs no CPUID question at all because SSE2 is x86-64 baseline,
-and is within 30% of the AVX2 path that does. And **the deciding term is now
-the MAC**: a parallel Poly1305, with precomputed powers of the key so the
-Horner chain becomes multi-lane, is what step 3 still owes — not more work on
-the cipher.
+**The MAC has since been parallelised too**, and a sealed page now costs
+**2.6 µs with AVX2 and 3.7 µs on the SSE2 baseline** — from 9.1 µs, a 3.5-fold
+improvement, with the cipher and the MAC finally within 30% of each other:
+
+```
+                          cipher     MAC      page
+scalar, serial MAC         7,235   1,839    9,120 ns
+SSE2 4-block, 4-chain      2,589   1,146    3,722 ns
+AVX2 8-block, 4-chain      1,486   1,146    2,620 ns
+```
+
+Two things follow. **The SSE2 four-block path is the one to build first**: no
+CPUID question at all, because SSE2 is x86-64 baseline, and within 40% of the
+AVX2 path that needs one. And **2 µs is close but not reached**, and only with
+AVX2 — so the design should say an encrypted page costs *about three
+microseconds to seal*, not two, and the release notes should carry that number
+rather than the aspiration.
+
+The parallel MAC also produced the most useful negative result of this step:
+written straightforwardly it was *slower* than the serial one, and the cause
+was a portable little-endian load costing thirty operations per block. A serial
+Horner chain hides that inside its own multiply latency; four independent
+chains do not. **A parallel version of anything measures the overheads the
+serial version was concealing** —
+[the result](../benchmarks/results/2026-09-15-crypto-primitives.md) has the
+numbers.
 
 The byte-identity requirement paid for itself immediately: every vector path is
 asserted equal to the scalar one at **every length from 1 to 700**, and the
@@ -172,7 +192,8 @@ official vectors does not ship.
 | | |
 | :--- | :--- |
 | ~~a vectorised ChaCha20, measured~~ | done: 2.25 GB/s with AVX2, 1.49 with SSE2, and the expectation it was testing turned out to be 1.75x optimistic |
-| a parallel Poly1305 | now the larger half of a sealed page, and the only way to the 2 µs the design wanted |
+| ~~a parallel Poly1305~~ | done: four chains with precomputed powers, 1.6x, and a sealed page at 2.6 µs |
+| an assembly implementation | everything measured here is C; the engine is NASM, and the backend has to be too |
 | XChaCha20's own vectors | the HChaCha20 construction has published test vectors of its own; ChaCha20's do not cover it |
 | a Poly1305 one-time-key derivation check | the AEAD derives its MAC key from the cipher; that wiring has its own vector in RFC 8439 section 2.8.2 |
 | constant-time review of Poly1305's final reduction | the probe's version branches on nothing, but that is an assertion until someone checks the generated code |
