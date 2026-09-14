@@ -595,7 +595,7 @@ that looks finished and is not. Threat model first; the attack suite before
 the release, not after it.
 
 ```text
- 1. Threat model                     docs/ENCRYPTION.md
+ 1. Threat model                     docs/ENCRYPTION.md          done
  2. Format design                    a v1 extension, or format v2
  3. Reference crypto backend         ML-KEM, ML-DSA candidate, AEAD, KDF,
                                      against official known-answer vectors
