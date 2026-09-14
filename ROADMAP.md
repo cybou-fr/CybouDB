@@ -68,10 +68,26 @@ path and a v1 reader that keeps working — never a quiet break.
 | ~~**0.5.0-preview.1**~~ | *released* — one file, one transaction | |
 | ~~**0.5.0-preview.2**~~ | *released* — predictable commit cost | |
 | **0.6** | Application-grade embedded workflows | No change to what format v1 means for data already written |
-| **0.7** | ARM64 / Apple Silicon | No rewrite of the portable format |
-| **0.8** | SQL and storage depth | Not becoming PostgreSQL |
-| **0.9** | Vector, index and concurrency depth | Nothing without measurements first |
-| **1.0** | Stable ABI and a stable product contract | No experimental semantics |
+| **0.7** | Encrypted storage and cryptographic authority | Not a permission system bolted on top of readable bytes |
+| **0.8** | ARM64 / Apple Silicon | No rewrite of the portable format |
+| **0.9** | SQL, vector, index and concurrency depth | Nothing without measurements first |
+| **1.0** | Stable ABI, stable security and product contract | No experimental semantics |
+
+The order is deliberate:
+
+```text
+0.5  engine correctness
+       ↓
+0.6  application usability
+       ↓
+0.7  data security and cryptographic authority
+       ↓
+0.8  platform expansion
+       ↓
+0.9  depth
+       ↓
+1.0  stability
+```
 
 ---
 
@@ -81,8 +97,16 @@ path and a v1 reader that keeps working — never a quiet break.
 and a worker can take a job without holding a transaction open while it does
 the work.**
 
-Two gaps, and they are the two that stop CybouDB being reached for. Everything
-in `0.5` was about the engine being right; this is about it being usable.
+Three parts: the flush investigation `preview.2` left open, and the two gaps
+that stop CybouDB being reached for. Everything in `0.5` was about the engine
+being right; this is about it being usable.
+
+```text
+0.6
+ ├─ flush investigation
+ ├─ parameter binding
+ └─ queue leases
+```
 
 Unlike `preview.2`, this release changes the public surface: new C entry
 points, new SQL syntax, and a new incompatible feature bit. It does not change
@@ -108,6 +132,16 @@ both are load-bearing for a proof the engine already depends on.
    file size, dirty page count, the extent map, the filesystem? The deliverable
    is a measurement and a cause, not a fix. Whether a fix belongs in `0.6` at
    all is a decision that measurement makes, not this document.
+
+   *In progress, and it has already found something the timings did not
+   suggest. The range a commit hands the kernel is a hull, `DB_DIRTY_LO..HI`,
+   and in one workload - a queue filled to 10,000 and drained empty - a commit
+   handed one barrier **59,998 pages** where an ordinary commit hands over 13.
+   That is the engine asking the kernel for more, not the kernel being slow,
+   and it is a different finding from "the flush grows with the file".
+   The cause is not yet established: draining 2,000, 5,000 and 9,000 of 10,000
+   leaves the range at 13, so whatever triggers it is not simply reuse after a
+   retire, which was the first guess.*
 
 ### Parameter binding
 
@@ -162,10 +196,18 @@ what the next free incompatible bit is for:
 | --- | --- | --- |
 | 65536 | `QUEUE_LEASES` | `QUEUE` |
 
+**The bit is set when the database is created, not when the first `CLAIM`
+happens.** Every other capability in this format works that way, and for the
+same reason: `flags_incompat` lives in the file header, which is written once
+and never rewritten, and a first `CLAIM` that had to promote a file in place
+would be a format change disguised as an operation. So a database is created
+with leases or without them, `cyboudb create` gains the choice, and a file
+created without them stays readable by `0.5` forever rather than until someone
+claims a message.
+
 This is the format's own philosophy meeting its first real test: a new
 capability becomes a new `flags_incompat` bit, an older reader refuses what it
-does not understand, a newer reader reads both. A database that never claims a
-message never sets the bit and stays readable by `0.5`.
+does not understand, a newer reader reads both.
 
 **The first question is the clock, and it is a design question.** A lease
 deadline has to survive a crash and a restart, so it cannot be monotonic time -
@@ -196,7 +238,190 @@ into this one.
 
 ---
 
-## 0.7 — ARM64 / Apple Silicon
+## 0.7 — Encrypted storage and cryptographic authority
+
+**The guarantee: possession of a `.cdb` file is not possession of its data, and
+a process can be given only the cryptographic authority it actually needs.**
+
+The model is not *has a key / has no key*. It is *which key, what can it
+decrypt, and what is it allowed to do*:
+
+```text
+                      ROOT AUTHORITY
+                           │
+              ┌────────────┴────────────┐
+              │                         │
+       PQ private key            24-word mnemonic
+              │                         │
+              └──────────┬──────────────┘
+                         ↓
+                  database key hierarchy
+                         │
+          ┌──────────────┼───────────────┐
+          │              │               │
+      metadata DEK   table DEKs      queue/stream DEKs
+```
+
+A process is handed the wrapped keys for what it needs and a signed statement
+of what it may do. It is not handed the root.
+
+### Why this is more than an ACL
+
+A permission list on readable bytes is advice. Here, a holder who is not given
+a data encryption key cannot read that data even with the file in hand and the
+engine's source in front of them. Finance holding a copy of the database
+cannot read `secrets`, because no key it has unwraps that namespace.
+
+That is the difference worth building, and it is the reason encryption and
+permissions arrive together rather than as two releases.
+
+### Capabilities, not levels
+
+The format stores capability bits and a scope, never `LEVEL 1`, `LEVEL 2`.
+Levels stop describing reality the first time someone needs an exception.
+
+```text
+READ  INSERT  UPDATE  DELETE  APPEND
+QUEUE_ENQUEUE  QUEUE_CLAIM  QUEUE_ACK  QUEUE_NACK  QUEUE_RENEW
+STREAM_APPEND  STREAM_READ
+DDL  CREATE_INDEX
+KEY_GRANT  KEY_REVOKE  KEY_ROTATE
+BACKUP  VERIFY
+```
+
+Scoped to the whole database, a namespace, an object type, or one object id.
+`READER`, `WRITER`, `WORKER` and `ADMIN` are names for common combinations and
+nothing more — convenience at the edge, capability bits in the file.
+
+### Public-key-only writes, and the honest limit
+
+A holder of nothing but a recipient's public key can seal a record into the
+database and never be able to read it back:
+
+```text
+recipient PUBLIC KEY
+        ↓ ML-KEM encapsulation
+     fresh secret
+        ↓ KDF
+  one-time payload key
+        ↓ AEAD(payload)
+    sealed record
+```
+
+That covers `APPEND`, `ENQUEUE`, and a sealed `INSERT`.
+
+**It does not cover `UPDATE`, `DELETE` or `ALTER`, and it will not be claimed
+to.** A copy-on-write engine has to read the structural state it is about to
+replace — the leaf it rewrites, the index entries it patches, the directory it
+restages. A writer that cannot decrypt that state cannot produce a correct
+successor to it. Append-shaped operations are exactly the ones that add without
+reading, which is why the promise stops there.
+
+### The access manifest
+
+A signed policy object in the file, rather than a convention in an
+application:
+
+```text
+ACCESS MANIFEST
+├─ epoch
+├─ key IDs
+├─ public identities
+├─ permissions
+├─ scopes
+├─ wrapped DEKs
+├─ revoked keys
+├─ issuer
+└─ PQ signature          (ML-DSA is the candidate)
+```
+
+So a manifest can say: key 17 may `APPEND` to stream `telemetry`; key 23 may
+`CLAIM`/`ACK`/`RENEW` on queue `jobs`; key 41 may `READ` namespace `finance`.
+
+### Revocation, said honestly
+
+For a writer or a worker, revocation is clean: a new manifest epoch, and the
+key's operations stop being accepted.
+
+For a reader it is not, and pretending otherwise would be the kind of claim
+this project does not make. A reader that already received a data encryption
+key cannot be made to forget it, and data it could already read stays readable
+to it. What revocation can do:
+
+```text
+revoke reader
+        ↓
+rotate the scoped DEK
+        ↓
+new epoch
+        ↓
+data written from here uses the new key
+        ↓
+the revoked key never receives it
+```
+
+Forward secrecy for future writes; nothing retroactive. That is the true
+statement, and the documentation will make it before anyone relies on the
+other one.
+
+### The 24 words
+
+A recovery slot of its own, not a textual spelling of the PQ private key:
+
+```text
+24 words → 256-bit recovery secret → domain-separated KDF
+         → recovery KEK → unwraps the database root
+```
+
+Two independent paths to the root means either can be rotated without the
+other: a compromised PQ key does not force a new mnemonic, and a new mnemonic
+does not invalidate the key.
+
+### The order of work
+
+Crypto is the one area where building in the wrong order produces something
+that looks finished and is not. Threat model first; the attack suite before
+the release, not after it.
+
+```text
+ 1. Threat model                     docs/ENCRYPTION.md
+ 2. Format design                    a v1 extension, or format v2
+ 3. Reference crypto backend         ML-KEM, ML-DSA candidate, AEAD, KDF,
+                                     against official known-answer vectors
+ 4. Root key hierarchy
+ 5. Opening with a PQ private key
+ 6. Independent 24-word recovery
+ 7. Authenticated page encryption
+ 8. Crash-safe encrypted transactions
+ 9. Scoped DEKs
+10. The signed access manifest
+11. Permissions and scoped keys
+12. Public-key-only sealed APPEND / ENQUEUE
+13. Authenticated writer keys
+14. Worker capabilities
+15. Revocation and key epochs
+16. Key rotation and rewrapping
+17. Plain to encrypted migration
+18. Attack suite
+19. Performance measurement
+20. Frozen encrypted fixtures
+21. Release
+```
+
+Step 2 decides whether this is format v1 with new incompatible bits or format
+v2 with a migration. Either is allowed by
+[the compatibility promise](#the-compatibility-promise); what is not allowed is
+changing what v1 means for a file already written.
+
+**A note on size.** This is larger than `0.5` and `0.6` together, and the
+project has one measurement-driven habit worth keeping here: nothing in the
+list above is a promise about a date. If step 3 says the reference backend is
+not something this project should carry, that is an answer, and it arrives
+before step 4 rather than after step 20.
+
+---
+
+## 0.8 — ARM64 / Apple Silicon
 
 A database that calls itself modern and embedded, and does not run natively on
 Apple Silicon, has a product story with a hole in it. The architecture was
@@ -212,7 +437,7 @@ create on x86-64  →  open and write on ARM64  →  open again on x86-64
 
 ---
 
-## After that
+## 0.9 — Depth
 
 Order, not dates:
 
@@ -234,15 +459,12 @@ more concurrency — only if measurements and real use cases justify it
 
 ## Deliberately not now
 
-AVX-512, FMA experiments, encryption, ML-KEM, a daemon, multi-writer
-concurrency, ANN, `VACUUM`, REPL history, queue priorities and delayed
-delivery.
+AVX-512, FMA experiments, a daemon, multi-writer concurrency, ANN, `VACUUM`,
+REPL history, queue priorities and delayed delivery.
 
-Not because they are bad. Because none of them answers the question the project
-has to answer next:
-
-> Can CybouDB become a predictable, pleasant embedded engine that a person can
-> trust with their data?
+Not because they are bad. Because none of them answers the question in front of
+the project, which `0.6` and `0.7` divide between them: can CybouDB be pleasant
+to use, and can it be trusted with data that matters?
 
 **WAL in particular is not planned.** The two syncs are not an accidental
 performance bug; they are the crash-safety design:
