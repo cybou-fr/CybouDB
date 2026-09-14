@@ -267,6 +267,44 @@ int cyboudb_open(const char *path, uint32_t flags, cyboudb_db **out_db);
 int cyboudb_create(const char *path, uint64_t pages, cyboudb_db **out_db);
 
 /**
+ * Capabilities a database can only be given when it is made.
+ *
+ * Some things are decided once, in the file header, and never afterwards -
+ * queue leases are the first. Set `struct_size` to `sizeof` this struct as
+ * your build sees it; a library that later learns a new field uses that to
+ * tell whether you knew about it, which is what lets this grow without a
+ * third entry point.
+ *
+ * A flag this build does not implement is refused rather than ignored. Asking
+ * for a capability and quietly receiving a database without it is the one
+ * outcome that would be worse than an error.
+ */
+typedef struct cyboudb_create_options {
+    uint32_t struct_size;
+    uint32_t flags;
+} cyboudb_create_options;
+
+/** Queues may be claimed with a deadline. See docs/QUEUE.md. */
+#define CybouDB_CREATE_QUEUE_LEASES 0x0001u
+
+/**
+ * Create a database with capabilities chosen at creation.
+ *
+ * `options` may be NULL, which is exactly cyboudb_create - the profile a
+ * caller who was not asked gets. A database created without a capability stays
+ * readable by builds that predate it; one created with it is refused by them,
+ * saying which capability it needs.
+ *
+ * @return CybouDB_OK, CybouDB_MISUSE for a null path or out_db, a
+ *         `struct_size` smaller than the fields it must have, or a flag this
+ *         build does not implement, and CybouDB_ERROR if the file could not be
+ *         created or opened.
+ */
+int cyboudb_create_with_options(const char *path, uint64_t pages,
+                                const cyboudb_create_options *options,
+                                cyboudb_db **out_db);
+
+/**
  * Close an open CybouDB database connection and release mapped resources.
  * Returns CybouDB_BUSY while any prepared statements remain alive, including
  * exhausted or reset statements. A busy connection stays open and usable.

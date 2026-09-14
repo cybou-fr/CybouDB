@@ -24,6 +24,15 @@
 %define CybouDB_C_OPEN_READONLY    0x0001
 %define CybouDB_C_OPEN_READWRITE   0x0002
 
+; --- cyboudb_create_options --------------------------------------------------
+; Two u32s, and room to grow. struct_size is how much of it the caller filled
+; in, so a build that learns a new field later can tell whether this caller
+; knew about it.
+%define CybouDB_CREATE_OPT_SIZE    0    ; dword: sizeof the struct as filled in
+%define CybouDB_CREATE_OPT_FLAGS   4    ; dword: CybouDB_CREATE_*
+%define CybouDB_CREATE_QUEUE_LEASES 0x0001
+%define CybouDB_CREATE_KNOWN       CybouDB_CREATE_QUEUE_LEASES
+
 ; --- cyboudb_db structure layout (4096 bytes) ---
 ; The descriptor comes first and everything after it is placed relative to its
 ; size. Spelling these as literals meant that growing CybouDB_DB_SIZE silently

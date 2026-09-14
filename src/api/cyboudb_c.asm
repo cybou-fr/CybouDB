@@ -17,7 +17,7 @@ default rel
 
 ; --- External engine functions -----------------------------------------------
 extern db_open, db_close, db_commit, db_rollback
-extern db_create_default
+extern db_create_default, db_create_leases
 extern db_catalog_put, db_catalog_drop, db_catalog_truncate_data, db_pax_insert
 extern db_var_read_chain
 extern sql_select_open, sql_select_next
@@ -52,7 +52,7 @@ global cyboudb_column_int32
 global cyboudb_column_float
 global cyboudb_column_bool
 global cyboudb_column_bytes, cyboudb_message
-global cyboudb_create
+global cyboudb_create, cyboudb_create_with_options
 global cyboudb_column_vector_dimensions
 global cyboudb_column_vector_f32
 global cyboudb_exec
@@ -218,6 +218,96 @@ cyboudb_open:
 ;
 ;  Local slots: [rbp-8]=path, [rbp-16]=pages, [rbp-24]=out_db
 ; =============================================================================
+; =============================================================================
+;  cyboudb_create_with_options(path, pages, options, out_db) -> int
+;
+;  One additive entry point rather than a function per creation-time
+;  capability. Leases are decided when a file is made and never afterwards, and
+;  0.7 brings encryption on the same terms - a cyboudb_create_leases would have
+;  been the first of a family that grows without bound.
+;
+;  `struct_size` is what lets that growth happen without a third function: a
+;  caller says how much of the struct it filled in, this build reads only the
+;  fields it knows about, and a newer caller against an older build is
+;  therefore safe in the direction that matters.
+;
+;  An unknown flag is refused rather than ignored. A caller asking for a
+;  capability this build does not implement must not quietly receive an
+;  ordinary database - that is the same rule the format's own unknown bits
+;  follow, one level up.
+; =============================================================================
+cyboudb_create_with_options:
+%ifdef CybouDB_WINDOWS
+    FRAME_BEGIN 2128, 0                 ; [rbp - 2048]: wide path buffer
+%else
+    FRAME_BEGIN 64, 0
+%endif
+    mov     [rbp - 8], ARG1             ; path
+    mov     [rbp - 16], ARG2            ; pages
+    mov     [rbp - 24], ARG4            ; out_db
+    mov     [rbp - 32], ARG3            ; options, or zero
+    test    ARG1, ARG1
+    jz      .cwo_misuse
+    test    ARG4, ARG4
+    jz      .cwo_misuse
+    mov     qword [ARG4], 0
+
+    xor     eax, eax
+    mov     [rbp - 40], rax             ; what the caller asked for
+    mov     r10, [rbp - 32]
+    test    r10, r10
+    jz      .cwo_flags_ready            ; no options is the canonical default
+    mov     eax, [r10 + CybouDB_CREATE_OPT_SIZE]
+    cmp     eax, 8
+    jb      .cwo_misuse                 ; smaller than the fields it must have
+    mov     eax, [r10 + CybouDB_CREATE_OPT_FLAGS]
+    test    eax, ~CybouDB_CREATE_KNOWN
+    jnz     .cwo_misuse
+    mov     [rbp - 40], rax
+.cwo_flags_ready:
+
+%ifdef CybouDB_WINDOWS
+    mov     ARG1, [rbp - 8]
+    lea     ARG2, [rbp - 2048]
+    mov     ARG3d, 1024
+    call    os_utf8_to_wide
+    test    eax, eax
+    jz      .cwo_error
+    lea     ARG1, [rbp - 2048]
+%else
+    mov     ARG1, [rbp - 8]
+%endif
+    mov     ARG2, [rbp - 16]
+    xor     ARG3, ARG3                  ; do not replace what is already there
+    mov     rax, [rbp - 40]
+    test    rax, CybouDB_CREATE_QUEUE_LEASES
+    jnz     .cwo_leases
+    call    db_create_default
+    jmp     .cwo_created
+.cwo_leases:
+    call    db_create_leases
+.cwo_created:
+    test    eax, eax
+    jnz     .cwo_error
+
+    ; And then opened the way any other file is, so there is one path into a
+    ; handle rather than two.
+    mov     ARG1, [rbp - 8]
+    mov     ARG2d, CybouDB_C_OPEN_READWRITE
+    mov     ARG3, [rbp - 24]
+    call    cyboudb_open
+    FRAME_END
+    ret
+
+.cwo_misuse:
+    mov     eax, CybouDB_C_MISUSE
+    FRAME_END
+    ret
+.cwo_error:
+    mov     eax, CybouDB_C_ERROR
+    FRAME_END
+    ret
+
 cyboudb_create:
 %ifdef CybouDB_WINDOWS
     FRAME_BEGIN 2128, 0                 ; [rbp - 2048]: wide path buffer

@@ -150,6 +150,20 @@ static uint64_t deadline_of(uint64_t pos) {
 
 /* The integrity question: the file each operation leaves behind has to be one
    the validator accepts, or the operation wrote a state the format forbids. */
+/* The feature mask a file was created with, read the way anything else reads
+   it: eight bytes at offset 16 of the header. */
+static int feature_mask(const char *path, uint64_t *out) {
+    unsigned char head[24];
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    if (fread(head, 1, sizeof head, f) != sizeof head) { fclose(f); return 0; }
+    fclose(f);
+    memcpy(out, head + 16, 8);
+    return 1;
+}
+
+#define FEATURE_QUEUE_LEASES 65536ULL
+
 static int intact(void) {
     uint64_t vctx[512] = {0};
     const void *p = dbpath;
@@ -491,6 +505,69 @@ int main(int argc, char **argv) {
         check("and the file with the chains' pages back",
               room_empty >= room_full + 120);
         check("the file is intact", intact());
+    }
+
+    /* --- asking for the capability from C -------------------------------- */
+    /* `cyboudb create-leases` is a command line, and an embedded application
+       should not have to shell out to one to make the file it needs. The
+       options struct is one additive entry point rather than a function per
+       creation-time capability, because 0.7 brings encryption on the same
+       terms and a family that grows without bound is what that would start.
+
+       The check that matters is the last: a flag this build does not
+       implement is refused. A caller asking for a capability and quietly
+       receiving a database without it is the one outcome worse than an
+       error. */
+    {
+        char p1[1024], p2[1024], p3[1024];
+        cyboudb_db *made = NULL;
+        cyboudb_create_options opts;
+        uint64_t mask = 0;
+        int rc;
+
+        snprintf(p1, sizeof p1, "%s.plain", dbpath);
+        snprintf(p2, sizeof p2, "%s.leased", dbpath);
+        snprintf(p3, sizeof p3, "%s.refused", dbpath);
+        remove(p1); remove(p2); remove(p3);
+
+        rc = cyboudb_create_with_options(p1, 1000, NULL, &made);
+        check("no options is the profile a caller who was not asked gets",
+              rc == CybouDB_OK && feature_mask(p1, &mask) &&
+              (mask & FEATURE_QUEUE_LEASES) == 0);
+        cyboudb_close(made);
+        made = NULL;
+
+        memset(&opts, 0, sizeof opts);
+        opts.struct_size = (uint32_t)sizeof opts;
+        opts.flags = CybouDB_CREATE_QUEUE_LEASES;
+        rc = cyboudb_create_with_options(p2, 1000, &opts, &made);
+        check("and asking for leases gives a database that has them",
+              rc == CybouDB_OK && feature_mask(p2, &mask) &&
+              (mask & FEATURE_QUEUE_LEASES) != 0);
+        check("which claims are allowed on",
+              made != NULL &&
+              cyboudb_exec(made, "CREATE QUEUE j") == CybouDB_OK &&
+              cyboudb_exec(made, "ENQUEUE INTO j VALUES ('x')") == CybouDB_OK);
+        cyboudb_close(made);
+        made = NULL;
+
+        memset(&opts, 0, sizeof opts);
+        opts.struct_size = 4;
+        check("a struct smaller than its own fields is misuse",
+              cyboudb_create_with_options(p3, 1000, &opts, &made)
+                  == CybouDB_MISUSE);
+        memset(&opts, 0, sizeof opts);
+        opts.struct_size = (uint32_t)sizeof opts;
+        opts.flags = 0x8000;
+        check("and so is a flag this build does not implement",
+              cyboudb_create_with_options(p3, 1000, &opts, &made)
+                  == CybouDB_MISUSE);
+        check("null handles are misuse rather than a crash",
+              cyboudb_create_with_options(NULL, 1000, NULL, &made)
+                  == CybouDB_MISUSE &&
+              cyboudb_create_with_options(p3, 1000, NULL, NULL)
+                  == CybouDB_MISUSE);
+        remove(p1); remove(p2); remove(p3);
     }
 
     /* Every state this suite produced, still acceptable after a reopen. */

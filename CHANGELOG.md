@@ -63,6 +63,11 @@ machine's does. Expiry is a predicate rather than an event: nothing is written
 when a lease lapses, which matters because the process that would have run a
 sweep is usually the one that stopped.
 
+`cyboudb_create_with_options` is how a C caller asks for the capability -
+`cyboudb_create` is exactly that entry point with no options, and stays. A flag
+this build does not implement is refused rather than ignored, and `struct_size`
+is what lets `0.7` add creation-time capabilities without a third function.
+
 `cyboudb_claim_ticket` hands back the position and token in C; the bytes come
 out through `cyboudb_message`, the way a `DEQUEUE`'s do. A lease refusal has an
 error code of its own, because a stale ticket is what a worker whose lease was

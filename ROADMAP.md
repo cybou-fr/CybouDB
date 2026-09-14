@@ -262,15 +262,12 @@ Both would pass trivially on a small table, so the fixtures are four thousand
 rows and two thousand rows respectively. That is the counter comparison the
 INSERT gates only half made, arriving where it is load-bearing.
 
-### Before the release: asking for a capability from C
+### Asking for a capability from C — done
 
-`cyboudb create-leases` makes a database with leases. `cyboudb_create` does
-not, and there is no public way to ask for one - the C API documents a single
-canonical profile and takes no options.
-
-That is fine while leases have no behaviour and it is a blocker for the
-release, because `0.6` is the release about embedded workflows and an embedded
-application should not shell out to a command line to create the file it needs.
+`cyboudb create-leases` makes a database with leases, and until this there was
+no public way to ask for one: an embedded application would have had to shell
+out to a command line to create the file it needed, in the release about
+embedded workflows.
 
 The answer is not `cyboudb_create_leases`. `0.7` brings encryption, which is
 also decided when the file is made, and a function per creation-time capability
@@ -291,8 +288,18 @@ int cyboudb_create_with_options(const char *path, uint64_t pages,
 ```
 
 `cyboudb_create` stays forever as the shorthand for the canonical default, so
-nothing that exists has to change. `struct_size` is what lets `0.7` add fields
-without a third function.
+nothing that exists has to change - passing `NULL` options is exactly it.
+`struct_size` is what lets `0.7` add fields without a third function, and a
+flag this build does not implement is **refused rather than ignored**: a caller
+asking for a capability and quietly receiving a database without it is the one
+outcome worse than an error.
+
+Still open for the release: execution-time errors do not reach
+`cyboudb_errmsg`. A failed `ACK` and a syntax error both leave it saying `ok`,
+while bind-time errors come through - so an application can tell *that* a
+statement failed but not *why*. It is every mutation's gap rather than any one
+feature's, and closing it means giving the step path an error buffer of its
+own.
 
 ### Queue leases
 
