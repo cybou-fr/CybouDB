@@ -423,6 +423,13 @@ jobs:
       - name: No argument register is read after another argument took it
         run: python3 tests/abi_arg_lint.py
 
+      # The neighbour of that mistake: rdi and rsi are arguments on Linux and
+      # the caller's registers on Windows, so a loop that uses one as an index
+      # is free in one build and corrupts its caller in the other. It cost a
+      # crash with no failing assertion near it - see the lint itself.
+      - name: No callee-saved register is written without being saved
+        run: python3 tests/abi_nonvolatile_lint.py
+
       # Comments, strings and scripts are English ASCII by convention. A .bat
       # file is the practical reason: cmd.exe reads it in the console code
       # page, where non-ASCII bytes corrupt parsing outright.

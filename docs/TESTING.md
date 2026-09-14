@@ -402,3 +402,27 @@ up to 512 bytes would be sixty times the buffer and the run would end in
   wrong value on the other. Seven such bugs were found by failing tests before
   the lint existed; it has caught six since, two of them already in the tree and
   live on Windows.
+
+* `tests/abi_nonvolatile_lint.py`: the neighbour of that mistake, and the same
+  disagreement one step over. **rdi and rsi are arguments on Linux and the
+  caller's registers on Windows**, so a loop that uses one as an index is free
+  in one build and corrupts its caller in the other.
+
+  It was written because of what that costs to find by hand. `cyboudb_step`
+  copied an error message through rdi and returned to its C caller with rdi
+  holding a pointer into the error buffer. The suite that caught it **printed
+  every one of its eighty-five checks as passing** and then exited with a
+  garbage status: the process faulted after `main` had returned, so there was
+  no failing assertion anywhere near the bug, and the first sign of it was an
+  exit code that changed between runs. It reached the tree at all because the
+  path it sits on - a refused `COMMIT`, with a second database handle open - had
+  never been exercised until the error-message tests were added.
+
+  The rule is one sentence: a routine that writes a callee-saved register saves
+  it. `src/platform/linux/` is exempt for rdi and rsi, since it cannot be
+  assembled for Windows, and so is any `%ifdef CybouDB_LINUX` region elsewhere;
+  `cyboudb_main` is exempt by name and with a reason, because the platform entry
+  point that calls it exits with its result. It found six more sites when it was
+  first run, all in the REPL and the command line, and all fixed rather than
+  exempted. Confirmed the way the others are: putting the original bug back
+  makes it fail, and pointing at nothing else.

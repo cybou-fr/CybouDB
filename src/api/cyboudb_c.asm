@@ -886,18 +886,21 @@ cyboudb_step:
     lea     r11, [str_no_tx_rollback]
     jmp     .step_copy_errmsg
 
+; r10 = database, r11 = the message, r12 = statement.
+;
+; This wrote the two copies inline through rdi, which is volatile on the System
+; V ABI and callee-saved on Windows: the loop returned to its C caller with rdi
+; holding a pointer into the error buffer. Nothing noticed for as long as the
+; path was only reached with one database open - the caller usually reloaded
+; rdi before it mattered - and it faulted the first time a test ran a refused
+; COMMIT with a second handle live. The copy now goes through the helper that
+; does the same job without touching a register it does not own.
 .step_copy_errmsg:
-    lea     rdi, [r10 + DB_H_ERRMSG]
-    lea     rdx, [r12 + STMT_H_ERRMSG]
-.copy_err_loop:
-    mov     al, [r11]
-    mov     [rdi], al
-    mov     [rdx], al
-    inc     r11
-    inc     rdi
-    inc     rdx
-    test    al, al
-    jnz     .copy_err_loop
+    mov     ARG1, r10
+    mov     ARG2, r12
+    mov     ARG3, CybouDB_C_ERROR
+    mov     ARG4, r11
+    call    api_error_report
     mov     eax, CybouDB_C_ERROR
     jmp     .step_exit
 

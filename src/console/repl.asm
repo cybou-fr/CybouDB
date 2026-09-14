@@ -205,12 +205,12 @@ cyboudb_repl:
     jne     .accumulate_sql
 
     ; Skip leading whitespace on line
-    xor     rsi, rsi
+    xor     r9, r9                      ; not rsi: the caller's on Windows
     lea     r11, [line_buf]
 .skip_leading_ws:
-    cmp     rsi, [rbp - 16]
+    cmp     r9, [rbp - 16]
     jae     .repl_loop                  ; empty / blank line
-    movzx   eax, byte [r11 + rsi]
+    movzx   eax, byte [r11 + r9]
     cmp     al, ' '
     je      .inc_ws
     cmp     al, 9                       ; '\t'
@@ -219,18 +219,19 @@ cyboudb_repl:
     je      .inc_ws
     jmp     .check_meta_char
 .inc_ws:
-    inc     rsi
+    inc     r9
     jmp     .skip_leading_ws
 
 .check_meta_char:
-    cmp     byte [r11 + rsi], '.'
+    cmp     byte [r11 + r9], '.'
     jne     .accumulate_sql
 
     ; It is a meta-command!
     mov     rax, [rbp - 16]
-    sub     rax, rsi
-    mov     ARG3, rax                   ; remaining line len
-    lea     ARG2, [r11 + rsi]
+    sub     rax, r9
+    mov     r10, r9                     ; ARG4 is r9 on Windows: move the
+    mov     ARG3, rax                   ; offset out before filling arguments
+    lea     ARG2, [r11 + r10]
     lea     ARG1, [repl_db_ctx]
     call    repl_handle_meta
     test    rax, rax
@@ -243,11 +244,13 @@ cyboudb_repl:
     test    rcx, rcx
     jz      .check_and_execute          ; empty line in continuation: check buffer
 
-    mov     rdi, [repl_sql_len]
+    ; Not rdi and rsi for the running length and the copy index: they are
+    ; arguments on Linux and the caller's registers on Windows.
+    mov     r11, [repl_sql_len]
     ; Check the entire append before modifying the buffer. Reserve the NUL
     ; and, for continuation lines, the inserted newline.
-    mov     rax, rdi
-    test    rdi, rdi
+    mov     rax, r11
+    test    r11, r11
     jz      .check_append_size
     inc     rax
 .check_append_size:
@@ -255,31 +258,31 @@ cyboudb_repl:
     cmp     rax, 262143
     ja      .input_overflow
     lea     r9, [repl_sql_buf]
-    lea     r8, [r9 + rdi]
+    lea     r8, [r9 + r11]
 
     ; Add newline if continuing existing non-empty accumulator
-    test    rdi, rdi
+    test    r11, r11
     jz      .do_copy
     mov     byte [r8], 10
-    inc     rdi
+    inc     r11
     inc     r8
 .do_copy:
-    xor     rsi, rsi
+    xor     r9, r9
     lea     r10, [line_buf]
 .copy_line:
-    cmp     rsi, rcx
+    cmp     r9, rcx
     jae     .copy_done
-    mov     al, [r10 + rsi]
+    mov     al, [r10 + r9]
     mov     [r8], al
-    inc     rsi
-    inc     rdi
+    inc     r9
+    inc     r11
     inc     r8
     jmp     .copy_line
 
 .copy_done:
     lea     r9, [repl_sql_buf]
-    mov     byte [r9 + rdi], 0
-    mov     [repl_sql_len], rdi
+    mov     byte [r9 + r11], 0
+    mov     [repl_sql_len], r11
 
 .check_and_execute:
     ; Process complete statements ended by ';' in repl_sql_buf
@@ -293,12 +296,12 @@ cyboudb_repl:
     jz      .repl_exit_clean
 
     ; Trim leading whitespace
-    xor     rsi, rsi
+    xor     r11, r11                    ; not rsi: the caller's on Windows
     lea     r9, [repl_sql_buf]
 .eof_trim_ws:
-    cmp     rsi, [repl_sql_len]
+    cmp     r11, [repl_sql_len]
     jae     .repl_exit_clean
-    movzx   eax, byte [r9 + rsi]
+    movzx   eax, byte [r9 + r11]
     cmp     al, ' '
     je      .eof_inc_ws
     cmp     al, 9
@@ -309,16 +312,16 @@ cyboudb_repl:
     je      .eof_inc_ws
     jmp     .eof_have_content
 .eof_inc_ws:
-    inc     rsi
+    inc     r11
     jmp     .eof_trim_ws
 
 .eof_have_content:
     ; Execute trailing statement
     mov     rax, [repl_sql_len]
-    sub     rax, rsi
+    sub     rax, r11
     mov     ARG3, rax
     lea     r9, [repl_sql_buf]
-    lea     ARG2, [r9 + rsi]
+    lea     ARG2, [r9 + r11]
     lea     ARG1, [repl_db_ctx]
     call    cyboudb_exec_query
     test    eax, eax
@@ -382,17 +385,17 @@ repl_read_line:
 
     ; ReadConsoleW can return a partial line when its WCHAR buffer fills.
     ; Never treat such a chunk as a complete SQL line.
-    mov     rdi, [rbp - 8]
-    cmp     byte [rdi + rax - 1], 10
+    mov     r10, [rbp - 8]              ; not rdi: the caller's here
+    cmp     byte [r10 + rax - 1], 10
     jne     .read_overflow
 
     ; Strip trailing \r and \n
-    mov     rdi, [rbp - 8]
+    mov     r10, [rbp - 8]
     mov     rcx, rax
 .win_strip:
     test    rcx, rcx
     jz      .win_done
-    movzx   eax, byte [rdi + rcx - 1]
+    movzx   eax, byte [r10 + rcx - 1]
     cmp     al, 10
     je      .win_dec
     cmp     al, 13
@@ -402,7 +405,7 @@ repl_read_line:
     dec     rcx
     jmp     .win_strip
 .win_done:
-    mov     byte [rdi + rcx], 0
+    mov     byte [r10 + rcx], 0
     mov     rax, rcx
     FRAME_END
     ret
@@ -642,11 +645,11 @@ repl_process_buffer:
     ; Shift bytes [r12 .. repl_sql_len) to repl_sql_buf
     xor     rcx, rcx
     mov     r11, [rbp - 8]
-    lea     rsi, [r11 + r12]
+    lea     r9, [r11 + r12]             ; not rsi: the caller's on Windows
 .shift_loop:
     cmp     rcx, rax
     jae     .shift_done
-    mov     dl, [rsi + rcx]
+    mov     dl, [r9 + rcx]
     mov     [r11 + rcx], dl
     inc     rcx
     jmp     .shift_loop
@@ -919,15 +922,15 @@ str_eq_exact:
     mov     r10, ARG1
     mov     r11, ARG3
     mov     rcx, ARG2
-    xor     rsi, rsi
+    xor     r9, r9                      ; not rsi: the caller's on Windows
 .eq_loop:
-    cmp     rsi, rcx
+    cmp     r9, rcx
     jae     .match
-    mov     al, [r10 + rsi]
-    mov     dl, [r11 + rsi]
+    mov     al, [r10 + r9]
+    mov     dl, [r11 + r9]
     cmp     al, dl
     jne     .mismatch
-    inc     rsi
+    inc     r9
     jmp     .eq_loop
 .match:
     mov     eax, 1
@@ -1296,17 +1299,17 @@ repl_meta_schema:
     mov     rcx, 100
 .filter_len_ok:
     mov     r10, [rbp - 16]
-    xor     rsi, rsi
+    xor     r9, r9                      ; not rsi: the caller's on Windows
     lea     r8, [line_buf]
 .copy_filter:
-    cmp     rsi, rcx
+    cmp     r9, rcx
     jae     .copy_filter_done
-    mov     al, [r10 + rsi]
-    mov     [r8 + rsi], al
-    inc     rsi
+    mov     al, [r10 + r9]
+    mov     [r8 + r9], al
+    inc     r9
     jmp     .copy_filter
 .copy_filter_done:
-    mov     byte [r8 + rsi], 0
+    mov     byte [r8 + r9], 0
     lea     ARG1, [line_buf]
     call    puts_asciiz
     PUTS    str_repl_nl
@@ -1323,12 +1326,12 @@ table_name_matches:
     mov     r10, ARG1
     mov     r11, ARG2
     mov     rcx, ARG3
-    xor     rsi, rsi
+    xor     r9, r9                      ; not rsi: the caller's on Windows
 .match_chars:
-    cmp     rsi, rcx
+    cmp     r9, rcx
     jae     .check_end
-    movzx   eax, byte [r10 + rsi]
-    movzx   edx, byte [r11 + rsi]
+    movzx   eax, byte [r10 + r9]
+    movzx   edx, byte [r11 + r9]
     cmp     al, dl
     je      .char_ok
     ; Case-insensitive ASCII fold
@@ -1341,10 +1344,10 @@ table_name_matches:
     cmp     al, 'z'
     ja      .no_match
 .char_ok:
-    inc     rsi
+    inc     r9
     jmp     .match_chars
 .check_end:
-    cmp     byte [r10 + rsi], 0
+    cmp     byte [r10 + r9], 0
     jne     .no_match
     mov     eax, 1
     ret

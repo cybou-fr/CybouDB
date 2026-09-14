@@ -1086,16 +1086,21 @@ cyboudb_exec_query:
     mov     qword [rbp - 40], 0         ; out_plan
     mov     qword [rbp - 48], 0         ; total_rows
 
-    ; Preserve callee-saved registers
+    ; Preserve callee-saved registers. r15 belongs here too: the header
+    ; printer below uses it, and both conventions make it the caller's.
     mov     [rbp - 56], rbx
     mov     [rbp - 64], r12
     mov     [rbp - 72], r13
     mov     [rbp - 80], r14
+    mov     [rbp - 88], r15
 
-    ; 1. Copy sql_str to query_buf if not already pointing there
-    mov     rsi, [rbp - 16]
-    lea     rdi, [query_buf]
-    cmp     rsi, rdi
+    ; 1. Copy sql_str to query_buf if not already pointing there.
+    ; Not rsi and rdi: those are arguments on Linux and the caller's registers
+    ; on Windows, so a loop that uses them is correct in one build and quietly
+    ; corrupts its caller in the other.
+    mov     r10, [rbp - 16]
+    lea     r11, [query_buf]
+    cmp     r10, r11
     je      .sql_in_query_buf
 
     mov     rcx, [rbp - 24]
@@ -1108,17 +1113,17 @@ cyboudb_exec_query:
 .copy_q:
     cmp     rdx, rcx
     jae     .copy_q_done
-    mov     al, [rsi + rdx]
-    mov     [rdi + rdx], al
+    mov     al, [r10 + rdx]
+    mov     [r11 + rdx], al
     inc     rdx
     jmp     .copy_q
 .copy_q_done:
-    mov     byte [rdi + rcx], 0
+    mov     byte [r11 + rcx], 0
 
 .sql_in_query_buf:
     mov     rcx, [rbp - 24]
-    lea     rdi, [query_buf]
-    mov     byte [rdi + rcx], 0
+    lea     r11, [query_buf]
+    mov     byte [r11 + rcx], 0
 
     ; 2. Initialize SQL arena
     lea     ARG1, [query_arena_desc]
@@ -1501,6 +1506,7 @@ cyboudb_exec_query:
 
 .exec_success:
     mov     rbx, [rbp - 56]
+    mov     r15, [rbp - 88]
     mov     r12, [rbp - 64]
     mov     r13, [rbp - 72]
     mov     r14, [rbp - 80]
@@ -1512,6 +1518,7 @@ cyboudb_exec_query:
 .bind_fail:
     call    print_sql_error
     mov     rbx, [rbp - 56]
+    mov     r15, [rbp - 88]
     mov     r12, [rbp - 64]
     mov     r13, [rbp - 72]
     mov     r14, [rbp - 80]
@@ -1527,6 +1534,7 @@ cyboudb_exec_query:
     call    puts_asciiz
     PUTS    str_nl
     mov     rbx, [rbp - 56]
+    mov     r15, [rbp - 88]
     mov     r12, [rbp - 64]
     mov     r13, [rbp - 72]
     mov     r14, [rbp - 80]
@@ -1572,6 +1580,7 @@ cyboudb_exec_query:
 .cursor_fail_say:
     call    puts_asciiz
     mov     rbx, [rbp - 56]
+    mov     r15, [rbp - 88]
     mov     r12, [rbp - 64]
     mov     r13, [rbp - 72]
     mov     r14, [rbp - 80]
@@ -1587,6 +1596,7 @@ cyboudb_exec_query:
     mov     ARG1, [r10 + rax * 8]
     call    puts_asciiz
     mov     rbx, [rbp - 56]
+    mov     r15, [rbp - 88]
     mov     r12, [rbp - 64]
     mov     r13, [rbp - 72]
     mov     r14, [rbp - 80]
