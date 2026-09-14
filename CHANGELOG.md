@@ -63,6 +63,13 @@ machine's does. Expiry is a predicate rather than an event: nothing is written
 when a lease lapses, which matters because the process that would have run a
 sweep is usually the one that stopped.
 
+`cyboudb_errmsg` now explains execution-time failures, which it did not: a
+failed statement set a code and left the message saying `ok`, the same thing a
+caller sees after one that worked. The contract is that the message describes
+the **most recent call** and is `ok` when that call succeeded, so it can be
+read after any call rather than only when the caller remembers to. A refused
+lease says the lease was reclaimed rather than that storage failed.
+
 `cyboudb_create_with_options` is how a C caller asks for the capability -
 `cyboudb_create` is exactly that entry point with no options, and stays. A flag
 this build does not implement is refused rather than ignored, and `struct_size`

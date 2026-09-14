@@ -507,6 +507,70 @@ int main(int argc, char **argv) {
         check("the file is intact", intact());
     }
 
+    /* --- what a failed statement says ------------------------------------ */
+    /* An application can only act on a failure it can read. Until this, an
+       execution-time error set a code and left cyboudb_errmsg saying "ok" -
+       the same thing a caller sees after a statement that worked - while
+       bind-time errors came through. A stale ticket is the most routine
+       failure this release has, so it is the one that would have been read
+       most often and said least.
+
+       The contract, and the last check is what makes it usable: **errmsg
+       describes the most recent call**, and is "ok" when that call succeeded.
+       Otherwise a caller who logs it after a later, successful statement gets
+       a message about something else with no way to tell. */
+    {
+        cyboudb_db *e = NULL;
+        const char *m;
+        char qpath[1024];
+        snprintf(qpath, sizeof qpath, "%s.errors", dbpath);
+        remove(qpath);
+        {
+            cyboudb_create_options o;
+            memset(&o, 0, sizeof o);
+            o.struct_size = (uint32_t)sizeof o;
+            o.flags = CybouDB_CREATE_QUEUE_LEASES;
+            check("a database to fail statements against",
+                  cyboudb_create_with_options(qpath, 1000, &o, &e)
+                      == CybouDB_OK &&
+                  cyboudb_exec(e, "CREATE QUEUE q") == CybouDB_OK &&
+                  cyboudb_exec(e, "ENQUEUE INTO q VALUES ('a')") == CybouDB_OK &&
+                  cyboudb_exec(e, "CLAIM FROM q FOR 30000") == CybouDB_OK);
+        }
+
+        m = cyboudb_errmsg(e);
+        check("a statement that worked says ok", strcmp(m, "ok") == 0);
+
+        check("a syntax error says so rather than ok",
+              cyboudb_exec(e, "SELEC 1") != CybouDB_OK &&
+              strstr(cyboudb_errmsg(e), "syntax") != NULL);
+        check("a missing table says so",
+              cyboudb_exec(e, "SELECT a FROM nope") != CybouDB_OK &&
+              strstr(cyboudb_errmsg(e), "not found") != NULL);
+        check("a commit with no transaction says so",
+              cyboudb_exec(e, "COMMIT") != CybouDB_OK &&
+              strstr(cyboudb_errmsg(e), "transaction") != NULL);
+
+        check("a stale ACK says the lease was reclaimed",
+              cyboudb_exec(e, "ACK FROM q AT 0 TOKEN 99") != CybouDB_OK &&
+              strstr(cyboudb_errmsg(e), "lease") != NULL);
+        check("and so does a stale NACK",
+              cyboudb_exec(e, "NACK FROM q AT 0 TOKEN 99") != CybouDB_OK &&
+              strstr(cyboudb_errmsg(e), "lease") != NULL);
+        check("and a stale RENEW",
+              cyboudb_exec(e, "RENEW FROM q AT 0 TOKEN 99 FOR 100")
+                  != CybouDB_OK &&
+              strstr(cyboudb_errmsg(e), "lease") != NULL);
+
+        /* The rule that makes any of it safe to read. */
+        check("and a statement that works afterwards says ok again",
+              cyboudb_exec(e, "CREATE QUEUE another") == CybouDB_OK &&
+              strcmp(cyboudb_errmsg(e), "ok") == 0);
+
+        cyboudb_close(e);
+        remove(qpath);
+    }
+
     /* --- asking for the capability from C -------------------------------- */
     /* `cyboudb create-leases` is a command line, and an embedded application
        should not have to shell out to one to make the file it needs. The

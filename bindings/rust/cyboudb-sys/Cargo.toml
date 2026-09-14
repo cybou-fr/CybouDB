@@ -1,0 +1,13 @@
+[package]
+name = "cyboudb-sys"
+version = "0.5.0"
+edition = "2021"
+authors = ["Stanislav Saveliev", "CybouDB Contributors"]
+license = "Apache-2.0"
+description = "Raw FFI bindings to CybouDB embedded database engine"
+repository = "https://github.com/cybou-fr/CybouDB"
+keywords = ["database", "embedded", "ffi", "cyboudb"]
+categories = ["database", "external-ffi-bindings"]
+links = "cyboudb"
+
+[build-dependencies]

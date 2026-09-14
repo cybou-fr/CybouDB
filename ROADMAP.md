@@ -294,12 +294,14 @@ flag this build does not implement is **refused rather than ignored**: a caller
 asking for a capability and quietly receiving a database without it is the one
 outcome worse than an error.
 
-Still open for the release: execution-time errors do not reach
-`cyboudb_errmsg`. A failed `ACK` and a syntax error both leave it saying `ok`,
-while bind-time errors come through - so an application can tell *that* a
-statement failed but not *why*. It is every mutation's gap rather than any one
-feature's, and closing it means giving the step path an error buffer of its
-own.
+Execution-time errors reach `cyboudb_errmsg` now, which they did not: a failed
+`ACK` and a syntax error both left it saying `ok` while bind-time errors came
+through. The step path carries an error buffer of its own and copies what the
+executor wrote into both the statement and the database, and the contract is
+one sentence - **the message describes the most recent call, and is `ok` when
+that call succeeded** - because an application that logs it after a later,
+successful statement would otherwise get a message about something else with no
+way to tell.
 
 ### Queue leases
 

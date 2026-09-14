@@ -2105,7 +2105,7 @@ db_queue_nack:
     mov ARG3, [rbp - 24]
     call lease_find_slot
     test rax, rax
-    jz .n_value
+    jz .n_lease                     ; finished, or never in this queue at all
     cmp qword [rax + QMSG_LEASE_TOKEN], -1
     je .n_value
     mov ARG1, [rbp - 8]
@@ -2135,6 +2135,10 @@ db_queue_nack:
     call db_catalog_seal
     xor eax, eax
 .n_done:
+    FRAME_END
+    ret
+.n_lease:
+    mov eax, CybouDB_E_LEASE
     FRAME_END
     ret
 .n_value:

@@ -278,6 +278,20 @@ int cyboudb_create(const char *path, uint64_t pages, cyboudb_db **out_db);
  * A flag this build does not implement is refused rather than ignored. Asking
  * for a capability and quietly receiving a database without it is the one
  * outcome that would be worse than an error.
+ *
+ * **The rule that keeps that true as this struct grows:** `struct_size` may
+ * safely carry new fields, but any field that changes the database being made,
+ * or asks for a capability, must come with a flag of its own. The two do
+ * different jobs -
+ *
+ *     struct_size   safely widens the representation
+ *     flags         declare the semantics being asked for
+ *
+ * - and only the second is something an older library can refuse. A future
+ * field added without a flag would be ignored by a build that predates it,
+ * which would then silently create a database other than the one the caller
+ * asked for: the failure this design exists to prevent, arriving through the
+ * mechanism meant to allow growth.
  */
 typedef struct cyboudb_create_options {
     uint32_t struct_size;
@@ -318,6 +332,14 @@ int cyboudb_close(cyboudb_db *db);
 
 /**
  * Retrieve the English error message describing the last failure on db.
+ */
+/**
+ * Why the most recent call failed, or "ok" when it did not.
+ *
+ * The message describes the call that just returned, and nothing earlier: an
+ * entry point that can fail clears it on the way in. A caller may therefore
+ * read it after any call and know what it is about, rather than having to
+ * remember whether the last few succeeded.
  */
 const char *cyboudb_errmsg(cyboudb_db *db);
 

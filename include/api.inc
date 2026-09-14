@@ -33,6 +33,11 @@
 %define CybouDB_CREATE_QUEUE_LEASES 0x0001
 %define CybouDB_CREATE_KNOWN       CybouDB_CREATE_QUEUE_LEASES
 
+; A new field here may only change what is created if it comes with a flag of
+; its own. struct_size widens the representation safely; flags declare the
+; semantics, and only a flag is something an older build can refuse. See the
+; contract in include/cyboudb.h.
+
 ; --- cyboudb_db structure layout (4096 bytes) ---
 ; The descriptor comes first and everything after it is placed relative to its
 ; size. Spelling these as literals meant that growing CybouDB_DB_SIZE silently

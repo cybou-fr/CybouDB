@@ -2344,7 +2344,14 @@ sql_execute_batch:
     mov     [r10 + SQL_ERR_DOMAIN], r11
     lea     r11, [exec_storage_message]
     cmp     qword [r10 + SQL_ERR_DOMAIN], SQL_DOMAIN_STORAGE
-    je      .message_ready
+    jne     .not_storage
+    ; A refused lease is not a storage failure and should not read like one:
+    ; it is the ordinary answer a worker gets when its lease was reclaimed.
+    cmp     eax, CybouDB_E_LEASE
+    jne     .message_ready
+    lea     r11, [exec_lease_message]
+    jmp     .message_ready
+.not_storage:
     lea     r11, [exec_error_message]
     cmp     eax, SQL_ERR_NO_STORAGE
     jne     .check_sink_error
@@ -3602,6 +3609,7 @@ exec_sink_failed_message: db "result callback reported a failure", 0
 exec_active_tx_msg: db "cannot BEGIN inside active transaction", 0
 exec_no_active_tx_commit_msg: db "no active transaction to COMMIT", 0
 exec_unbound_param_msg: db "a parameter was never bound", 0
+exec_lease_message: db "the lease was reclaimed, or that message is not claimed", 0
 exec_no_active_tx_rollback_msg: db "no active transaction to ROLLBACK", 0
 exec_readonly_tx_msg: db "database is read-only", 0
 

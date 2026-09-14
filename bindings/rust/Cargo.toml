@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "cyboudb-sys",
+    "cyboudb",
+]
+resolver = "2"

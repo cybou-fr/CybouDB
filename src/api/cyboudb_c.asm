@@ -309,55 +309,98 @@ cyboudb_create_with_options:
     ret
 
 cyboudb_create:
-%ifdef CybouDB_WINDOWS
-    FRAME_BEGIN 2128, 0                 ; [rbp - 2048]: wide path buffer
-%else
+    ; The canonical default, and nothing else: this is
+    ; cyboudb_create_with_options with no options, as a fact of the
+    ; implementation rather than a sentence in the header. It used to be a
+    ; second copy of the same path conversion, creator call, open and error
+    ; handling - equivalent that day, and free to drift the moment a new
+    ; creation option arrived.
+    ;
+    ; The out pointer moves up one place and the options slot becomes zero.
+    ; ARG3 is read before it is overwritten, which is the rule the argument
+    ; lint enforces.
+    mov     ARG4, ARG3
+    xor     ARG3, ARG3
+    jmp     cyboudb_create_with_options
+
+; -----------------------------------------------------------------------------
+;  api_error_clear(db) - the message describes the call that is happening now
+;
+;  Called at the top of every entry point that can fail. The alternative -
+;  leaving the last error in place - means a caller who reads errmsg after a
+;  *successful* call gets a message about something else and no way to tell.
+;  Clearing on entry makes the rule one sentence: errmsg describes the most
+;  recent call, and is "ok" when that call succeeded.
+; -----------------------------------------------------------------------------
+api_error_clear:
+    test    ARG1, ARG1
+    jz      .aec_done
+    mov     dword [ARG1 + DB_H_ERRCODE], 0
+    mov     byte [ARG1 + DB_H_ERRMSG], 0
+.aec_done:
+    ret
+
+; -----------------------------------------------------------------------------
+;  api_error_report(db, stmt or 0, code, message or 0)
+;
+;  One place where an execution failure becomes something a caller can read.
+;  The statement keeps its own copy because a caller may hold several, and the
+;  database keeps one because cyboudb_errmsg is where people look.
+; -----------------------------------------------------------------------------
+api_error_report:
     FRAME_BEGIN 48, 0
-%endif
     mov     [rbp - 8], ARG1
     mov     [rbp - 16], ARG2
     mov     [rbp - 24], ARG3
-    test    ARG1, ARG1
-    jz      .create_misuse
-    test    ARG3, ARG3
-    jz      .create_misuse
-    mov     qword [ARG3], 0
+    mov     [rbp - 32], ARG4
 
-%ifdef CybouDB_WINDOWS
-    mov     ARG1, [rbp - 8]
-    lea     ARG2, [rbp - 2048]
-    mov     ARG3d, 1024
-    call    os_utf8_to_wide
-    test    eax, eax
-    jz      .create_error
-    lea     ARG1, [rbp - 2048]
-%else
-    mov     ARG1, [rbp - 8]
-%endif
-    mov     ARG2, [rbp - 16]
-    xor     ARG3, ARG3                  ; do not replace what is already there
-    call    db_create_default
-    test    eax, eax
-    jnz     .create_error
+    mov     r10, [rbp - 8]
+    test    r10, r10
+    jz      .aer_stmt
+    mov     rax, [rbp - 24]
+    mov     [r10 + DB_H_ERRCODE], eax
+    mov     r8, [rbp - 32]
+    test    r8, r8
+    jz      .aer_stmt
+    lea     r9, [r10 + DB_H_ERRMSG]
+    mov     ecx, 255
+    call    api_copy_bounded
 
-    ; And then opened the way any other file is, so there is one path into a
-    ; handle rather than two.
-    mov     ARG1, [rbp - 8]
-    mov     ARG2d, CybouDB_C_OPEN_READWRITE
-    mov     ARG3, [rbp - 24]
-    call    cyboudb_open
+.aer_stmt:
+    mov     r10, [rbp - 16]
+    test    r10, r10
+    jz      .aer_done
+    mov     rax, [rbp - 24]
+    mov     [r10 + STMT_H_ERRCODE], eax
+    mov     r8, [rbp - 32]
+    test    r8, r8
+    jz      .aer_done
+    lea     r9, [r10 + STMT_H_ERRMSG]
+    mov     ecx, 127
+    call    api_copy_bounded
+.aer_done:
     FRAME_END
     ret
 
-.create_error:
-    mov     eax, CybouDB_C_ERROR
-    FRAME_END
+; r8 = source, r9 = destination, ecx = how many bytes the destination holds
+; before its terminator. Clobbers rax, rcx, r8, r9.
+api_copy_bounded:
+    xor     eax, eax
+.acb_byte:
+    test    ecx, ecx
+    jz      .acb_end
+    mov     al, [r8]
+    mov     [r9], al
+    test    al, al
+    jz      .acb_done
+    inc     r8
+    inc     r9
+    dec     ecx
+    jmp     .acb_byte
+.acb_end:
+    mov     byte [r9], 0
+.acb_done:
     ret
-.create_misuse:
-    mov     eax, CybouDB_C_MISUSE
-    FRAME_END
-    ret
-
 
 ; =============================================================================
 ;  cyboudb_close(cyboudb_db *db) -> int
@@ -667,7 +710,11 @@ cyboudb_prepare:
 ;  cyboudb_step(cyboudb_stmt *stmt) -> int
 ; =============================================================================
 cyboudb_step:
-    FRAME_BEGIN 96, 2
+    ; [rbp-224]: an SQL_ERROR for the executor to explain itself into. Without
+    ; one it had nowhere to put a message, so a failed statement set a code and
+    ; left errmsg saying "ok" - which is the same thing a caller sees after a
+    ; statement that worked.
+    FRAME_BEGIN 224, 2
     mov     [rbp - 8], r12              ; preserve callee-saved r12
     test    ARG1, ARG1
     jz      .step_misuse
@@ -677,6 +724,12 @@ cyboudb_step:
     mov     rax, STMT_MAGIC_VAL
     cmp     [r12 + STMT_H_MAGIC], rax
     jne     .step_misuse
+
+    ; What errmsg says from here on is about this call.
+    mov     ARG1, [r12 + STMT_H_DB]
+    call    api_error_clear
+    lea     rax, [rbp - 224]
+    SQL_CLEAR_ERROR rax
 
     mov     rax, [r12 + STMT_H_PLAN]
     mov     [rbp - 24], rax             ; plan
@@ -897,7 +950,7 @@ cyboudb_step:
     xor     ARG4, ARG4
     xor     eax, eax
     PASS_ARG5 rax
-    xor     eax, eax
+    lea     rax, [rbp - 224]
     PASS_ARG6 rax
     call    sql_execute_batch
     test    eax, eax
@@ -942,7 +995,7 @@ cyboudb_step:
     xor     ARG4, ARG4                  ; no row sink
     xor     eax, eax
     PASS_ARG5 rax
-    xor     eax, eax
+    lea     rax, [rbp - 224]
     PASS_ARG6 rax
     call    sql_execute_batch
     test    eax, eax
@@ -988,7 +1041,7 @@ cyboudb_step:
     xor     ARG4, ARG4                  ; no row sink
     xor     eax, eax
     PASS_ARG5 rax
-    xor     eax, eax
+    lea     rax, [rbp - 224]
     PASS_ARG6 rax
     call    sql_execute_batch
     test    eax, eax
@@ -1012,8 +1065,15 @@ cyboudb_step:
 
 .step_mutation_error:
     mov     dword [r12 + STMT_H_STATE], STMT_STATE_ERROR
-    mov     r10, [r12 + STMT_H_DB]
-    mov     [r10 + DB_H_ERRCODE], eax
+    mov     ARG3, rax
+    mov     ARG1, [r12 + STMT_H_DB]
+    mov     ARG2, r12
+    lea     ARG4, [rbp - 224 + SQL_ERR_MSG]
+    cmp     byte [ARG4], 0
+    jne     .step_error_said
+    xor     ARG4, ARG4                  ; nothing explained it; the code alone
+.step_error_said:
+    call    api_error_report
     mov     eax, CybouDB_C_ERROR
     jmp     .step_exit
 
@@ -1069,7 +1129,7 @@ cyboudb_step:
     xor     ARG4, ARG4
     xor     eax, eax
     PASS_ARG5 rax
-    xor     eax, eax
+    lea     rax, [rbp - 224]
     PASS_ARG6 rax
     call    sql_execute_batch
     test    eax, eax
