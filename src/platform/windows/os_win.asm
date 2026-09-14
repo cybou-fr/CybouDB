@@ -22,6 +22,7 @@ default rel
 
 ; --- Imports from kernel32.dll -----------------------------------------------
 extern GetStdHandle
+extern GetSystemTimeAsFileTime
 extern WriteFile
 extern ExitProcess
 extern GetCommandLineW
@@ -56,6 +57,7 @@ global os_argc, os_argv, os_str_eq_ascii, os_str_to_u64, os_write, os_exit
 global os_arg_to_utf8
 global os_cmdline_ok
 global os_monotonic_ns
+global os_wall_ms
 global os_stdin_isatty, os_read_stdin, os_read_console
 global vfs_create_new, vfs_create_truncate, vfs_open_rw, vfs_open_ro
 global vfs_size, vfs_resize, vfs_map_rw, vfs_map_ro, vfs_unmap
@@ -557,6 +559,37 @@ os_arg_to_utf8:
 ;  throw away everything below one second. Returns 0 if either call fails.
 ;
 ;  Local slots: [rbp-8] = counter, [rbp-16] = frequency
+; -----------------------------------------------------------------------------
+;  os_wall_ms() -> RAX: milliseconds since the Unix epoch, UTC
+;
+;  The clock a lease deadline is measured on. Windows counts 100-nanosecond
+;  ticks from 1601, so the epoch is moved and the units divided; the number a
+;  caller gets is the same number the Linux side gives for the same instant,
+;  which is what lets a database written on one be read on the other.
+;
+;  Zero if the value is before the Unix epoch, which a working clock does not
+;  produce and a dead one can. A caller reads that as "no time", and every
+;  queue floors whatever it is given against the largest it has already used.
+; -----------------------------------------------------------------------------
+os_wall_ms:
+    FRAME_BEGIN 32, 0
+    lea     ARG1, [rbp - 16]
+    call    GetSystemTimeAsFileTime
+    mov     rax, [rbp - 16]
+    mov     rcx, 116444736000000000     ; 1601 to 1970, in 100ns ticks
+    cmp     rax, rcx
+    jb      .wall_failed
+    sub     rax, rcx
+    xor     edx, edx
+    mov     rcx, 10000                  ; 100ns ticks to milliseconds
+    div     rcx
+    FRAME_END
+    ret
+.wall_failed:
+    xor     eax, eax
+    FRAME_END
+    ret
+
 ; -----------------------------------------------------------------------------
 os_monotonic_ns:
     FRAME_BEGIN 16, 0

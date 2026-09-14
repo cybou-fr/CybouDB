@@ -34,6 +34,7 @@ global vfs_create_new, vfs_create_truncate, vfs_open_rw, vfs_open_ro
 global vfs_size, vfs_resize, vfs_map_rw, vfs_map_ro, vfs_unmap
 global vfs_sync, vfs_close, vfs_flush_range
 global vfs_lock_writer, vfs_lock_reader, vfs_reclaim_safe
+global os_wall_ms
 global os_mem_alloc, os_mem_free
 
 ; --- System call numbers -----------------------------------------------------
@@ -80,6 +81,7 @@ global os_mem_alloc, os_mem_free
 %define STDOUT_FILENO   1
 %define TCGETS          0x5401
 %define CLOCK_MONOTONIC 1
+%define CLOCK_REALTIME  0
 
 ; Offset of the st_size field inside struct stat on x86-64
 %define STAT_ST_SIZE    48
@@ -273,6 +275,42 @@ os_monotonic_ns:
     FRAME_END
     ret
 .clock_failed:
+    xor     eax, eax
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  os_wall_ms() -> RAX: milliseconds since the Unix epoch, UTC
+;
+;  The clock a lease deadline is measured on, and deliberately not the
+;  monotonic one above. A deadline has to mean something after the reboot it
+;  exists to survive, and a monotonic clock counts from an arbitrary origin
+;  that a reboot resets - see docs/QUEUE.md, "The clock a lease deadline is
+;  measured on", for why that leaves wall-clock time as the only candidate and
+;  what is done about its jumps.
+;
+;  Zero if the kernel refuses. A caller reads that as "no time", and every
+;  queue floors whatever it is given against the largest it has already used,
+;  so a zero here cannot move a clock backwards.
+; -----------------------------------------------------------------------------
+os_wall_ms:
+    FRAME_BEGIN 16, 0
+    mov     edi, CLOCK_REALTIME
+    lea     rsi, [rbp - 16]
+    mov     eax, SYS_clock_gettime
+    syscall
+    test    rax, rax
+    js      .wall_failed
+    mov     rax, [rbp - 8]              ; tv_nsec
+    xor     edx, edx
+    mov     rcx, 1000000
+    div     rcx                         ; milliseconds inside the second
+    mov     rcx, [rbp - 16]             ; tv_sec
+    imul    rcx, 1000
+    add     rax, rcx
+    FRAME_END
+    ret
+.wall_failed:
     xor     eax, eax
     FRAME_END
     ret

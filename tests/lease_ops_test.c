@@ -36,6 +36,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -87,6 +88,7 @@ extern int db_open(const void *path, void *ctx, uint64_t writable,
 extern int db_close(void *ctx);
 extern int db_queue_depth(void *ctx, uint64_t id, uint64_t *out);
 extern uint64_t db_bitmap_headroom(void *ctx);
+extern uint64_t os_wall_ms(void);
 
 static int failures = 0, checks = 0;
 static void check(const char *what, int ok) {
@@ -186,6 +188,24 @@ int main(int argc, char **argv) {
           db_commit(ctx) == CybouDB_OK &&
           db_catalog_get(ctx, qid, &page) == 0 && page != 0);
     check("which is intact", intact());
+
+    /* --- the clock the deadlines are on ----------------------------------- */
+    /* The one new platform primitive leases needed. Both sides have to answer
+       with the same number for the same instant, or a database written on one
+       is a database whose deadlines mean something else on the other - so the
+       check is against the C library's idea of the time rather than against
+       the other implementation. */
+    {
+        uint64_t a = os_wall_ms();
+        time_t t = time(NULL);
+        uint64_t b = os_wall_ms();
+        uint64_t from_libc = (uint64_t)t * 1000ULL;
+        check("the wall clock is a plausible millisecond timestamp",
+              a > 1600000000000ULL && a < 4000000000000ULL);
+        check("and agrees with the system clock to within a second",
+              (a > from_libc ? a - from_libc : from_libc - a) < 2000ULL);
+        check("and does not run backwards between two reads", b >= a);
+    }
 
     /* --- a claim, and what it leaves ------------------------------------- */
     check("the first claim takes the head",
