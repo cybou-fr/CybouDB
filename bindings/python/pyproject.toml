@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "cyboudb"
-version = "0.5.0"
+version = "0.7.0.dev0"
 description = "Fast, dependency-free embedded database unifying relational tables, vectors, queues, and streams."
 readme = "README.md"
 authors = [{ name = "Stanislav Saveliev" }]

@@ -6,10 +6,11 @@
 ;  docs/PQ_KEM.md, and include/crypto.inc for the byte map. This is step 5:
 ;  the arrow between the KEM and the key hierarchy, and it is one arrow wide.
 ;
-;      encapsulation key ──encaps──▶ shared secret
-;                                        │  KDF(METADATA_KEK, ss, "kem-slot" | id)
-;                                        ▼
-;                                      a KEK ──wraps──▶ the database root key
+;      encapsulation key --encaps--> shared secret
+;                                        |  KDF(METADATA_KEK, ss,
+;                                        |      "kem-slot" | id)
+;                                        v
+;                                      a KEK --wraps--> the database root key
 ;
 ;  Opening runs it backwards with a decapsulation key. Nothing below the KDF
 ;  knows a KEM was involved, which is the property the design was chosen for:

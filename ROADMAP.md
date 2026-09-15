@@ -16,15 +16,17 @@ moved to [docs/HISTORY.md](docs/HISTORY.md).
 
 ## Where the project is
 
-`v0.5.0-preview.2` is released: Linux x86-64 and Windows x64, on-disk format
-v1, tables with secondary indexes, exact vector search, durable queues,
-append-only streams, and one transaction over all of them.
+`v0.6.0` is released: Linux x86-64 and Windows x64, on-disk format v1, tables
+with secondary indexes, exact vector search, durable queues with leases,
+append-only streams, and one transaction over all of them. `main` is now
+`0.7.0-dev` and carries unreleased encryption work - a binary built from it
+says so.
 
-What `preview.2` added is not a feature. A commit proves the transition from
-the generation already validated to the one being published, rather than
-proving the retained graph again - so an `ENQUEUE`, which changes one slot in
-one segment, visits one segment whatever the queue is holding, instead of 163
-at depth 10,000.
+What `preview.2` added before it is not a feature. A commit proves the
+transition from the generation already validated to the one being published,
+rather than proving the retained graph again - so an `ENQUEUE`, which changes
+one slot in one segment, visits one segment whatever the queue is holding,
+instead of 163 at depth 10,000.
 
 Ten databases are frozen under `tests/compat/`, five from each release, and
 are never regenerated. They are the contract every later release is held to,
@@ -602,7 +604,8 @@ the release, not after it.
  3. Reference crypto backend         docs/CRYPTO_BACKEND.md - decided:
                                      XChaCha20-Poly1305, implemented here,
                                      dispatched but not chosen by the machine.
-                                     Owes a vectorised ChaCha20, measured
+                                     Vectorised ChaCha20 and a parallel
+                                     Poly1305 are done and measured
 3.5 Key-hierarchy primitives         ML-KEM-768 done, against OpenSSL 3.5's
                                      own seed. ML-DSA waits for step 10,
                                      which is the first step that signs

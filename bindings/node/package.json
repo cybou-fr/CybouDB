@@ -1,6 +1,6 @@
 {
   "name": "@cyboudb/node",
-  "version": "0.5.0",
+  "version": "0.7.0-dev",
   "description": "High-performance Node.js and TypeScript bindings for CybouDB embedded database engine",
   "main": "index.js",
   "types": "index.d.ts",

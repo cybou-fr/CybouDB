@@ -1,6 +1,6 @@
 [package]
 name = "cyboudb-sys"
-version = "0.5.0"
+version = "0.7.0-dev"
 edition = "2021"
 authors = ["Stanislav Saveliev", "CybouDB Contributors"]
 license = "Apache-2.0"

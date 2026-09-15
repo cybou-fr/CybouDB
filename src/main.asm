@@ -78,7 +78,7 @@ str_opt_version: db "--version", 0
 ; format-v1 build wrote, and an older binary is not guaranteed to open a file
 ; that uses feature bits it does not know - refusing it is the format working.
 ; This line says which build is asking.
-msg_product:     db "CybouDB 0.6.0", 10
+msg_product:     db "CybouDB 0.7.0-dev", 10
                  db "  on-disk format: version 1", 10
                  db "  https://github.com/cybou-fr/CybouDB", 10, 0
 
