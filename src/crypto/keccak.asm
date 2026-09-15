@@ -35,6 +35,16 @@ global cyboudb_shake256
 global cyboudb_shake256_init
 global cyboudb_shake256_update
 global cyboudb_shake256_final
+global cyboudb_shake128
+global cyboudb_shake128_init
+global cyboudb_sha3_256
+global cyboudb_sha3_512
+global cyboudb_sponge_init
+global cyboudb_sponge_absorb
+global cyboudb_sponge_finish
+global cyboudb_sponge_squeeze
+global cyboudb_sponge_wipe
+global cyboudb_sponge_ctx_size
 
 section .rodata
 align 16
@@ -370,30 +380,36 @@ cyboudb_keccak_f1600:
 ;  over the same permutation.
 ; =============================================================================
 ; =============================================================================
-;  SHAKE256, in three parts
+;  The sponge, in four parts
 ; =============================================================================
-;  The seal tree is why this exists. A leaf MAC covers 4000 bytes of entry
-;  array plus a few fields that are not next to it in memory, and a one-shot
-;  hash would mean copying the page into a buffer to put the fields in front
-;  of it - a 4 KiB copy per leaf, per commit, to avoid a function call.
+;  One permutation, four functions over it, and the rate and the padding byte
+;  held in the context rather than compiled in. FIPS 202 is a family and
+;  ML-KEM uses four members of it at once - SHA3-256 as H, SHA3-512 as G,
+;  SHAKE256 as J and the PRF, SHAKE128 as the XOF that samples the matrix -
+;  so a sponge that knew only one rate would be copied four times, and the
+;  fourth copy would be the one with the wrong padding byte.
 ;
-;  Same shape as poly1305.asm: init, update, final, with the one-shot entry
-;  point kept as a wrapper over them so there is one sponge and not two.
+;  Squeezing is incremental and separate from finishing, because the XOF is
+;  read in pieces: sampling a polynomial pulls three bytes at a time and stops
+;  when it has enough, which is not a length anyone knows in advance.
 ;
-;  The absorb is byte at a time. That is a deliberate first version: the
-;  permutation is 24 rounds per 136 bytes and dominates by a wide margin, so
-;  a qword fast path is an optimisation to make after measuring, not before.
+;  The absorb is byte at a time. Deliberate: 24 rounds of permutation per
+;  rate dominates by a wide margin, so a qword fast path is an optimisation to
+;  make after measuring rather than before.
 ; =============================================================================
-
-%define SHAKE256_RATE 136
 
 ; --- init ---------------------------------------------------------------------
-;  cyboudb_shake256_init(ctx)
+;  cyboudb_sponge_init(ctx, rate, pad)
 ;
-;  ARG1  uint8_t *ctx        CybouDB_SHCTX_SIZE bytes
+;  ARG1  uint8_t *ctx      CybouDB_SHCTX_SIZE bytes
+;  ARG2  uint64_t rate     136 for SHA3-256 and SHAKE256, 72 for SHA3-512,
+;                          168 for SHAKE128
+;  ARG3  uint64_t pad      0x06 for SHA-3, 0x1f for SHAKE
 ; -----------------------------------------------------------------------------
-cyboudb_shake256_init:
+cyboudb_sponge_init:
     mov     r10, ARG1
+    mov     r11, ARG2
+    mov     rdx, ARG3
     xor     rax, rax
     xor     rcx, rcx
 .zero:
@@ -401,16 +417,18 @@ cyboudb_shake256_init:
     add     rcx, 8
     cmp     rcx, CybouDB_SHCTX_SIZE
     jb      .zero
+    mov     [r10 + SHCTX_RATE], r11
+    mov     [r10 + SHCTX_PAD], rdx
     ret
 
-; --- update -------------------------------------------------------------------
-;  cyboudb_shake256_update(ctx, in, in_len)
+; --- absorb -------------------------------------------------------------------
+;  cyboudb_sponge_absorb(ctx, in, in_len)
 ;
 ;  Absorbing in any number of pieces must give what absorbing the whole thing
-;  at once gives; the test splits one message at every boundary from 0 to 300
-;  and demands the same digest each time.
+;  at once gives; the test splits a message at every boundary and demands one
+;  digest.
 ; -----------------------------------------------------------------------------
-cyboudb_shake256_update:
+cyboudb_sponge_absorb:
     FRAME_BEGIN 48, 0
     mov     [rbp - 8], rbx
     mov     [rbp - 16], r12
@@ -429,10 +447,10 @@ cyboudb_shake256_update:
     inc     r12
     dec     r13
     inc     rdx
-    cmp     rdx, SHAKE256_RATE
+    cmp     rdx, [rbx + SHCTX_RATE]
     jb      .byte
 
-    mov     [rbx + SHCTX_BUFLEN], rdx
+    mov     qword [rbx + SHCTX_BUFLEN], 0
     lea     ARG1, [rbx + SHCTX_STATE]
     call    cyboudb_keccak_f1600
     xor     rdx, rdx
@@ -446,66 +464,144 @@ cyboudb_shake256_update:
     FRAME_END
     ret
 
-; --- final --------------------------------------------------------------------
-;  cyboudb_shake256_final(ctx, out, out_len)
+; --- finish -------------------------------------------------------------------
+;  cyboudb_sponge_finish(ctx)
 ;
-;  Pads, squeezes, and then wipes the state: whatever it still holds would
-;  give the rest of the stream to anyone who read the context afterwards.
+;  Pads and permutes once. After this the context is a source of output and
+;  not a sink for input; absorbing again would be a caller's bug and is not
+;  defended against, because there is no correct thing to do about it.
 ; -----------------------------------------------------------------------------
-cyboudb_shake256_final:
-    FRAME_BEGIN 64, 0
+cyboudb_sponge_finish:
+    FRAME_BEGIN 32, 0
+    mov     [rbp - 8], rbx
+    mov     rbx, ARG1
+
+    mov     rdx, [rbx + SHCTX_BUFLEN]
+    mov     rax, [rbx + SHCTX_PAD]
+    xor     [rbx + SHCTX_STATE + rdx], al
+    mov     rcx, [rbx + SHCTX_RATE]
+    mov     al, 0x80                    ; the other end of pad10*1
+    xor     [rbx + SHCTX_STATE + rcx - 1], al
+
+    lea     ARG1, [rbx + SHCTX_STATE]
+    call    cyboudb_keccak_f1600
+
+    mov     qword [rbx + SHCTX_SQPOS], 0
+    mov     rbx, [rbp - 8]
+    FRAME_END
+    ret
+
+; --- squeeze ------------------------------------------------------------------
+;  cyboudb_sponge_squeeze(ctx, out, out_len)
+;
+;  Callable any number of times: the stream continues where the last call left
+;  it, which is what the matrix sampler needs and what a caller asking for one
+;  digest never notices.
+; -----------------------------------------------------------------------------
+cyboudb_sponge_squeeze:
+    FRAME_BEGIN 48, 0
     mov     [rbp - 8], rbx
     mov     [rbp - 16], r12
     mov     [rbp - 24], r13
 
     mov     rbx, ARG1                   ; ctx
     mov     r12, ARG2                   ; out
-    mov     r13, ARG3                   ; out_len
+    mov     r13, ARG3                   ; remaining
 
-    mov     rdx, [rbx + SHCTX_BUFLEN]
-    mov     al, 0x1f                    ; SHAKE's domain separation, then pad10*1
-    xor     [rbx + SHCTX_STATE + rdx], al
-    mov     al, 0x80
-    xor     [rbx + SHCTX_STATE + SHAKE256_RATE - 1], al
-
-    lea     ARG1, [rbx + SHCTX_STATE]
-    call    cyboudb_keccak_f1600
-
-.squeeze:
+.block:
     test    r13, r13
-    jz      .wipe
-
-    mov     rax, r13
-    mov     rcx, SHAKE256_RATE
-    cmp     rax, rcx
-    cmovae  rax, rcx                    ; this pass gives at most a rate
-    mov     [rbp - 32], rax
-
-    xor     rcx, rcx
-.byte:
-    cmp     rcx, [rbp - 32]
-    jae     .squeezed
-    mov     al, [rbx + SHCTX_STATE + rcx]
-    mov     [r12 + rcx], al
-    inc     rcx
-    jmp     .byte
-
-.squeezed:
-    add     r12, [rbp - 32]
-    sub     r13, [rbp - 32]
-    jz      .wipe
+    jz      .done
+    mov     rdx, [rbx + SHCTX_SQPOS]
+    cmp     rdx, [rbx + SHCTX_RATE]
+    jb      .have
     lea     ARG1, [rbx + SHCTX_STATE]
     call    cyboudb_keccak_f1600
-    jmp     .squeeze
+    mov     qword [rbx + SHCTX_SQPOS], 0
+    xor     rdx, rdx
+.have:
+    mov     al, [rbx + SHCTX_STATE + rdx]
+    mov     [r12], al
+    inc     r12
+    dec     r13
+    inc     rdx
+    mov     [rbx + SHCTX_SQPOS], rdx
+    jmp     .block
 
-.wipe:
+.done:
+    mov     rbx, [rbp - 8]
+    mov     r12, [rbp - 16]
+    mov     r13, [rbp - 24]
+    FRAME_END
+    ret
+
+; --- how big the context is ---------------------------------------------------
+;  cyboudb_sponge_ctx_size() -> size in bytes
+;
+;  A caller that allocates the context has to know this, and a caller that
+;  knows it as a number of its own eventually knows the wrong number: growing
+;  the context by three fields turned a correct test into a stack smash. So
+;  the size is askable, and the tests assert their constant against it.
+; -----------------------------------------------------------------------------
+cyboudb_sponge_ctx_size:
+    mov     eax, CybouDB_SHCTX_SIZE
+    ret
+
+; --- wipe ---------------------------------------------------------------------
+;  cyboudb_sponge_wipe(ctx)
+;
+;  The state is the secret: what it still holds would give the rest of the
+;  stream to anyone who read the context afterwards. Separate from squeezing
+;  because an XOF is read in pieces and cannot wipe after the first one.
+; -----------------------------------------------------------------------------
+cyboudb_sponge_wipe:
+    mov     r10, ARG1
     xor     rax, rax
     xor     rcx, rcx
-.wipe_word:
-    mov     [rbx + rcx], rax
+.word:
+    mov     [r10 + rcx], rax
     add     rcx, 8
     cmp     rcx, CybouDB_SHCTX_SIZE
-    jb      .wipe_word
+    jb      .word
+    ret
+
+; =============================================================================
+;  The named members of the family
+; =============================================================================
+;  cyboudb_shake256_init / _update / _final keep the names the key hierarchy
+;  and the seal tree already use; the rest are what ML-KEM asks for by letter.
+; =============================================================================
+cyboudb_shake256_init:
+    mov     ARG3, SHAKE_PAD
+    mov     ARG2, SHAKE256_RATE
+    jmp     cyboudb_sponge_init
+
+cyboudb_shake128_init:
+    mov     ARG3, SHAKE_PAD
+    mov     ARG2, SHAKE128_RATE
+    jmp     cyboudb_sponge_init
+
+cyboudb_shake256_update:
+    jmp     cyboudb_sponge_absorb
+
+; cyboudb_shake256_final(ctx, out, out_len) - one digest, and done with it.
+cyboudb_shake256_final:
+    FRAME_BEGIN 48, 0
+    mov     [rbp - 8], rbx
+    mov     [rbp - 16], r12
+    mov     [rbp - 24], r13
+
+    mov     rbx, ARG1
+    mov     r12, ARG2
+    mov     r13, ARG3
+
+    mov     ARG1, rbx
+    call    cyboudb_sponge_finish
+    mov     ARG1, rbx
+    mov     ARG2, r12
+    mov     ARG3, r13
+    call    cyboudb_sponge_squeeze
+    mov     ARG1, rbx
+    call    cyboudb_sponge_wipe
 
     mov     rbx, [rbp - 8]
     mov     r12, [rbp - 16]
@@ -513,49 +609,145 @@ cyboudb_shake256_final:
     FRAME_END
     ret
 
-; =============================================================================
-;  cyboudb_shake256(out, out_len, in, in_len)
-;
-;  ARG1  uint8_t       *out
-;  ARG2  uint64_t       out_len
-;  ARG3  const uint8_t *in
-;  ARG4  uint64_t       in_len
-;
-;  The sponge at rate 136 bytes, padded with 0x1F and a final 0x80 - the
-;  domain separation that makes SHAKE256 a different function from SHA3-256
-;  over the same permutation. A wrapper since the seal tree needed the
-;  streaming form: one sponge, two ways in.
-; =============================================================================
+; -----------------------------------------------------------------------------
+;  sponge_oneshot(rbx = out, r12 = out_len, r13 = in, r14 = in_len,
+;                 r15 = rate, r10 = pad)
+;  Internal: the whole of a one-shot hash, over a context in this frame.
+; -----------------------------------------------------------------------------
+sponge_oneshot:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, CybouDB_SHCTX_SIZE + 32 + SHADOW_SPACE
+    lea     r11, [rsp + SHADOW_SPACE]
+    mov     [rsp + SHADOW_SPACE + CybouDB_SHCTX_SIZE], r11
+
+    mov     ARG1, r11
+    mov     ARG2, r15
+    mov     ARG3, r10
+    call    cyboudb_sponge_init
+
+    mov     ARG1, [rsp + SHADOW_SPACE + CybouDB_SHCTX_SIZE]
+    mov     ARG2, r13
+    mov     ARG3, r14
+    call    cyboudb_sponge_absorb
+
+    mov     ARG1, [rsp + SHADOW_SPACE + CybouDB_SHCTX_SIZE]
+    call    cyboudb_sponge_finish
+
+    mov     ARG1, [rsp + SHADOW_SPACE + CybouDB_SHCTX_SIZE]
+    mov     ARG2, rbx
+    mov     ARG3, r12
+    call    cyboudb_sponge_squeeze
+
+    mov     ARG1, [rsp + SHADOW_SPACE + CybouDB_SHCTX_SIZE]
+    call    cyboudb_sponge_wipe
+
+    mov     rsp, rbp
+    pop     rbp
+    ret
+
+; -----------------------------------------------------------------------------
+;  The one-shot entry points. SHAKE256 keeps the signature it has had since
+;  the KDF was written; the SHA-3 pair have fixed output lengths, so saying
+;  the length at the call site would only be a chance to say it wrong.
+; -----------------------------------------------------------------------------
+; cyboudb_shake256(out, out_len, in, in_len)
 cyboudb_shake256:
-    FRAME_BEGIN CybouDB_SHCTX_SIZE + 64, 0
+    FRAME_BEGIN 64, 0
     mov     [rbp - 8], rbx
     mov     [rbp - 16], r12
     mov     [rbp - 24], r13
     mov     [rbp - 32], r14
+    mov     [rbp - 40], r15
 
-    mov     r12, ARG1                   ; out
-    mov     r13, ARG2                   ; out_len
-    mov     r14, ARG3                   ; in
-    mov     rbx, ARG4                   ; in_len
-
-    lea     ARG1, [rbp - (CybouDB_SHCTX_SIZE + 64)]
-    mov     [rbp - 40], ARG1            ; the context, in this frame
-    call    cyboudb_shake256_init
-
-    mov     ARG1, [rbp - 40]
-    mov     ARG2, r14
-    mov     ARG3, rbx
-    call    cyboudb_shake256_update
-
-    mov     ARG1, [rbp - 40]
-    mov     ARG2, r12
-    mov     ARG3, r13
-    call    cyboudb_shake256_final
+    mov     rbx, ARG1
+    mov     r12, ARG2
+    mov     r13, ARG3
+    mov     r14, ARG4
+    mov     r15, SHAKE256_RATE
+    mov     r10, SHAKE_PAD
+    call    sponge_oneshot
 
     mov     rbx, [rbp - 8]
     mov     r12, [rbp - 16]
     mov     r13, [rbp - 24]
     mov     r14, [rbp - 32]
+    mov     r15, [rbp - 40]
+    FRAME_END
+    ret
+
+; cyboudb_shake128(out, out_len, in, in_len)
+cyboudb_shake128:
+    FRAME_BEGIN 64, 0
+    mov     [rbp - 8], rbx
+    mov     [rbp - 16], r12
+    mov     [rbp - 24], r13
+    mov     [rbp - 32], r14
+    mov     [rbp - 40], r15
+
+    mov     rbx, ARG1
+    mov     r12, ARG2
+    mov     r13, ARG3
+    mov     r14, ARG4
+    mov     r15, SHAKE128_RATE
+    mov     r10, SHAKE_PAD
+    call    sponge_oneshot
+
+    mov     rbx, [rbp - 8]
+    mov     r12, [rbp - 16]
+    mov     r13, [rbp - 24]
+    mov     r14, [rbp - 32]
+    mov     r15, [rbp - 40]
+    FRAME_END
+    ret
+
+; cyboudb_sha3_256(out32, in, in_len)
+cyboudb_sha3_256:
+    FRAME_BEGIN 64, 0
+    mov     [rbp - 8], rbx
+    mov     [rbp - 16], r12
+    mov     [rbp - 24], r13
+    mov     [rbp - 32], r14
+    mov     [rbp - 40], r15
+
+    mov     rbx, ARG1
+    mov     r13, ARG2
+    mov     r14, ARG3
+    mov     r12, 32
+    mov     r15, SHA3_256_RATE
+    mov     r10, SHA3_PAD
+    call    sponge_oneshot
+
+    mov     rbx, [rbp - 8]
+    mov     r12, [rbp - 16]
+    mov     r13, [rbp - 24]
+    mov     r14, [rbp - 32]
+    mov     r15, [rbp - 40]
+    FRAME_END
+    ret
+
+; cyboudb_sha3_512(out64, in, in_len)
+cyboudb_sha3_512:
+    FRAME_BEGIN 64, 0
+    mov     [rbp - 8], rbx
+    mov     [rbp - 16], r12
+    mov     [rbp - 24], r13
+    mov     [rbp - 32], r14
+    mov     [rbp - 40], r15
+
+    mov     rbx, ARG1
+    mov     r13, ARG2
+    mov     r14, ARG3
+    mov     r12, 64
+    mov     r15, SHA3_512_RATE
+    mov     r10, SHA3_PAD
+    call    sponge_oneshot
+
+    mov     rbx, [rbp - 8]
+    mov     r12, [rbp - 16]
+    mov     r13, [rbp - 24]
+    mov     r14, [rbp - 32]
+    mov     r15, [rbp - 40]
     FRAME_END
     ret
 

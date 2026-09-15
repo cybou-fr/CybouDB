@@ -27,10 +27,35 @@
 void cyboudb_keccak_f1600(uint8_t *state);
 void cyboudb_shake256(uint8_t *out, uint64_t out_len,
                       const uint8_t *in, uint64_t in_len);
-#define SHCTX_SIZE 208
+#define SHCTX_SIZE 232
 void cyboudb_shake256_init(uint8_t *ctx);
 void cyboudb_shake256_update(uint8_t *ctx, const uint8_t *in, uint64_t len);
 void cyboudb_shake256_final(uint8_t *ctx, uint8_t *out, uint64_t out_len);
+void cyboudb_shake128(uint8_t *out, uint64_t out_len, const uint8_t *in,
+                      uint64_t in_len);
+void cyboudb_shake128_init(uint8_t *ctx);
+void cyboudb_sha3_256(uint8_t *out, const uint8_t *in, uint64_t in_len);
+void cyboudb_sha3_512(uint8_t *out, const uint8_t *in, uint64_t in_len);
+void cyboudb_sponge_absorb(uint8_t *ctx, const uint8_t *in, uint64_t len);
+void cyboudb_sponge_finish(uint8_t *ctx);
+void cyboudb_sponge_squeeze(uint8_t *ctx, uint8_t *out, uint64_t out_len);
+void cyboudb_sponge_wipe(uint8_t *ctx);
+uint64_t cyboudb_sponge_ctx_size(void);
+
+/* Hex from an independent implementation - Python's hashlib, which is
+   OpenSSL's Keccak and not this one. The empty-message and "abc" digests are
+   the published FIPS 202 examples; the third message is 300 bytes, which is
+   longer than every rate here and so exercises more than one absorbed block
+   in all four functions. */
+static int hexeq(const uint8_t *got, const char *hex, size_t n) {
+    size_t i;
+    for (i = 0; i < n; i++) {
+        unsigned v;
+        if (sscanf(hex + 2 * i, "%2x", &v) != 1) return 0;
+        if (got[i] != (uint8_t)v) return 0;
+    }
+    return 1;
+}
 
 static int checks, failures;
 
@@ -255,6 +280,79 @@ int main(void) {
         cyboudb_shake256(whole, 32, msg, 0);
         check("the streaming sponge of nothing is the sponge of nothing",
               memcmp(whole, piece, 32) == 0);
+    }
+
+    {
+        static uint8_t msg[300], out[64], ctx[SHCTX_SIZE];
+        unsigned k;
+        for (k = 0; k < sizeof msg; k++) msg[k] = (uint8_t)(k * 31 + 7);
+
+        check("the context is the size the tests here allocate",
+              cyboudb_sponge_ctx_size() == SHCTX_SIZE);
+
+        cyboudb_sha3_256(out, NULL, 0);
+        check("SHA3-256 of the empty message",
+              hexeq(out, "a7ffc6f8bf1ed76651c14756a061d662"
+                         "f580ff4de43b49fa82d80a4b80f8434a", 32));
+        cyboudb_sha3_256(out, (const uint8_t *)"abc", 3);
+        check("SHA3-256 of abc",
+              hexeq(out, "3a985da74fe225b2045c172d6bd390bd"
+                         "855f086e3e9d525b46bfe24511431532", 32));
+        cyboudb_sha3_256(out, msg, sizeof msg);
+        check("SHA3-256 of three hundred bytes",
+              hexeq(out, "8d57366bec794c029941c74012219bf5"
+                         "536d97caf6a71d0b262f203df96165a6", 32));
+
+        cyboudb_sha3_512(out, NULL, 0);
+        check("SHA3-512 of the empty message",
+              hexeq(out, "a69f73cca23a9ac5c8b567dc185a756e"
+                         "97c982164fe25859e0d1dcc1475c80a6"
+                         "15b2123af1f5f94c11e3e9402c3ac558"
+                         "f500199d95b6d3e301758586281dcd26", 64));
+        cyboudb_sha3_512(out, (const uint8_t *)"abc", 3);
+        check("SHA3-512 of abc - a rate of 72, so the shortest block here",
+              hexeq(out, "b751850b1a57168a5693cd924b6b096e"
+                         "08f621827444f70d884f5d0240d2712e"
+                         "10e116e9192af3c91a7ec57647e39340"
+                         "57340b4cf408d5a56592f8274eec53f0", 64));
+
+        cyboudb_shake128(out, 32, NULL, 0);
+        check("SHAKE128 of the empty message",
+              hexeq(out, "7f9c2ba4e88f827d616045507605853e"
+                         "d73b8093f6efbc88eb1a6eacfa66ef26", 32));
+        cyboudb_shake128(out, 32, msg, sizeof msg);
+        check("SHAKE128 of three hundred bytes",
+              hexeq(out, "4ce3d6a19515198a14cebf5618ec3ea9"
+                         "9410d7f48c8ef70406df0248699d5a9b", 32));
+
+        /* The XOF is read in pieces by the matrix sampler - three bytes at a
+           time, stopping when it has enough - so squeezing in pieces has to
+           be squeezing once. Sixty-four bytes of SHAKE128 spans more than one
+           block at a rate of 168 only when read further, so the piecewise
+           read below goes to 400 bytes. */
+        {
+            static uint8_t once[400], bit_by_bit[400];
+            unsigned pos = 0, step = 1;
+            cyboudb_shake128(once, sizeof once, (const uint8_t *)"abc", 3);
+            cyboudb_shake128_init(ctx);
+            cyboudb_sponge_absorb(ctx, (const uint8_t *)"abc", 3);
+            cyboudb_sponge_finish(ctx);
+            while (pos < sizeof bit_by_bit) {
+                unsigned n = step;
+                if (pos + n > sizeof bit_by_bit) n = (unsigned)sizeof bit_by_bit - pos;
+                cyboudb_sponge_squeeze(ctx, bit_by_bit + pos, n);
+                pos += n;
+                step = step * 2 + 1;     /* 1, 3, 7, 15, ... across block ends */
+            }
+            cyboudb_sponge_wipe(ctx);
+            check("squeezing an XOF in growing pieces is squeezing it once",
+                  memcmp(once, bit_by_bit, sizeof once) == 0);
+            check("and the first sixty-four bytes are SHAKE128 of abc",
+                  hexeq(once, "5881092dd818bf5cf8a3ddb793fbcba7"
+                              "4097d5c526a6d35f97b83351940f2cc8"
+                              "44c50af32acd3f2cdd066568706f509b"
+                              "c1bdde58295dae3f891a9a0fca578378", 64));
+        }
     }
 
     printf("\nKeccak suite: %d checks, %d failed\n", checks, failures);

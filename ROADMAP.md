@@ -605,13 +605,17 @@ the release, not after it.
                                      Owes a vectorised ChaCha20, measured
 3.5 Key-hierarchy primitives         ML-KEM, ML-DSA, KDF - a different budget,
                                      since they run at open and not per page
- 4. Root key hierarchy               docs/KEY_HIERARCHY.md - designed;
-                                     SHAKE256 in assembly, against the
-                                     Keccak team vectors. Derivation, wrapping
-                                     and the crypto root still to build
+ 4. Root key hierarchy               done - docs/KEY_HIERARCHY.md.
+                                     SHAKE256, the closed-label KDF, wrap and
+                                     unwrap, the crypto root page and its
+                                     key-free validator, and three error codes
+                                     so a wrong key is never called damage
  5. Opening with a PQ private key
  6. Independent 24-word recovery
- 7. Authenticated page encryption
+ 7. Authenticated page encryption     the seal directory and its keyed
+                                     tree are built and tested ahead of this
+                                     step, because the format needed them
+                                     frozen: src/crypto/seal_dir.asm
  8. Crash-safe encrypted transactions
  9. Scoped DEKs
 10. The signed access manifest

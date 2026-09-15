@@ -60,11 +60,23 @@
 %define CybouDB_XAEAD_NONCE_SIZE  24    ; XChaCha20-Poly1305, what the format uses
 
 ; --- the streaming sponge ---------------------------------------------------
-;  SHAKE256 absorbed in pieces: the state, and how many bytes of the current
-;  block have been absorbed into it.
+;  FIPS 202 is a family, and ML-KEM uses four of its members at once, so the
+;  rate and the padding byte live in the context instead of being compiled in.
+;  A sponge that knew only one rate would be copied once per member, and one
+;  of those copies would be the one with the wrong padding byte.
 %define SHCTX_STATE   0                 ; 200 bytes, twenty-five lanes
-%define SHCTX_BUFLEN  200
-%define CybouDB_SHCTX_SIZE 208
+%define SHCTX_BUFLEN  200               ; absorbed into the current block
+%define SHCTX_RATE    208
+%define SHCTX_PAD     216
+%define SHCTX_SQPOS   224               ; squeezed out of the current block
+%define CybouDB_SHCTX_SIZE 232
+
+%define SHAKE128_RATE   168
+%define SHAKE256_RATE   136
+%define SHA3_256_RATE   136
+%define SHA3_512_RATE    72
+%define SHAKE_PAD      0x1f
+%define SHA3_PAD       0x06
 
 ; --- key derivation ---------------------------------------------------------
 ;  docs/KEY_HIERARCHY.md, Decision 2. A purpose is a number in a closed list,

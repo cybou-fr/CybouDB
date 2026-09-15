@@ -82,7 +82,7 @@ int cyboudb_seal_node_validate(const uint8_t *page);
 
 uint32_t crc32c(const uint8_t *buf, uint64_t len);
 
-#define SHCTX_SIZE 208
+#define SHCTX_SIZE 232
 void cyboudb_shake256_init(uint8_t *ctx);
 void cyboudb_shake256_update(uint8_t *ctx, const uint8_t *in, uint64_t len);
 void cyboudb_shake256_final(uint8_t *ctx, uint8_t *out, uint64_t out_len);
