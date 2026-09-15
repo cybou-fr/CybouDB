@@ -156,6 +156,9 @@
 %define DB_SEAL_PAGES     (DB_TREE_KEY + 32)   ; pages in one tree copy
 %define DB_SEAL_DEPTH     (DB_SEAL_PAGES + 8)  ; root level, one or greater
 %define DB_SEAL_ROOT      (DB_SEAL_DEPTH + 8)  ; MAC published by superblock
+%define DB_DIRTY_LEAF_N   (DB_SEAL_ROOT + 16)  ; snapshot retained by flush
+%define DB_DIRTY_LEAVES   (DB_DIRTY_LEAF_N + 8)
+%define CybouDB_DIRTY_LEAF_MAX 256
 
 ;  Three keys stay resident while a database is open, and it is worth being
 ;  able to name all three rather than discovering a fourth later: the page seal
@@ -165,7 +168,7 @@
 ;  handle. The root key is not among them - it is wiped at the end of the open,
 ;  which is the whole reason these are derived rather than kept.
 
-%define CybouDB_DB_SIZE      (DB_SEAL_ROOT + 16)
+%define CybouDB_DB_SIZE      (DB_DIRTY_LEAVES + CybouDB_DIRTY_LEAF_MAX * 8)
 
 ; Entries in the log: page id, then the two states packed into one qword so an
 ; entry is 16 bytes and the whole thing is a flat array with no allocator.

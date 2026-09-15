@@ -120,6 +120,8 @@ db_encrypted_attach:
     mov     [rbp - 72], ARG4
     mov     rax, IN_ARG5
     mov     [rbp - 80], rax
+    cmp     rax, CybouDB_DIRTY_LEAF_MAX
+    ja      .not_encrypted
 
     mov     rbx, [rbp - 48]
 

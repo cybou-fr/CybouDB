@@ -546,6 +546,7 @@ db_pages_flush:
     mov     rbx, ARG1
     mov     [rbp - 40], rbx
     mov     qword [rbp - 72], -1        ; no leaf held yet
+    mov     qword [rbx + DB_DIRTY_LEAF_N], 0
 
     mov     ARG1, [rbx + DB_CACHE]
     call    cyboudb_pcache_frames
@@ -575,6 +576,7 @@ db_pages_flush:
     mov     rcx, CybouDB_SEAL_ENTRIES_PER_LEAF
     div     rcx
     mov     r14, rdx                    ; the entry index
+    mov     [rbp - 96], rax             ; leaf index, retained past the flush
     ; Dirty entries go to the copy the inactive superblock owns. The active
     ; directory must remain byte-for-byte available until publication.
     mov     r10, [rbx + DB_SEAL_DIR]
@@ -605,6 +607,19 @@ db_pages_flush:
     mov     rbx, [rbp - 40]
     mov     rax, [rbp - 64]
     mov     [rbp - 72], rax
+
+    ; A deeper commit needs the dirty leaf set after this routine invalidates
+    ; ciphertext frames. Attach caps frames to the journal capacity, so even
+    ; the deliberately simple duplicate-preserving list cannot overflow.
+    cmp     qword [rbx + DB_SEAL_DEPTH], 1
+    jbe     .leaf_journaled
+    mov     rcx, [rbx + DB_DIRTY_LEAF_N]
+    cmp     rcx, CybouDB_DIRTY_LEAF_MAX
+    jae     .failed
+    mov     rax, [rbp - 96]
+    mov     [rbx + DB_DIRTY_LEAVES + rcx * 8], rax
+    inc     qword [rbx + DB_DIRTY_LEAF_N]
+.leaf_journaled:
 
     mov     ARG1, [rbx + DB_HANDLE]
     lea     ARG2, [rbp - PR_LEAF]

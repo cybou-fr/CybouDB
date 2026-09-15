@@ -59,7 +59,10 @@
 #define DB_TREE_KEY     (DB_META_KEY + 32)
 #define DB_SEAL_PAGES   (DB_TREE_KEY + 32)
 #define DB_SEAL_DEPTH   (DB_SEAL_PAGES + 8)
-#define CTX_BYTES       1024
+#define DB_SEAL_ROOT    (DB_SEAL_DEPTH + 8)
+#define DB_DIRTY_LEAF_N (DB_SEAL_ROOT + 16)
+#define DB_DIRTY_LEAVES (DB_DIRTY_LEAF_N + 8)
+#define CTX_BYTES       4096
 
 #define EK_BYTES 1184
 #define DK_BYTES 2400
@@ -391,6 +394,9 @@ int main(void) {
             check("and a multi-level commit publishes every ancestor",
                   db_encrypted_commit(ctx) == 0 &&
                   rd64(ctx, DB_GENERATION) == 2);
+            check("and retains the changed leaf path after frame invalidation",
+                  rd64(ctx, DB_DIRTY_LEAF_N) == 1 &&
+                  rd64(ctx, DB_DIRTY_LEAVES) == usable / 83);
             vfs_close(big);
             big = vfs_open_rw(VFS_PATH("build/too_big.cdb"), 0);
             memset(ctx, 0, sizeof ctx);

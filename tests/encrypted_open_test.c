@@ -58,7 +58,7 @@
 #define DB_SEAL_DIR     (DB_SEAL_EPOCH + 8)
 #define DB_SEAL_LEAVES  (DB_SEAL_DIR + 8)
 #define DB_ENC_ERROR    (DB_SEAL_LEAVES + 8)
-#define CTX_BYTES       1024
+#define CTX_BYTES       4096
 
 #define P_HEADER  0
 #define P_SB      1

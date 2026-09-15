@@ -38,7 +38,7 @@
 #define DB_SEAL_DIR     (DB_SEAL_EPOCH + 8)
 #define DB_SEAL_LEAVES  (DB_SEAL_DIR + 8)
 #define DB_ENC_ERROR    (DB_SEAL_LEAVES + 8)
-#define DB_SIZE_BYTES       1024
+#define DB_SIZE_BYTES       4096
 
 #define SENTRY_SIZE 48
 #define SENTRY_GENERATION 40
