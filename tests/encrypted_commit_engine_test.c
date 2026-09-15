@@ -9,13 +9,14 @@
 #define DB_SB_PAGE 48
 #define DB_MODE 88
 #define DB_CACHE 760
-#define DB_SEAL_EPOCH (DB_CACHE + 64)
+#define DB_SEAL_EPOCH (DB_CACHE + 56)
 #define DB_SEAL_DIR (DB_SEAL_EPOCH + 8)
 #define DB_SEAL_LEAVES (DB_SEAL_DIR + 8)
 #define DB_ENC_ERROR (DB_SEAL_LEAVES + 8)
 #define E_SYNC 19
 
 static int checks, failures, sync_calls, fail_sync;
+static int read_calls, write_calls, nodes_differ;
 
 static uint64_t rd64(const uint8_t *p, int off) {
     uint64_t v; memcpy(&v, p + off, 8); return v;
@@ -33,11 +34,13 @@ int db_encrypted_commit(uint8_t *ctx);
 
 int db_pages_flush(uint8_t *ctx) { (void)ctx; return 0; }
 int64_t vfs_read_at(int64_t h, void *buf, uint64_t bytes, uint64_t offset) {
-    (void)h; (void)offset; memset(buf, 0, (size_t)bytes); return (int64_t)bytes;
+    (void)h; read_calls++; memset(buf, 0, (size_t)bytes);
+    if (nodes_differ && offset == 6 * PAGE) ((uint8_t *)buf)[64] = 1;
+    return (int64_t)bytes;
 }
 int64_t vfs_write_at(int64_t h, const void *buf, uint64_t bytes,
                      uint64_t offset) {
-    (void)h; (void)buf; (void)offset; return (int64_t)bytes;
+    (void)h; (void)buf; (void)offset; write_calls++; return (int64_t)bytes;
 }
 int64_t vfs_sync_file(int64_t h) {
     (void)h; sync_calls++; return sync_calls == fail_sync ? -1 : 0;
@@ -84,7 +87,7 @@ static void fresh(uint8_t *ctx) {
     wr64(ctx, DB_SEAL_EPOCH, 3);
     wr64(ctx, DB_SEAL_DIR, 5);
     wr64(ctx, DB_SEAL_LEAVES, 1);
-    sync_calls = 0;
+    sync_calls = read_calls = write_calls = 0;
 }
 
 int main(void) {
@@ -96,6 +99,15 @@ int main(void) {
     check("and adopts the new generation and superblock",
           rd64(ctx, DB_GENERATION) == 8 && rd64(ctx, DB_SB_PAGE) == 2);
     check("without poisoning the handle", rd64(ctx, DB_MODE) == 1);
+    check("and does not copy an unchanged inactive leaf",
+          read_calls == 4 && write_calls == 2);
+
+    fresh(ctx); fail_sync = 0; nodes_differ = 1;
+    check("a commit with a divergent leaf succeeds",
+          db_encrypted_commit(ctx) == 0);
+    check("and catches up exactly that leaf",
+          read_calls == 5 && write_calls == 3);
+    nodes_differ = 0;
 
     fresh(ctx); fail_sync = 1;
     check("a failure at the first barrier reports sync",

@@ -64,12 +64,14 @@ section .text
 ;   [rbp - 128] one MAC
 ;   [rbp - 384] the KMAC context
 ;   [rbp - 4608] a page to read leaves and build the superblock in
-;   [rbp - 8768] the node
+;   [rbp - 8768] the inactive node
+;   [rbp - 12864] the active node used to find divergent leaves
 %define CM_MAC     128
 %define CM_KMAC    384
 %define CM_PAGE    4608
 %define CM_NODE    8768
-%define CM_FRAME   8832
+%define CM_ACTIVE_NODE 12864
+%define CM_FRAME   12928
 
 ; =============================================================================
 ;  db_encrypted_commit(ctx) -> int
@@ -86,10 +88,9 @@ db_encrypted_commit:
     cmp     qword [rbx + DB_CACHE], 0
     je      .not_encrypted
 
-    ; The inactive copy may be two generations behind. Bring its leaves to the
-    ; exact active state before applying this transaction. This is deliberately
-    ; the correctness-first implementation; comparing the two root nodes and
-    ; copying only divergent leaves is the next, measurable optimization.
+    ; The inactive copy may be two generations behind. Its root node and the
+    ; active root tell us exactly which leaves differ, so only those leaves are
+    ; copied forward before this transaction is applied.
     mov     rax, [rbx + DB_SEAL_DIR]
     mov     [rbp - 72], rax
     mov     rcx, [rbx + DB_SEAL_LEAVES]
@@ -103,10 +104,45 @@ db_encrypted_commit:
 .inactive_known:
     mov     [rbp - 80], rax
 
+    mov     rax, [rbp - 72]
+    add     rax, [rbx + DB_SEAL_LEAVES]
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     ARG1, [rbx + DB_HANDLE]
+    lea     ARG2, [rbp - CM_ACTIVE_NODE]
+    mov     ARG3, CybouDB_PAGE_SIZE
+    mov     ARG4, rax
+    call    vfs_read_at
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .failed
+
+    mov     rbx, [rbp - 40]
+    mov     rax, [rbp - 80]
+    add     rax, [rbx + DB_SEAL_LEAVES]
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     ARG1, [rbx + DB_HANDLE]
+    lea     ARG2, [rbp - CM_NODE]
+    mov     ARG3, CybouDB_PAGE_SIZE
+    mov     ARG4, rax
+    call    vfs_read_at
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .failed
+
     xor     r13, r13
 .copy_leaf:
+    mov     rbx, [rbp - 40]
     cmp     r13, [rbx + DB_SEAL_LEAVES]
     jae     .copy_done
+    mov     rax, r13
+    shl     rax, 4
+    lea     r10, [rbp - CM_ACTIVE_NODE + SNODE_CHILDREN]
+    lea     r11, [rbp - CM_NODE + SNODE_CHILDREN]
+    mov     rcx, [r10 + rax]
+    xor     rcx, [r11 + rax]
+    mov     rdx, [r10 + rax + 8]
+    xor     rdx, [r11 + rax + 8]
+    or      rcx, rdx
+    jz      .next_copy_leaf
+
     mov     rax, [rbp - 72]
     add     rax, r13
     shl     rax, CybouDB_PAGE_SHIFT
@@ -129,6 +165,7 @@ db_encrypted_commit:
     call    vfs_write_at
     cmp     rax, CybouDB_PAGE_SIZE
     jne     .failed
+.next_copy_leaf:
     inc     r13
     jmp     .copy_leaf
 .copy_done:

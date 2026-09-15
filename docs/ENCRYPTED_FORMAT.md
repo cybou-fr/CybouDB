@@ -112,10 +112,9 @@ map's two-copy discipline is the thing that makes a half-written commit
 recoverable, and the seals have precisely the same requirement.
 
 Before changing the inactive copy, the engine brings it forward from the
-active one. The depth-one implementation copies all leaves; a later
-changed-path implementation can compare the two authenticated nodes and copy
-only leaves whose child MAC differs. Publication never changes the copy named
-by the live superblock.
+active one. The depth-one implementation compares the child MACs in the two
+authenticated nodes and copies only leaves that differ. Publication never
+changes the copy named by the live superblock.
 
 **One entry per page: 24-byte nonce, 16-byte tag, and the 8-byte generation
 under which the page was sealed: 48 bytes.** With a 64-byte page header and
