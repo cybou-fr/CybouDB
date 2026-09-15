@@ -48,15 +48,37 @@ import os
 import re
 import sys
 
-# Which machine registers each ARG macro becomes, on either convention.
-ALIASES = {
-    "ARG1": {"rcx", "rdi"},
-    "ARG2": {"rdx", "rsi"},
-    "ARG3": {"r8", "rdx"},
-    "ARG4": {"r9", "rcx"},
-    "ARG5": {"r8"},
-    "ARG6": {"r9"},
+# Which machine register each ARG macro becomes, kept per convention rather
+# than pooled together.
+#
+# Pooling them hid a real bug for as long as this file has existed. The old
+# table said ARG3 is "r8 or rdx", so when
+#
+#     lea ARG2, [rbp - 48]        ; RDX on Win64
+#     mov ARG3, rdx               ; ...passes that address as a length
+#
+# was checked, rdx looked like ARG3's own register - true on System V - and the
+# read was dismissed as an argument reading itself. On Windows it is ARG2's
+# register, freshly overwritten, and the call crashed. A register is only
+# "its own" within one convention, so the two are tracked separately and a
+# finding names which one it belongs to.
+CONVENTIONS = {
+    "Win64": {
+        "ARG1": "rcx", "ARG2": "rdx", "ARG3": "r8", "ARG4": "r9",
+    },
+    "System V": {
+        "ARG1": "rdi", "ARG2": "rsi", "ARG3": "rdx", "ARG4": "rcx",
+        "ARG5": "r8", "ARG6": "r9",
+    },
 }
+
+# Every register any argument uses, for the scratch direction below, which does
+# not care which convention a register belongs to - only that it belongs to
+# one.
+ALIASES = {}
+for _abi, _map in CONVENTIONS.items():
+    for _arg, _reg in _map.items():
+        ALIASES.setdefault(_arg, set()).add(_reg)
 
 # A register named in a source operand: bare, or as the base of a memory one.
 BARE = re.compile(r"^(r[a-z0-9]+)$")
@@ -119,7 +141,8 @@ def sources(operand):
 def scan(path):
     """Every place a later argument reads what an earlier one overwrote."""
     findings = []
-    taken = {}          # register -> (line number, the ARG that took it)
+    # One map per convention: register -> (line number, the ARG that took it).
+    taken = {abi: {} for abi in CONVENTIONS}
     scratch = {}        # register -> line number it was used as scratch
     with open(path, "r", encoding="ascii", errors="replace") as handle:
         lines = handle.readlines()
@@ -133,7 +156,7 @@ def scan(path):
         # with it.
         line = raw.split(";")[0]
         if CALL.search(line) or RET.search(line):
-            taken = {}
+            taken = {abi: {} for abi in CONVENTIONS}
             scratch = {}
             written = set()
             continue
@@ -144,7 +167,7 @@ def scan(path):
         # that sets one value and falls into a shared body.
         label = LABEL.match(line)
         if label:
-            taken = {}
+            taken = {abi: {} for abi in CONVENTIONS}
             written = set()
             scratch = pending.pop(label.group(1), {})
             continue
@@ -171,7 +194,7 @@ def scan(path):
             for register in ALIASES["ARG" + digit]:
                 if register in scratch:
                     findings.append((number, register, "ARG" + digit,
-                                     scratch[register], "scratch",
+                                     scratch[register], "scratch use",
                                      raw.rstrip()))
         if destination:
             written.add(destination)
@@ -185,15 +208,18 @@ def scan(path):
         if not match:
             continue
         arg, operand = match.group(1), match.group(2)
-        for register in sources(operand):
-            if register in ALIASES[arg]:
-                continue            # `xor ARGn, ARGn` reads only itself
-            if register in taken:
-                where, by = taken[register]
-                findings.append((number, register, arg, where, by,
-                                 raw.rstrip()))
-        for register in ALIASES[arg]:
-            taken[register] = (number, arg)
+        for abi, mapping in CONVENTIONS.items():
+            own = mapping.get(arg)
+            for register in sources(operand):
+                if register == own:
+                    continue        # `xor ARGn, ARGn` reads only itself
+                if register in taken[abi]:
+                    where, by = taken[abi][register]
+                    findings.append((number, register, arg, where,
+                                     "%s, under %s" % (by, abi),
+                                     raw.rstrip()))
+            if own is not None:
+                taken[abi][own] = (number, arg)
     return findings
 
 
@@ -209,7 +235,7 @@ def main():
             total += 1
             name = os.path.relpath(path).replace(os.sep, "/")
             print(f"{name}:{number}: {arg} reads {register.upper()}, which "
-                  f"{by} took at line {where} under one of the two conventions")
+                  f"{by} took at line {where}")
             print(f"    {text.strip()}")
     if total:
         print(f"\n{total} place(s) where an argument register was read after "

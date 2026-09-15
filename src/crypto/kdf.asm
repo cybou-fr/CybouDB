@@ -5,20 +5,31 @@
 ; =============================================================================
 ;  docs/KEY_HIERARCHY.md, Decisions 2 and 3.
 ;
-;  Derivation is a one-step KDF over SHAKE256, in the shape NIST SP 800-56C
-;  describes: the derived key is the sponge output of a fixed prefix, the
-;  purpose, the root, and the context.
+;  Derivation is KMAC256 used as a PRF, which is one of the two jobs NIST
+;  SP 800-185 defines it for:
 ;
-;      key = SHAKE256( "CybouDB/0.7/" | label | 0x00 | root | context , length )
+;      key = KMAC256( K = root,
+;                     S = "CybouDB/0.7/" | label,
+;                     X = context,
+;                     L = length )
 ;
-;  The purpose is a number from a closed list and the label comes from a table
-;  here. A caller cannot pass a string: a KDF whose label is supplied from
-;  outside is an oracle wearing a helpful interface, and every separation this
-;  hierarchy rests on would be the caller's discipline rather than arithmetic.
+;  It was a prefix construction over SHAKE256 with a 0x00 separator after the
+;  label, and the separator was doing real work - it is what stopped
+;  "page-seal" with context "1" and "page-seal1" with no context from deriving
+;  the same key. That is precisely the class of question KMAC's encodings
+;  answer once and for everybody, by encoding every length rather than hoping
+;  a separator covers each case someone thought of.
 ;
-;  The 0x00 after the label is what stops "page-seal" with context "1" and
-;  "page-seal1" with no context deriving the same key. It costs one byte and
-;  removes a whole class of question.
+;  The change is not a bug fix. The old construction had no attack against it
+;  that anyone here can show. It is a scope decision: this project implements
+;  standard primitives, which another implementation can check, and does not
+;  invent constructions, which nobody can.
+;
+;  The purpose is still a number from a closed list and the label still comes
+;  from a table in this file. A caller cannot pass a string: a KDF whose label
+;  is supplied from outside is an oracle wearing a helpful interface, and every
+;  separation this hierarchy rests on would be the caller's discipline rather
+;  than arithmetic.
 ;
 ;  Wrapping is the AEAD that already exists - a wrapped key is a sealed key -
 ;  with the key's identity as associated data, so a key for one scope does not
@@ -35,7 +46,9 @@ global cyboudb_kdf
 global cyboudb_key_wrap
 global cyboudb_key_unwrap
 
-extern cyboudb_shake256
+extern cyboudb_kmac256_init
+extern cyboudb_kmac256_update
+extern cyboudb_kmac256_final
 extern cyboudb_xchacha20poly1305_seal
 extern cyboudb_xchacha20poly1305_open
 extern os_random
@@ -58,14 +71,23 @@ kdf_labels:
 section .text
 
 ; --- frame ------------------------------------------------------------------
-%define KD_INPUT   192                  ; prefix, label, 0x00, root, context
-%define KD_LEN     200                  ; how much of it is used
-%define KD_OUT     208
-%define KD_OUTLEN  216
-%define KD_ROOT    224
-%define KD_CTX     232
-%define KD_CTXLEN  240
-%define KD_FRAME   256
+; Frame:
+;    [rbp - 8]   out            [rbp - 40]  context
+;    [rbp - 16]  out_len        [rbp - 48]  context length
+;    [rbp - 24]  root           [rbp - 56]  how long the customization is
+;    [rbp - 32]  the KMAC context pointer
+;    [rbp - 128] the customization string: prefix and label, 24 bytes at most
+;    [rbp - 384] the KMAC context
+%define KD_OUT     8
+%define KD_OUTLEN  16
+%define KD_ROOT    24
+%define KD_CTXPTR  32
+%define KD_CTX     40
+%define KD_CTXLEN  48
+%define KD_LEN     56
+%define KD_INPUT   128                  ; the customization string
+%define KD_CTXBUF  384                  ; the KMAC context
+%define KD_FRAME   448
 
 ; =============================================================================
 ;  cyboudb_kdf(out, out_len, purpose, root, context, context_len) -> EAX
@@ -82,9 +104,7 @@ section .text
 ;  correct hierarchy reaches them.
 ; =============================================================================
 cyboudb_kdf:
-    FRAME_BEGIN KD_FRAME, 0
-
-    ; Arguments last to first, into registers no argument aliases.
+    FRAME_BEGIN KD_FRAME, 2
 %ifdef CybouDB_WINDOWS
     mov     rax, IN_ARG6
     mov     [rbp - KD_CTXLEN], rax
@@ -107,7 +127,11 @@ cyboudb_kdf:
     cmp     qword [rbp - KD_CTXLEN], CybouDB_KDF_CONTEXT_MAX
     ja      .misuse
 
-    ; --- the prefix ----------------------------------------------------------
+    ; --- the customization string: the prefix, then this purpose's label -----
+    ;  Twelve bytes of prefix and at most twelve of label, so it is always
+    ;  inside KMAC's 64-byte cap. The label still comes from the table and
+    ;  never from a caller: a KDF whose label comes from outside is an oracle
+    ;  with a helpful interface.
     lea     r11, [rbp - KD_INPUT]
     lea     rdx, [kdf_prefix]
     xor     rcx, rcx
@@ -119,9 +143,7 @@ cyboudb_kdf:
     inc     rcx
     jmp     .copy_prefix
 .prefix_done:
-    mov     [rbp - KD_LEN], rcx
 
-    ; --- the label for this purpose ------------------------------------------
     dec     r10
     shl     r10, 4                      ; sixteen bytes a row
     lea     rdx, [kdf_labels]
@@ -129,7 +151,6 @@ cyboudb_kdf:
     movzx   r9, byte [rdx]              ; the length in the first byte
     inc     rdx                         ; then the label itself
 
-    mov     rcx, [rbp - KD_LEN]
     xor     r8, r8
 .copy_label:
     cmp     r8, r9
@@ -140,50 +161,37 @@ cyboudb_kdf:
     inc     r8
     jmp     .copy_label
 .label_done:
-    mov     byte [r11 + rcx], 0         ; the separator
-    inc     rcx
-
-    ; --- the root ------------------------------------------------------------
-    mov     rdx, [rbp - KD_ROOT]
-    xor     r8, r8
-.copy_root:
-    cmp     r8, CybouDB_KDF_ROOT_SIZE
-    jae     .root_done
-    mov     al, [rdx + r8]
-    mov     [r11 + rcx], al
-    inc     rcx
-    inc     r8
-    jmp     .copy_root
-.root_done:
-
-    ; --- and the context, if there is one -------------------------------------
-    mov     r9, [rbp - KD_CTXLEN]
-    test    r9, r9
-    jz      .input_ready
-    mov     rdx, [rbp - KD_CTX]
-    xor     r8, r8
-.copy_ctx:
-    cmp     r8, r9
-    jae     .input_ready
-    mov     al, [rdx + r8]
-    mov     [r11 + rcx], al
-    inc     rcx
-    inc     r8
-    jmp     .copy_ctx
-
-.input_ready:
     mov     [rbp - KD_LEN], rcx
 
-    mov     ARG4, rcx
-    lea     ARG3, [rbp - KD_INPUT]
-    mov     ARG2, [rbp - KD_OUTLEN]
-    mov     ARG1, [rbp - KD_OUT]
-    call    cyboudb_shake256
+    ; --- KMAC256(key = root, S = the label, X = the context) ------------------
+    lea     rax, [rbp - KD_CTXBUF]
+    mov     [rbp - KD_CTXPTR], rax
+    mov     ARG1, rax
+    mov     ARG2, [rbp - KD_ROOT]
+    mov     ARG3, CybouDB_KDF_ROOT_SIZE
+    lea     ARG4, [rbp - KD_INPUT]
+    mov     rax, [rbp - KD_LEN]
+    PASS_ARG5 rax
+    call    cyboudb_kmac256_init
+    test    eax, eax
+    jnz     .misuse
 
-    ; The input holds the root. Nothing of it stays in this frame.
+    mov     ARG1, [rbp - KD_CTXPTR]
+    mov     ARG2, [rbp - KD_CTX]
+    mov     ARG3, [rbp - KD_CTXLEN]
+    call    cyboudb_kmac256_update
+
+    mov     ARG1, [rbp - KD_CTXPTR]
+    mov     ARG2, [rbp - KD_OUT]
+    mov     ARG3, [rbp - KD_OUTLEN]
+    call    cyboudb_kmac256_final
+
+    ; The KMAC context wipes itself at the end, and the customization is not a
+    ; secret - but the frame is about to be somebody else's stack, so it goes
+    ; out clean anyway.
     xor     rax, rax
-    mov     rcx, KD_INPUT / 8
-    lea     r11, [rbp - KD_INPUT]
+    mov     rcx, KD_CTXBUF / 8
+    lea     r11, [rbp - KD_CTXBUF]
 .wipe:
     mov     [r11], rax
     add     r11, 8

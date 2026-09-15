@@ -146,14 +146,28 @@ int main(void) {
               cyboudb_kdf(out, 32, KDF_PAGE_SEAL, root, ctx, 64) == 0);
     }
 
-    /* --- a derived key can be any length the caller needs ------------------- */
+    /* --- a derived key can be any length the caller needs -------------------
+       And the length is part of what is derived. Under the old prefix
+       construction sixteen bytes were the first sixteen of ninety-six, because
+       a sponge is a stream; under KMAC the requested length is encoded into
+       the message, so they are unrelated keys.
+
+       That is the safer of the two behaviours and it is also a real change:
+       a caller who derived a 16-byte key yesterday and asks for 32 bytes of
+       "the same key" today gets something else entirely. Nothing in this
+       format does that - every purpose has one length - but it is written
+       down here rather than discovered. */
     {
-        uint8_t short_key[16], long_key[96];
+        uint8_t short_key[16], long_key[96], again[16];
         check("sixteen bytes and ninety-six both derive",
               cyboudb_kdf(short_key, 16, KDF_SEAL_TREE, root, NULL, 0) == 0 &&
               cyboudb_kdf(long_key, 96, KDF_SEAL_TREE, root, NULL, 0) == 0);
-        check("and the shorter is a prefix of the longer, as a sponge gives it",
-              memcmp(short_key, long_key, 16) == 0);
+        check("and the shorter is NOT a prefix of the longer - KMAC binds the "
+              "output length",
+              memcmp(short_key, long_key, 16) != 0);
+        check("while asking for the same length twice gives the same key",
+              cyboudb_kdf(again, 16, KDF_SEAL_TREE, root, NULL, 0) == 0 &&
+              memcmp(short_key, again, 16) == 0);
     }
 
     /* --- wrapping ------------------------------------------------------------ */

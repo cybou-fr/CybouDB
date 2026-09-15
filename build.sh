@@ -208,6 +208,11 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         "$CC" -O2 -no-pie -Wall -Wextra tests/keccak_test.c \
             build/keccak.o -o build/keccak_test
         echo "Build OK -> build/keccak_test"
+        nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/crypto/kmac.asm \
+            -o build/kmac.o
+        "$CC" -O2 -no-pie -Wall -Wextra -Itests tests/kmac_test.c \
+            build/kmac.o build/keccak.o -o build/kmac_test
+        echo "Build OK -> build/kmac_test"
         nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/crypto/page_seal.asm \
             -o build/page_seal.o
         nasm -f elf64 $INC -DCybouDB_LIBRARY=1 \
@@ -222,7 +227,7 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
             -o build/kdf.o
         "$CC" -O2 -no-pie -Wall -Wextra tests/kdf_test.c \
             build/kdf.o build/keccak.o build/aead.o build/chacha20.o \
-            build/poly1305.o build/os_rand.o build/crypto_status.o -o build/kdf_test
+            build/poly1305.o build/os_rand.o build/crypto_status.o build/kmac.o -o build/kdf_test
         echo "Build OK -> build/kdf_test"
         nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/crypto/crypto_root.asm \
             -o build/crypto_root.o
@@ -234,7 +239,7 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/crypto/seal_dir.asm \
             -o build/seal_dir.o
         "$CC" -O2 -no-pie -Wall -Wextra tests/seal_dir_test.c \
-            build/seal_dir.o build/keccak.o build/checksum_crypto.o -o build/seal_dir_test
+            build/seal_dir.o build/kmac.o build/keccak.o build/checksum_crypto.o -o build/seal_dir_test
         echo "Build OK -> build/seal_dir_test"
         nasm -f elf64 $INC -Isrc/crypto/ -DCybouDB_LIBRARY=1 src/crypto/mlkem_poly.asm \
             -o build/mlkem_poly.o
@@ -261,7 +266,7 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         nasm -f elf64 $INC -Isrc/crypto/ -DCybouDB_LIBRARY=1 src/crypto/key_slots.asm \
             -o build/key_slots.o
         "$CC" -O2 -no-pie -Wall -Wextra tests/key_slots_test.c \
-            build/key_slots.o build/mlkem.o build/mlkem_poly.o \
+            build/key_slots.o build/kmac.o build/mlkem.o build/mlkem_poly.o \
             build/mlkem_encode.o build/mlkem_sample.o build/kdf.o \
             build/aead.o build/chacha20.o build/poly1305.o \
             build/keccak.o build/os_rand.o build/checksum_crypto.o \
@@ -270,7 +275,7 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/crypto/recovery.asm \
             -o build/recovery.o
         "$CC" -O2 -no-pie -Wall -Wextra tests/recovery_test.c \
-            build/recovery.o build/kdf.o build/aead.o build/chacha20.o \
+            build/recovery.o build/kdf.o build/kmac.o build/aead.o build/chacha20.o \
             build/poly1305.o build/keccak.o build/os_rand.o \
             -o build/recovery_test
         echo "Build OK -> build/recovery_test"

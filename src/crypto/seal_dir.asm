@@ -16,13 +16,20 @@
 ;  key. Restoring last week's page and last week's entry then fails at the
 ;  leaf, which no longer matches what its parent says it should be.
 ;
-;  The MAC is SHAKE256 keyed by prefix: the key first, then a label that says
-;  which kind of page this is, then the page's own bytes. A sponge absorbing a
-;  fixed-length secret prefix is a MAC (this is KMAC's construction without
-;  its encodings), the length is fixed so no message can be confused with a
-;  longer one, and the two labels are what stop a leaf from ever being read as
-;  a node. The key comes from KDF_SEAL_TREE - one purpose, one key, and not
-;  the key that seals pages.
+;  The MAC is KMAC256, with the seal tree key, the page kind as the
+;  customization string, and the page's bytes as the message.
+;
+;  It was a prefix construction of my own - SHAKE256(key | label | bytes) -
+;  described in this comment as "KMAC's construction without its encodings".
+;  That description was the argument against it. The encodings are what make
+;  the domain separation unambiguous instead of merely careful, KMAC is
+;  standardised for exactly this job, and a construction invented here cannot
+;  be checked against anyone else's implementation while a standard one can.
+;  See src/crypto/kmac.asm, which is checked against OpenSSL and against
+;  NIST's own sample.
+;
+;  The key comes from KDF_SEAL_TREE - one purpose, one key, and not the key
+;  that seals pages.
 ;
 ;  Sixteen bytes of it. A forgery has to be found online against a file whose
 ;  superblock is itself authenticated, and 2^-128 is not the number that
@@ -48,16 +55,17 @@ global cyboudb_seal_leaf_validate
 global cyboudb_seal_node_validate
 
 extern crc32c
-extern cyboudb_shake256_init
-extern cyboudb_shake256_update
-extern cyboudb_shake256_final
+extern cyboudb_kmac256_init
+extern cyboudb_kmac256_update
+extern cyboudb_kmac256_final
 
 section .rodata
-; The labels are absorbed with their terminator, so "seal-leaf" followed by a
-; node's bytes can never be the same input as "seal-node" followed by them.
-lbl_leaf:  db "CybouDB/0.7/seal-leaf", 0
+; The labels are KMAC customization strings. No terminator: KMAC encodes the
+; length, which is what makes "seal-leaf" and "seal-leaf-extra" different
+; inputs rather than one being a prefix of the other.
+lbl_leaf:  db "CybouDB/0.7/seal-leaf"
 LBL_LEAF_LEN equ $ - lbl_leaf
-lbl_node:  db "CybouDB/0.7/seal-node", 0
+lbl_node:  db "CybouDB/0.7/seal-node"
 LBL_NODE_LEN equ $ - lbl_node
 
 section .text
@@ -254,34 +262,34 @@ cyboudb_seal_entry:
 seal_mac:
     push    rbp
     mov     rbp, rsp
-    sub     rsp, CybouDB_SHCTX_SIZE + 32 + SHADOW_SPACE
-    lea     r11, [rsp + SHADOW_SPACE]   ; the sponge context
+    ; room for the context, two saved values, the shadow space and one
+    ; outgoing stack argument - kmac256_init takes five.
+    ; 232 + 56 is a multiple of sixteen and 232 + 48 is not: the frame has
+    ; to leave rsp aligned or every call from here lands misaligned, which
+    ; surfaces as a fault inside somebody else's aligned load.
+    sub     rsp, CybouDB_SHCTX_SIZE + 56 + SHADOW_SPACE
+    lea     r11, [rsp + SHADOW_SPACE + 16]  ; the sponge context
 
-    mov     [rsp + SHADOW_SPACE + CybouDB_SHCTX_SIZE], r11
-    mov     [rsp + SHADOW_SPACE + CybouDB_SHCTX_SIZE + 8], r10
+    mov     [rsp + SHADOW_SPACE + CybouDB_SHCTX_SIZE + 16], r11
+    mov     [rsp + SHADOW_SPACE + CybouDB_SHCTX_SIZE + 24], r10
 
     mov     ARG1, r11
-    call    cyboudb_shake256_init
-
-    mov     ARG1, [rsp + SHADOW_SPACE + CybouDB_SHCTX_SIZE]
-    mov     ARG2, r12                   ; the key, first and fixed-length
+    mov     ARG2, r12                   ; the seal tree key
     mov     ARG3, CybouDB_AEAD_KEY_SIZE
-    call    cyboudb_shake256_update
+    mov     ARG4, r14                   ; the page kind, as a customization
+    mov     rax, r15
+    PASS_ARG5 rax
+    call    cyboudb_kmac256_init
 
-    mov     ARG1, [rsp + SHADOW_SPACE + CybouDB_SHCTX_SIZE]
-    mov     ARG2, r14                   ; which kind of page this is
-    mov     ARG3, r15
-    call    cyboudb_shake256_update
-
-    mov     ARG1, [rsp + SHADOW_SPACE + CybouDB_SHCTX_SIZE]
+    mov     ARG1, [rsp + SHADOW_SPACE + CybouDB_SHCTX_SIZE + 16]
     lea     ARG2, [rbx + SLEAF_MAC_FROM]
-    mov     ARG3, [rsp + SHADOW_SPACE + CybouDB_SHCTX_SIZE + 8]
-    call    cyboudb_shake256_update
+    mov     ARG3, [rsp + SHADOW_SPACE + CybouDB_SHCTX_SIZE + 24]
+    call    cyboudb_kmac256_update
 
-    mov     ARG1, [rsp + SHADOW_SPACE + CybouDB_SHCTX_SIZE]
+    mov     ARG1, [rsp + SHADOW_SPACE + CybouDB_SHCTX_SIZE + 16]
     mov     ARG2, r13
     mov     ARG3, CybouDB_SEAL_MAC_SIZE
-    call    cyboudb_shake256_final
+    call    cyboudb_kmac256_final
 
     mov     rsp, rbp
     pop     rbp

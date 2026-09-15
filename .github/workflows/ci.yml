@@ -181,6 +181,7 @@ jobs:
           ./build/poly1305_test
           ./build/aead_test
           ./build/keccak_test
+          ./build/kmac_test
           ./build/page_seal_test
           ./build/kdf_test
           ./build/crypto_root_test
@@ -418,6 +419,7 @@ jobs:
           build\poly1305_test.exe
           build\aead_test.exe
           build\keccak_test.exe
+          build\kmac_test.exe
           build\page_seal_test.exe
           build\kdf_test.exe
           build\crypto_root_test.exe

@@ -265,6 +265,48 @@ int main(void) {
               memcmp(entry, entry2, 24) != 0);
         a.entry = entry;
 
+        /* The nonce contract in docs/ENCRYPTED_FORMAT.md is probabilistic, not
+           proven: 192 bits per seal from the OS CSPRNG, never derived and
+           never reused. These are weak tests of a strong claim, and that is
+           what a probabilistic contract permits - the strength is in the bits,
+           and what a test can check is that the bits are actually drawn. */
+        {
+            static uint8_t nonces[512][24];
+            unsigned n, m;
+            int distinct = 1, seal_ok = 1;
+            for (n = 0; n < 512; n++) {
+                memcpy(page, plain, PAGE_SIZE);
+                a.entry = entry2;
+                if (cyboudb_page_seal(&a) != 0) seal_ok = 0;
+                memcpy(nonces[n], entry2, 24);
+            }
+            for (n = 0; n < 512 && distinct; n++)
+                for (m = n + 1; m < 512; m++)
+                    if (memcmp(nonces[n], nonces[m], 24) == 0) { distinct = 0; break; }
+            check("five hundred seals of one page produce no repeated nonce",
+                  seal_ok && distinct);
+
+            /* And the nonce is not a function of anything the page says: the
+               page number, the generation and the epoch all vary here without
+               the nonce becoming predictable from them, because none of them
+               reaches the draw. */
+            {
+                struct pseal_args b = a;
+                uint8_t n1[24], n2[24];
+                b.entry = entry2;
+                b.page_no = 1; b.generation = 1; b.epoch = 1;
+                memcpy(page, plain, PAGE_SIZE);
+                cyboudb_page_seal(&b);
+                memcpy(n1, entry2, 24);
+                memcpy(page, plain, PAGE_SIZE);
+                cyboudb_page_seal(&b);
+                memcpy(n2, entry2, 24);
+                check("and two seals with identical arguments still differ",
+                      memcmp(n1, n2, 24) != 0);
+            }
+            a.entry = entry;
+        }
+
         /* --- what the associated data is for ------------------------------
            Each of the five fields exists because leaving it out enables one
            specific substitution. Here each one is changed on the way back in,

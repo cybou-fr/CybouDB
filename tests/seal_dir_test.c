@@ -83,22 +83,27 @@ int cyboudb_seal_node_validate(const uint8_t *page);
 uint32_t crc32c(const uint8_t *buf, uint64_t len);
 
 #define SHCTX_SIZE 232
-void cyboudb_shake256_init(uint8_t *ctx);
-void cyboudb_shake256_update(uint8_t *ctx, const uint8_t *in, uint64_t len);
-void cyboudb_shake256_final(uint8_t *ctx, uint8_t *out, uint64_t out_len);
+int cyboudb_kmac256_init(uint8_t *ctx, const uint8_t *key, uint64_t key_len,
+                         const uint8_t *custom, uint64_t custom_len);
+void cyboudb_kmac256_update(uint8_t *ctx, const uint8_t *in, uint64_t len);
+void cyboudb_kmac256_final(uint8_t *ctx, uint8_t *out, uint64_t out_len);
 
-/* The construction itself, spelled out here rather than trusted: key, then the
-   label with its terminator, then the covered bytes. Written independently of
-   the assembly so that a change to either - a dropped label, a shifted range -
-   shows up as a disagreement instead of as two matching mistakes. */
+/* The construction spelled out here rather than trusted: KMAC256 keyed with
+   the seal tree key, customized by the page kind, over the covered bytes.
+   Written separately from the assembly so a change to either - a dropped
+   label, a shifted range - shows up as a disagreement rather than as two
+   matching mistakes.
+
+   It was a hand-rolled prefix MAC until KMAC replaced it. What that change
+   bought is visible one file over: tests/kmac_test.c checks the construction
+   against OpenSSL and against NIST's own sample, which is not something a
+   construction of ours could ever have. */
 static void expected_mac(uint8_t *out, const uint8_t *key, const char *label,
                          const uint8_t *page, int from, int to) {
     uint8_t ctx[SHCTX_SIZE];
-    cyboudb_shake256_init(ctx);
-    cyboudb_shake256_update(ctx, key, 32);
-    cyboudb_shake256_update(ctx, (const uint8_t *)label, strlen(label) + 1);
-    cyboudb_shake256_update(ctx, page + from, (uint64_t)(to - from));
-    cyboudb_shake256_final(ctx, out, MAC_SIZE);
+    cyboudb_kmac256_init(ctx, key, 32, (const uint8_t *)label, strlen(label));
+    cyboudb_kmac256_update(ctx, page + from, (uint64_t)(to - from));
+    cyboudb_kmac256_final(ctx, out, MAC_SIZE);
 }
 
 static int checks, failures;

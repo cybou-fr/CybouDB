@@ -207,19 +207,36 @@ bounded, and independent of how large the database is.
 ### What the MAC actually is
 
 `src/crypto/seal_dir.asm`, and the byte map in `include/crypto.inc`. The MAC is
-SHAKE256 absorbed by prefix - the key first, at its fixed 32 bytes, then a
-label with its terminator, then the page's own bytes:
+**KMAC256** - NIST SP 800-185 - keyed with the seal tree key, customized by the
+kind of page, over the page's own bytes:
 
 ```text
-leaf MAC = SHAKE256( key | "CybouDB/0.7/seal-leaf\0" | leaf[8 .. 4064) )[0..16)
-node MAC = SHAKE256( key | "CybouDB/0.7/seal-node\0" | node[8 .. 4080) )[0..16)
+leaf MAC = KMAC256( key, X = leaf[8 .. 4064), L = 128,
+                    S = "CybouDB/0.7/seal-leaf" )
+node MAC = KMAC256( key, X = node[8 .. 4080), L = 128,
+                    S = "CybouDB/0.7/seal-node" )
 ```
 
-A sponge absorbing a fixed-length secret prefix is a MAC - KMAC's construction
-without its encodings - and the key is the one `KDF_SEAL_TREE` derives, not the
-one that seals pages. The covered range starts at byte 8 and so takes in the
-index, the generation and the seal epoch along with the array; it stops before
-the CRC, which is a disk check that anyone who writes the page recomputes.
+It was a prefix construction of this project's own - `SHAKE256(key | label |
+bytes)` - described in this document as "KMAC's construction without its
+encodings". That description was the argument against it. There is no attack
+here to report; what changed is a scope decision this project had already made
+elsewhere and had not applied to itself:
+
+> A cryptographic **primitive** implemented here can be checked against another
+> implementation, and has been - ML-KEM against OpenSSL, ChaCha20 and Poly1305
+> against RFC 8439, Keccak against FIPS 202. A cryptographic **construction**
+> invented here can be checked against nothing.
+
+KMAC is standardised for exactly these two jobs, it is a MAC and a PRF, and its
+encodings are what make the domain separation unambiguous rather than merely
+careful. `tests/kmac_test.c` checks the implementation against OpenSSL 3 and
+against the sample vector printed in SP 800-185 itself.
+
+The key is the one `KDF_SEAL_TREE` derives, not the one that seals pages. The
+covered range starts at byte 8 and so takes in the index, the generation and
+the seal epoch along with the array; it stops before the CRC, which is a disk
+check that anyone who writes the page recomputes.
 
 **Neither a leaf nor a node holds a MAC of itself.** Its parent holds it, and
 the root's is in the superblock. That is the structure rather than a saving: a
@@ -310,6 +327,65 @@ be made by accident.**
 Either way **the nonce is stored in the seal directory rather than recomputed**,
 because a stored nonce is a fact and a derived nonce is an argument that has to
 keep being true.
+
+### What step 3 actually chose, and which of A or B that is
+
+Neither, and the honest thing is to say so rather than to let a 24-byte nonce
+be mistaken for misuse resistance.
+
+Step 3 chose XChaCha20-Poly1305 ([CRYPTO_BACKEND.md](CRYPTO_BACKEND.md)), for a
+reason that had nothing to do with this gate: the ciphertext must not depend on
+the machine that wrote it. **XChaCha20-Poly1305 is not nonce-misuse-resistant.**
+A repeated nonce under one key is as bad here as it is for any stream cipher -
+the keystream repeats, and the Poly1305 one-time key repeats with it. The
+24-byte nonce does not change that; it changes how likely a repeat is.
+
+So the contract is neither A nor B but a third thing, and it is written here so
+that it can be held to:
+
+```text
+Nonce uniqueness in CybouDB is probabilistic, not proven.
+
+  * every nonce is 192 bits drawn from the operating system's CSPRNG,
+    per seal, at the moment of sealing;
+  * no nonce is derived from page number, generation, epoch or time;
+  * no nonce is cached, reused, or reconstructed after a crash - a page
+    resealed after a crash is sealed under a new nonce, because it is
+    sealed by the same code path as any other seal;
+  * the page seal key changes with seal_epoch, so the count below is per
+    epoch key and not per database lifetime.
+```
+
+**The bound.** With uniformly random 192-bit nonces, the chance that any two of
+`n` seals under one key collide is about `n^2 / 2^193`:
+
+| seals under one key | probability of any collision |
+| ---: | ---: |
+| 2^32 (4 billion) | about 2^-129 |
+| 2^48 (280 trillion) | about 2^-97 |
+| 2^51 - a million pages a second for a century | about 2^-90 |
+| 2^64 | about 2^-65 |
+
+For comparison, an uncorrected bit error on a disk is somewhere around 2^-50
+per sector read. The nonce is not the weakest thing in this system by a very
+long way, and that is the argument - not that a collision is impossible.
+
+**What this costs if it is ever wrong.** If the CSPRNG is broken or the same
+`os_random` output is returned twice - a virtual machine restored from a
+snapshot is the realistic way - then two pages sealed under one key share a
+keystream. That is a confidentiality break for those two pages and a forgery
+risk under that key, and no part of this design would detect it. `os_random`
+failing is treated as a fatal refusal rather than a fallback for exactly this
+reason: there is no second source of randomness in this engine, on purpose,
+because a fallback that is weaker than the primary is just the primary being
+weaker.
+
+**What is tested.** That a nonce is drawn per seal and never derived: sealing
+the same page, at the same generation, under the same key, twice, gives two
+different nonces; and a large batch of seals produces no repeat. Those are weak
+tests of a strong claim, which is what a probabilistic contract permits - the
+strength is in the 192 bits, and the tests only check that the 192 bits are
+actually being drawn.
 
 ---
 

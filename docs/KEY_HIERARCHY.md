@@ -77,22 +77,43 @@ SHAKE256           Keccak-f[1600] + sponge                   one new piece,
                                                              anyway
 ```
 
-So: **derivation is SHAKE256**, in the form NIST SP 800-56C calls a one-step
-KDF — the derived key is the sponge output of a fixed label, the root key, and
-the context. Not an invention: a hash-based one-step KDF is exactly what that
-document specifies, and SHAKE is an approved auxiliary function for it.
+So: **derivation is over Keccak**, and specifically over **KMAC256** — NIST
+SP 800-185 — which that document defines as a MAC *and* as a PRF.
 
-Held to the NIST SHA-3 and SHAKE known-answer vectors, like everything else in
-this backend. If those vectors cannot be made to pass, this decision is wrong
-and HKDF-SHA256 is the fallback, at the cost of the second primitive.
+This started as a one-step KDF of our own over SHAKE256: label, root, context,
+with a `0x00` separator doing the work of keeping `page-seal` with context `1`
+apart from `page-seal1` with none. It was carefully argued and it was still a
+construction invented here. KMAC answers that whole class of question once, by
+encoding every length instead of relying on a separator for each case someone
+thought of — and, unlike anything of ours, it can be checked against another
+implementation. `tests/kmac_test.c` does exactly that, against OpenSSL 3 and
+against the sample printed in SP 800-185.
+
+The rule this follows, stated once so it does not have to be argued again:
+
+> **A primitive implemented here is checkable and therefore allowed. A
+> construction invented here is not checkable and therefore is not.**
 
 ---
 
 ## Decision 2 — derivation is by label, and the labels are a closed list
 
 ```text
-key = SHAKE256( "CybouDB/0.7/" ‖ purpose ‖ 0x00 ‖ root ‖ context , length )
+key = KMAC256( K = root,
+               S = "CybouDB/0.7/" ‖ purpose,
+               X = context,
+               L = length )
 ```
+
+The purpose is the customization string and the context is the message, which
+is the shape SP 800-185 intends: two inputs that must never be confused for one
+another, separated by the construction rather than by a byte we chose.
+
+**The length is bound into the key.** A 16-byte derivation and a 32-byte
+derivation of the same purpose are unrelated values, not a prefix and its
+extension. Every purpose in this format has exactly one length, so nothing here
+depends on it - but a caller who assumed otherwise would be wrong, and the KDF
+suite says so out loud.
 
 | purpose | context | what it opens |
 | :--- | :--- | :--- |

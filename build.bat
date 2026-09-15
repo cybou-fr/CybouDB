@@ -409,6 +409,11 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     cl.exe /O2 /W3 /nologo tests\keccak_test.c build\keccak.obj /Febuild\keccak_test.exe /Fobuild\keccak_test.obj
     if errorlevel 1 goto :fail
     echo Build OK -^> build\keccak_test.exe
+    "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\crypto\kmac.asm -o build\kmac.obj
+    if errorlevel 1 goto :fail
+    cl.exe /O2 /W3 /nologo /Itests tests\kmac_test.c build\kmac.obj build\keccak.obj /Febuild\kmac_test.exe /Fobuild\kmac_test.obj
+    if errorlevel 1 goto :fail
+    echo Build OK -^> build\kmac_test.exe
     "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\crypto\page_seal.asm -o build\page_seal.obj
     if errorlevel 1 goto :fail
     "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\platform\windows\os_win.asm -o build\os_rand.obj
@@ -420,7 +425,7 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     if errorlevel 1 goto :fail
     "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\crypto\kdf.asm -o build\kdf.obj
     if errorlevel 1 goto :fail
-    cl.exe /O2 /W3 /nologo tests\kdf_test.c build\kdf.obj build\keccak.obj build\aead.obj build\chacha20.obj build\poly1305.obj build\os_rand.obj build\crypto_status.obj /Febuild\kdf_test.exe /Fobuild\kdf_test.obj /link kernel32.lib
+    cl.exe /O2 /W3 /nologo tests\kdf_test.c build\kdf.obj build\kmac.obj build\keccak.obj build\aead.obj build\chacha20.obj build\poly1305.obj build\os_rand.obj build\crypto_status.obj /Febuild\kdf_test.exe /Fobuild\kdf_test.obj /link kernel32.lib
     if errorlevel 1 goto :fail
     echo Build OK -^> build\kdf_test.exe
     "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\crypto\crypto_root.asm -o build\crypto_root.obj
@@ -432,7 +437,7 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     echo Build OK -^> build\crypto_root_test.exe
     "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\crypto\seal_dir.asm -o build\seal_dir.obj
     if errorlevel 1 goto :fail
-    cl.exe /O2 /W3 /nologo tests\seal_dir_test.c build\seal_dir.obj build\keccak.obj build\checksum_crypto.obj /Febuild\seal_dir_test.exe /Fobuild\seal_dir_test.obj
+    cl.exe /O2 /W3 /nologo tests\seal_dir_test.c build\seal_dir.obj build\kmac.obj build\keccak.obj build\checksum_crypto.obj /Febuild\seal_dir_test.exe /Fobuild\seal_dir_test.obj
     if errorlevel 1 goto :fail
     echo Build OK -^> build\seal_dir_test.exe
     "!NASM!" -f win64 !INC! -Isrc\crypto\ -DCybouDB_LIBRARY=1 src\crypto\mlkem_poly.asm -o build\mlkem_poly.obj
@@ -454,12 +459,12 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     echo Build OK -^> build\mlkem_test.exe
     "!NASM!" -f win64 !INC! -Isrc\crypto\ -DCybouDB_LIBRARY=1 src\crypto\key_slots.asm -o build\key_slots.obj
     if errorlevel 1 goto :fail
-    cl.exe /O2 /W3 /nologo tests\key_slots_test.c build\key_slots.obj build\mlkem.obj build\mlkem_poly.obj build\mlkem_encode.obj build\mlkem_sample.obj build\kdf.obj build\aead.obj build\chacha20.obj build\poly1305.obj build\keccak.obj build\os_rand.obj build\checksum_crypto.obj /Febuild\key_slots_test.exe /Fobuild\key_slots_test.obj /link kernel32.lib
+    cl.exe /O2 /W3 /nologo tests\key_slots_test.c build\key_slots.obj build\kmac.obj build\mlkem.obj build\mlkem_poly.obj build\mlkem_encode.obj build\mlkem_sample.obj build\kdf.obj build\aead.obj build\chacha20.obj build\poly1305.obj build\keccak.obj build\os_rand.obj build\checksum_crypto.obj /Febuild\key_slots_test.exe /Fobuild\key_slots_test.obj /link kernel32.lib
     if errorlevel 1 goto :fail
     echo Build OK -^> build\key_slots_test.exe
     "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\crypto\recovery.asm -o build\recovery.obj
     if errorlevel 1 goto :fail
-    cl.exe /O2 /W3 /nologo tests\recovery_test.c build\recovery.obj build\kdf.obj build\aead.obj build\chacha20.obj build\poly1305.obj build\keccak.obj build\os_rand.obj /Febuild\recovery_test.exe /Fobuild\recovery_test.obj /link kernel32.lib
+    cl.exe /O2 /W3 /nologo tests\recovery_test.c build\recovery.obj build\kmac.obj build\kdf.obj build\aead.obj build\chacha20.obj build\poly1305.obj build\keccak.obj build\os_rand.obj /Febuild\recovery_test.exe /Fobuild\recovery_test.obj /link kernel32.lib
     if errorlevel 1 goto :fail
     echo Build OK -^> build\recovery_test.exe
     "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\core\page_cache.asm -o build\page_cache.obj

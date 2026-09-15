@@ -76,6 +76,9 @@
 %define SHA3_256_RATE   136
 %define SHA3_512_RATE    72
 %define SHAKE_PAD      0x1f
+%define CSHAKE_PAD     0x04              ; cSHAKE, and so KMAC, pads
+                                         ; differently from SHAKE - which is
+                                         ; what keeps their outputs apart
 %define SHA3_PAD       0x06
 
 ; --- sealing one page -------------------------------------------------------
@@ -93,6 +96,23 @@
 %define PSEAL_PAGE_TYPE  48
 %define PSEAL_EPOCH      56
 %define CybouDB_PSEAL_ARGS_SIZE 64
+
+
+; --- KMAC256, one shot ------------------------------------------------------
+;  NIST SP 800-185. Seven values, so they arrive as a struct like the AEAD's.
+;  The key and the customization string are capped at 64 bytes, which makes
+;  every bytepad block exactly one rate.
+%define KMAC_OUT         0
+%define KMAC_OUT_LEN     8
+%define KMAC_KEY         16
+%define KMAC_KEY_LEN     24
+%define KMAC_MSG         32
+%define KMAC_MSG_LEN     40
+%define KMAC_CUSTOM      48
+%define KMAC_CUSTOM_LEN  56
+%define CybouDB_KMAC_ARGS_SIZE 64
+%define CybouDB_KMAC_MAX_KEY    64
+%define CybouDB_KMAC_MAX_CUSTOM 64
 
 ; --- key derivation ---------------------------------------------------------
 ;  docs/KEY_HIERARCHY.md, Decision 2. A purpose is a number in a closed list,
