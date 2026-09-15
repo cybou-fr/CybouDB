@@ -31,6 +31,7 @@
 #define HDR_PAGE_SIZE      12
 #define HDR_FLAGS_INCOMPAT 16
 #define HDR_SB_PAGE_A      32
+#define HDR_SB_PAGE_B      40
 #define HDR_UUID           48
 #define HDR_CRC            124
 #define HDR_MAGIC_VALUE    0x51534341u
@@ -49,6 +50,7 @@
 
 /* include/cyboudb.inc */
 #define DB_HANDLE       0
+#define DB_DAMAGED      184
 #define DB_GENERATION   40
 #define DB_SB_PAGE      48
 #define DB_CACHE        760
@@ -62,6 +64,7 @@
 
 #define P_HEADER  0
 #define P_SB      1
+#define P_SB_B    2        /* the copy recovery falls back to */
 #define P_CROOT   3
 #define P_SLOTS   4
 #define P_LEAF    5        /* where the directory starts: leaf 0 */
@@ -159,14 +162,14 @@ static uint64_t rd64(const uint8_t *p, int off) {
     uint64_t v; memcpy(&v, p + off, 8); return v;
 }
 
-static uint8_t header[PAGE], sb[PAGE], croot[PAGE], slots[PAGE];
+static uint8_t header[PAGE], sb[PAGE], sb_b[PAGE], croot[PAGE], slots[PAGE];
 static uint8_t leaf0[PAGE], leaf[PAGE], node[PAGE];
 static uint8_t payload[PAGE], ctx[CTX_BYTES];
 static uint8_t ek[EK_BYTES], dk[DK_BYTES], ek2[EK_BYTES], dk2[DK_BYTES];
 static uint8_t slot[KSLOT_SIZE];
 static uint8_t root_key[32], metadata_key[32], page_key[32], tree_key[32];
 static uint8_t uuid[16];
-static const uint64_t GENERATION = 21, EPOCH = 4;
+static const uint64_t GENERATION = 21, GENERATION_B = 20, EPOCH = 4;
 static const char PAYLOAD_TEXT[] = "the engine opened this by itself";
 
 static void superblock_tag(uint8_t *out, const uint8_t *key, const uint8_t *page) {
@@ -202,6 +205,7 @@ static void build_file(int64_t h) {
     wr32(header, HDR_PAGE_SIZE, PAGE);
     wr64(header, HDR_FLAGS_INCOMPAT, FEATURE_ENCRYPTION);
     wr64(header, HDR_SB_PAGE_A, P_SB);
+    wr64(header, HDR_SB_PAGE_B, P_SB_B);
     memcpy(header + HDR_UUID, uuid, 16);
     wr32(header, HDR_CRC, crc32c(header, HDR_CRC));
 
@@ -243,8 +247,18 @@ static void build_file(int64_t h) {
     superblock_tag(sb + SB_SEAL_TAG, metadata_key, sb);
     wr32(sb, SB_CRC, crc32c(sb, SB_CRC));
 
+    /* The copy before it. This fixture writes the same tree into both halves
+       of the directory, so the older superblock names a root that is really
+       there - which is what makes falling back to it readable rather than
+       merely accepted. */
+    memcpy(sb_b, sb, PAGE);
+    wr64(sb_b, SB_GENERATION, GENERATION_B);
+    superblock_tag(sb_b + SB_SEAL_TAG, metadata_key, sb_b);
+    wr32(sb_b, SB_CRC, crc32c(sb_b, SB_CRC));
+
     vfs_write_at(h, header, PAGE, (uint64_t)P_HEADER * PAGE);
     vfs_write_at(h, sb, PAGE, (uint64_t)P_SB * PAGE);
+    vfs_write_at(h, sb_b, PAGE, (uint64_t)P_SB_B * PAGE);
     vfs_write_at(h, croot, PAGE, (uint64_t)P_CROOT * PAGE);
     vfs_write_at(h, slots, PAGE, (uint64_t)P_SLOTS * PAGE);
     vfs_write_at(h, leaf0, PAGE, (uint64_t)P_LEAF * PAGE);
@@ -257,10 +271,11 @@ static void build_file(int64_t h) {
     vfs_sync_file(h);
 }
 
+/* No superblock is named here on purpose. Choosing one is attach's job, and
+   a test that chose for it would be testing nothing. */
 static void fresh_context(int64_t h) {
     memset(ctx, 0, sizeof ctx);
     wr64(ctx, DB_HANDLE, (uint64_t)h);
-    wr64(ctx, DB_SB_PAGE, P_SB);
 }
 
 int main(void) {
@@ -322,9 +337,19 @@ int main(void) {
         wr32(broken, 4092, crc32c(broken, 4092));
         vfs_write_at(h, broken, PAGE, (uint64_t)P_NODE * PAGE);
         fresh_context(h);
-        check("a root node rewritten with a repaired checksum is refused",
+        check("a root node rewritten under the newest superblock falls back",
+              db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 16) == 0 &&
+              rd64(ctx, DB_SB_PAGE) == P_SB_B &&
+              rd64(ctx, DB_GENERATION) == GENERATION_B);
+        check("and says which generation it could not stand behind",
+              rd64(ctx, DB_DAMAGED) == GENERATION);
+
+        vfs_write_at(h, broken, PAGE, (uint64_t)(P_NODE + 3) * PAGE);
+        fresh_context(h);
+        check("with both copies rewritten there is nothing left to fall to",
               db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 16) == E_SEAL);
         vfs_write_at(h, node, PAGE, (uint64_t)P_NODE * PAGE);
+        vfs_write_at(h, node, PAGE, (uint64_t)(P_NODE + 3) * PAGE);
 
         memcpy(broken, leaf, PAGE);
         broken[64] ^= 1;                         /* entry nonce, CRC repaired */
@@ -363,15 +388,31 @@ int main(void) {
         vfs_sync_file(h);
 
         fresh_context(h);
-        check("a superblock rewritten with a repaired checksum is refused",
-              db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 16) == E_SEAL);
+        check("a superblock rewritten with a repaired checksum is not believed",
+              db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 16) == 0 &&
+              rd64(ctx, DB_SB_PAGE) == P_SB_B);
+        check("and the generation it claimed is what the damage says",
+              rd64(ctx, DB_DAMAGED) == GENERATION + 5);
 
-        /* put it back */
-        vfs_write_at(h, sb, PAGE, (uint64_t)P_SB * PAGE);
+        /* the same forgery over both copies: now there is no database */
+        vfs_read_at(h, forged, PAGE, (uint64_t)P_SB_B * PAGE);
+        wr64(forged, SB_GENERATION, GENERATION + 4);
+        wr32(forged, SB_CRC, crc32c(forged, SB_CRC));
+        vfs_write_at(h, forged, PAGE, (uint64_t)P_SB_B * PAGE);
         vfs_sync_file(h);
         fresh_context(h);
-        check("and the real superblock still attaches",
-              db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 16) == 0);
+        check("two forged superblocks are refused rather than chosen between",
+              db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 16) == E_SEAL);
+
+        /* put them back */
+        vfs_write_at(h, sb, PAGE, (uint64_t)P_SB * PAGE);
+        vfs_write_at(h, sb_b, PAGE, (uint64_t)P_SB_B * PAGE);
+        vfs_sync_file(h);
+        fresh_context(h);
+        check("and the real superblock still attaches, newest first",
+              db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 16) == 0 &&
+              rd64(ctx, DB_SB_PAGE) == P_SB &&
+              rd64(ctx, DB_GENERATION) == GENERATION);
         vfs_close(h);
     }
 

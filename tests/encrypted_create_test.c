@@ -32,7 +32,8 @@
 #define SB_TOTAL_PAGES     16
 #define SB_ALLOC_PAGES     24
 #define SB_FEATURE_ROOT    56
-#define SB_SEAL_TAG        64
+#define SB_SEAL_ROOT       64
+#define SB_SEAL_TAG        104
 #define SB_CRC             124
 
 #define CROOT_SEAL_EPOCH     8
@@ -46,6 +47,7 @@
 #define SNODE_CRC         4092
 
 #define DB_HANDLE       0
+#define DB_DAMAGED      184
 #define DB_GENERATION   40
 #define DB_SB_PAGE      48
 #define DB_CACHE        760
@@ -83,6 +85,7 @@ int64_t vfs_open_rw(vfs_path path, uint64_t *reason);
 int64_t vfs_read_at(int64_t h, void *buf, uint64_t bytes, uint64_t offset);
 int64_t vfs_write_at(int64_t h, const void *buf, uint64_t bytes,
                      uint64_t offset);
+int64_t vfs_sync_file(int64_t h);
 void vfs_close(int64_t h);
 int os_random(uint8_t *out, uint64_t bytes);
 uint32_t crc32c(const uint8_t *buf, uint64_t len);
@@ -118,6 +121,9 @@ static void check(const char *what, int ok) {
 
 static uint64_t rd64(const uint8_t *p, int off) {
     uint64_t v; memcpy(&v, p + off, 8); return v;
+}
+static void wr32(uint8_t *p, int off, uint32_t v) {
+    memcpy(p + off, &v, 4);
 }
 static uint32_t rd32(const uint8_t *p, int off) {
     uint32_t v; memcpy(&v, p + off, 4); return v;
@@ -202,10 +208,6 @@ int main(void) {
 
     memset(ctx, 0, sizeof ctx);
     memcpy(ctx + DB_HANDLE, &h, 8);
-    {
-        uint64_t sb = 1;
-        memcpy(ctx + DB_SB_PAGE, &sb, 8);
-    }
     check("the private key opens what the engine wrote",
           db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 32) == 0);
     check("and the context knows the epoch and the directory",
@@ -214,10 +216,6 @@ int main(void) {
     {
         memset(ctx, 0, sizeof ctx);
         memcpy(ctx + DB_HANDLE, &h, 8);
-        {
-            uint64_t sb = 1;
-            memcpy(ctx + DB_SB_PAGE, &sb, 8);
-        }
         check("while the other key pair does not",
               db_encrypted_attach(ctx, dk2, cache_mem, cache_bytes, 32) == E_KEY);
     }
@@ -229,10 +227,6 @@ int main(void) {
 
         memset(ctx, 0, sizeof ctx);
         memcpy(ctx + DB_HANDLE, &h, 8);
-        {
-            uint64_t sb = 1;
-            memcpy(ctx + DB_SB_PAGE, &sb, 8);
-        }
         db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 32);
 
         /* The first page a fresh database allocates has never been sealed,
@@ -305,10 +299,6 @@ int main(void) {
         h = vfs_open_rw(path, 0);
         memset(ctx, 0, sizeof ctx);
         memcpy(ctx + DB_HANDLE, &h, 8);
-        {
-            uint64_t sb = 1;
-            memcpy(ctx + DB_SB_PAGE, &sb, 8);
-        }
         check("generation three reopens from superblock A",
               db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 32) == 0);
         frame = db_page_resolve(ctx, first_usable);
@@ -322,18 +312,24 @@ int main(void) {
               strcmp((char *)frame, "written in the following generation") == 0);
         vfs_close(h);
 
-        /* Superblock B and seal copy B are still a complete generation two.
-           Page two was not reachable then; page one was, and remains valid. */
+        /* Superblock B and seal copy B are still a complete generation two,
+           and that is what recovery is for. Forge generation three's tag and
+           repair its checksum: a reader without a key cannot tell that copy
+           from a good one, so the choice has to be made with a key. Page two
+           was not reachable in generation two; page one was, and remains. */
         h = vfs_open_rw(path, 0);
+        vfs_read_at(h, page, PAGE, 1 * PAGE);
+        page[SB_SEAL_TAG] ^= 0x40;
+        wr32(page, SB_CRC, crc32c(page, SB_CRC));
+        vfs_write_at(h, page, PAGE, 1 * PAGE);
+        vfs_sync_file(h);
         memset(ctx, 0, sizeof ctx);
         memcpy(ctx + DB_HANDLE, &h, 8);
-        {
-            uint64_t sb = 2;
-            memcpy(ctx + DB_SB_PAGE, &sb, 8);
-        }
-        check("the previous superblock and its seal copy still attach",
+        check("a forged newest generation falls back to the one before it",
               db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 32) == 0 &&
-              rd64(ctx, DB_GENERATION) == 2);
+              rd64(ctx, DB_GENERATION) == 2 && rd64(ctx, DB_SB_PAGE) == 2);
+        check("and the fallback is recorded as damage rather than hidden",
+              rd64(ctx, DB_DAMAGED) == 3);
         frame = db_page_resolve(ctx, first_usable);
         check("and retain the page that generation published",
               frame != NULL &&
