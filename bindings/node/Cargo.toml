@@ -1,0 +1,19 @@
+[package]
+name = "cyboudb-node"
+version = "0.5.0"
+edition = "2021"
+authors = ["Stanislav Saveliev", "CybouDB Contributors"]
+license = "Apache-2.0"
+description = "Node.js and TypeScript bindings for CybouDB embedded database engine"
+
+[lib]
+name = "cyboudb_node"
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "3.12", features = ["napi4", "serde-json"] }
+napi-derive = "3.6"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+cyboudb-core = { package = "cyboudb", path = "../rust/cyboudb" }
+cyboudb-sys = { path = "../rust/cyboudb-sys" }

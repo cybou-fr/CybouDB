@@ -15,6 +15,7 @@ target/
 *.map
 *.lst
 *.sym
+*.node
 __pycache__/
 
 # Linked binaries: build.sh and build.bat drop them at the repository root

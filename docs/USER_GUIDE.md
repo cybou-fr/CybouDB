@@ -26,7 +26,8 @@ crashes.
 10. [Embedding CybouDB with the C API](#10-embedding-cyboudb-with-the-c-api)
 11. [Embedding CybouDB in Rust](#11-embedding-cyboudb-in-rust)
 12. [Embedding CybouDB in Python](#12-embedding-cyboudb-in-python)
-13. [Performance & Operational Best Practices](#13-performance--operational-best-practices)
+13. [Embedding CybouDB in Node.js & TypeScript](#13-embedding-cyboudb-in-nodejs--typescript)
+14. [Performance & Operational Best Practices](#14-performance--operational-best-practices)
 
 ---
 
@@ -761,7 +762,71 @@ db.close()
 
 ---
 
-## 13. Performance & Operational Best Practices
+## 13. Embedding CybouDB in Node.js & TypeScript
+
+CybouDB provides an official high-performance Node.js and TypeScript package (`@cyboudb/node`) built with NAPI-rs:
+
+```bash
+npm install @cyboudb/node
+```
+
+### TypeScript Typing & Desktop Integration
+
+The Node.js package delivers the zero-libc assembly engine directly to the JavaScript/TypeScript runtime:
+- **Automatic Transactions**: `db.transaction(tx => { ... })` executes atomically, automatically committing on normal return and executing an instant `ROLLBACK` if an unhandled error is thrown.
+- **First-Class TypeScript Types**: Strongly typed methods with TypeScript definitions (`index.d.ts`).
+- **Ideal for Local-First & Desktop**: Eliminates the multi-process sprawl of SQLite + Redis + Vector DB in Electron and Tauri applications with a single file `.cdb` and no daemon processes.
+- **Zero Dependencies**: Native N-API addon compiled directly from x86-64 assembly and Rust.
+
+### Example: Unified Workflow in TypeScript
+
+```typescript
+import { Database } from '@cyboudb/node';
+
+// 1. Create database
+const db = Database.create('app.cdb', 512);
+
+// 2. Setup schema
+db.execute('CREATE TABLE workers (id INT32 NOT NULL, name TEXT, tasks INT32);');
+db.execute('CREATE UNIQUE INDEX idx_workers_id ON workers (id);');
+db.execute('CREATE QUEUE tasks;');
+db.execute('CREATE STREAM audit_log;');
+db.execute('CREATE CURSOR monitor ON audit_log;');
+
+// 3. Populate data
+db.execute('INSERT INTO workers VALUES (?, ?, ?);', [1, 'Worker Alpha', 0]);
+db.enqueue('tasks', 'generate_embeddings');
+
+// 4. Atomic transaction across Queue + Table + Stream
+db.transaction((tx) => {
+  const task = tx.dequeue('tasks');
+  if (task) {
+    console.log(`Processing: ${task.toString('utf-8')}`);
+  }
+
+  tx.execute('UPDATE workers SET tasks = 1 WHERE id = 1;');
+  tx.append('audit_log', 'Worker Alpha finished generate_embeddings');
+  // Automatically COMMITS on return, or ROLLS BACK on error
+});
+
+// 5. Query results
+const rows = db.query('SELECT id, name, tasks FROM workers WHERE id = ?;', [1]);
+for (const [id, name, tasks] of rows) {
+  console.log(`Worker #${id}: ${name} (tasks: ${tasks})`);
+}
+
+// 6. Read stream event
+const event = db.readStream('audit_log', 'monitor');
+if (event) {
+  console.log(`Stream Event: ${event.toString('utf-8')}`);
+}
+
+db.close();
+```
+
+---
+
+## 14. Performance & Operational Best Practices
 
 ### 1. Batch Write Operations
 CybouDB enforces durability by issuing two storage flushes (`vfs_sync`) per

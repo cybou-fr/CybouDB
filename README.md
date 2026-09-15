@@ -178,6 +178,37 @@ db.close()
 
 See [`bindings/python/README.md`](bindings/python/README.md) and [`examples/quickstart.py`](bindings/python/examples/quickstart.py).
 
+### Node.js & TypeScript (@cyboudb/node)
+
+Native Node.js and TypeScript bindings powered by NAPI-rs are provided in [`bindings/node/`](bindings/node/):
+
+```bash
+npm install @cyboudb/node
+```
+
+```typescript
+import { Database } from '@cyboudb/node';
+
+const db = Database.create('app.cdb', 512);
+db.execute('CREATE TABLE results (id INT64, note TEXT);');
+db.execute('CREATE QUEUE inbox;');
+
+// Atomic cross-primitive transaction
+db.transaction((tx) => {
+  tx.enqueue('inbox', 'job_payload');
+  tx.execute('INSERT INTO results VALUES (?, ?);', [42, 'completed']);
+});
+
+const rows = db.query('SELECT note FROM results WHERE id = ?;', [42]);
+for (const [note] of rows) {
+  console.log(`Note: ${note}`);
+}
+
+db.close();
+```
+
+See [`bindings/node/README.md`](bindings/node/README.md) and [`examples/quickstart.js`](bindings/node/examples/quickstart.js).
+
 ---
 
 ## Capabilities
