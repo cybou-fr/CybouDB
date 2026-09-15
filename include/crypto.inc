@@ -114,6 +114,18 @@
 %define CybouDB_KMAC_MAX_KEY    64
 %define CybouDB_KMAC_MAX_CUSTOM 64
 
+; --- creating an encrypted database -----------------------------------------
+;  What core/encrypted_create.asm needs, as a struct because six values do not
+;  fit in registers and because a caller that has to fill in a named field is
+;  a caller that notices when a field is added.
+%define ECREATE_HANDLE      0
+%define ECREATE_EK          8           ; the public key it is sealed to
+%define ECREATE_UUID        16          ; 16 bytes of identity
+%define ECREATE_PAGES       24          ; how long the file will be
+%define ECREATE_GENERATION  32
+%define ECREATE_EPOCH       40
+%define CybouDB_ECREATE_ARGS_SIZE 48
+
 ; --- key derivation ---------------------------------------------------------
 ;  docs/KEY_HIERARCHY.md, Decision 2. A purpose is a number in a closed list,
 ;  not a string a caller supplies: a KDF whose label comes from outside is an

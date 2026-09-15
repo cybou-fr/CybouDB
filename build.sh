@@ -315,6 +315,12 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
             build/encrypted_open.o build/page_resolve.o build/page_cache.o build/key_slots.o build/crypto_root.o build/kdf.o build/kmac.o build/seal_dir.o build/page_seal.o build/aead.o build/chacha20.o build/poly1305.o build/keccak.o build/mlkem.o build/mlkem_poly.o build/mlkem_encode.o build/mlkem_sample.o build/checksum_crypto.o build/os_efile.o \
             -o build/encrypted_open_test
         echo "Build OK -> build/encrypted_open_test"
+        nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/core/encrypted_create.asm \
+            -o build/encrypted_create.o
+        "$CC" -O2 -no-pie -Wall -Wextra tests/encrypted_create_test.c \
+            build/encrypted_create.o build/encrypted_open.o build/page_resolve.o build/page_cache.o build/key_slots.o build/crypto_root.o build/kdf.o build/kmac.o build/seal_dir.o build/page_seal.o build/aead.o build/chacha20.o build/poly1305.o build/keccak.o build/mlkem.o build/mlkem_poly.o build/mlkem_encode.o build/mlkem_sample.o build/checksum_crypto.o build/os_efile.o \
+            -o build/encrypted_create_test
+        echo "Build OK -> build/encrypted_create_test"
     fi
     if [ "${1:-}" = "--crypto-probe" ]; then
         CC=gcc

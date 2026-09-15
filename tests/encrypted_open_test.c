@@ -41,7 +41,8 @@
 #define SB_GENERATION      8
 #define SB_TOTAL_PAGES     16
 #define SB_FEATURE_ROOT    56
-#define SB_SEAL_TAG        64
+#define SB_SEAL_ROOT       64
+#define SB_SEAL_TAG        104
 #define SB_SEAL_TAG_SIZE   16
 #define SB_CRC             124
 #define SB_MAGIC_VALUE     0x53515341u

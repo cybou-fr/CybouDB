@@ -31,6 +31,7 @@ default rel
 
 global db_page_resolve
 global db_page_for_write
+global db_page_new
 global db_pages_flush
 
 extern cyboudb_pcache_lookup
@@ -78,6 +79,14 @@ db_page_resolve:
     mov     r12, ARG2                   ; the page wanted
     mov     [rbp - 40], rbx
     mov     [rbp - 48], r12
+
+    ; A context with no cache has not been attached to an encrypted file. The
+    ; page macro never calls this in that state - it branches on exactly this
+    ; field - but a direct caller can, and did: a test ignored an attach that
+    ; had failed and passed the context on, which turned a refusal into a null
+    ; dereference inside the cache.
+    cmp     qword [rbx + DB_CACHE], 0
+    je      .no_cache
 
     ; --- already decrypted? ---------------------------------------------------
     mov     ARG1, [rbx + DB_CACHE]
@@ -213,6 +222,11 @@ db_page_resolve:
     xor     eax, eax
     jmp     .done
 
+.no_cache:
+    mov     qword [rbx + DB_ENC_ERROR], CybouDB_E_STATE
+    xor     eax, eax
+    jmp     .done
+
 .no_entry:
     mov     rbx, [rbp - 40]
     mov     qword [rbx + DB_ENC_ERROR], CybouDB_E_SEAL
@@ -282,6 +296,83 @@ db_page_for_write:
     mov     qword [rbx + DB_ENC_ERROR], CybouDB_E_STATE
     xor     eax, eax
 .done:
+    mov     rbx, [rbp - 8]
+    mov     r12, [rbp - 16]
+    FRAME_END
+    ret
+
+; =============================================================================
+;  db_page_new(ctx, page, page_type) -> uint8_t *plaintext, or 0
+;
+;  A page this generation has just allocated. It is not read first, and that is
+;  the whole difference from db_page_for_write: there is nothing on the disk at
+;  that page number worth reading, and trying to open it would fail a tag check
+;  against bytes nobody ever sealed.
+;
+;  The frame comes back zeroed, because a fresh page in this engine is a zeroed
+;  page and because whatever the frame held before belonged to somebody else.
+; =============================================================================
+db_page_new:
+    FRAME_BEGIN 64, 0
+    mov     [rbp - 8], rbx
+    mov     [rbp - 16], r12
+
+    mov     rbx, ARG1
+    mov     r12, ARG2
+    mov     [rbp - 32], ARG3
+
+    cmp     qword [rbx + DB_CACHE], 0
+    je      .no_cache
+
+    mov     ARG1, [rbx + DB_CACHE]
+    mov     ARG2, r12
+    lea     ARG3, [rbp - 40]
+    call    cyboudb_pcache_admit
+    test    rax, rax
+    jz      .no_cache
+    mov     [rbp - 24], rax
+
+    ; the victim, if there was one, must not have been dirty
+    mov     rax, [rbp - 40]
+    cmp     rax, -1
+    je      .clear
+    bt      rax, 63
+    jc      .dirty_victim
+
+.clear:
+    mov     r10, [rbp - 24]
+    xor     rax, rax
+    xor     rcx, rcx
+.zero:
+    mov     [r10 + rcx], rax
+    add     rcx, 8
+    cmp     rcx, CybouDB_PAGE_SIZE
+    jb      .zero
+
+    mov     ARG1, [rbx + DB_CACHE]
+    mov     ARG2, r12
+    call    cyboudb_pcache_mark_dirty
+    test    eax, eax
+    jnz     .no_cache
+    mov     ARG1, [rbx + DB_CACHE]
+    mov     ARG2, r12
+    mov     ARG3, [rbp - 32]
+    call    cyboudb_pcache_set_type
+    test    eax, eax
+    jnz     .no_cache
+
+    mov     qword [rbx + DB_ENC_ERROR], 0
+    mov     rax, [rbp - 24]
+    jmp     .out
+
+.dirty_victim:
+    mov     qword [rbx + DB_ENC_ERROR], CybouDB_E_STATE
+    xor     eax, eax
+    jmp     .out
+.no_cache:
+    mov     qword [rbx + DB_ENC_ERROR], CybouDB_E_STATE
+    xor     eax, eax
+.out:
     mov     rbx, [rbp - 8]
     mov     r12, [rbp - 16]
     FRAME_END

@@ -338,9 +338,16 @@
 ;  in ENCRYPTED_ENGINE.md that are not met yet.
 %define CybouDB_FEATURE_ENCRYPTION 131072
 
-%define SB_SEAL_TAG         64
+%define SB_SEAL_ROOT        64          ; the seal tree's root MAC, 16 bytes
+%define SB_SEAL_TAG         104         ; the tag over everything above it
 %define SB_SEAL_TAG_SIZE    16
 %define SB_SEAL_TAG_COVERS  SB_SEAL_TAG
+
+;  The root MAC has to live inside the tagged range, which is why the tag is at
+;  the end of the reserved tail rather than the start of it. The first version
+;  put the tag at 64 and the root at 48 - on top of feature_root, which is at
+;  56 - and the superblock then named page zero as its crypto root. The test
+;  that reads the field back is what said so.
 ; Only ever set in the in-memory candidate a writer builds to check its own
 ; half-finished graph, never on disk: an on-disk superblock with this field
 ; set is rejected. A staged graph is rebuilt one page at a time, so between
