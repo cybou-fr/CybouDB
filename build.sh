@@ -226,6 +226,11 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         "$CC" -O2 -no-pie -Wall -Wextra tests/seal_dir_test.c \
             build/seal_dir.o build/keccak.o build/checksum_crypto.o -o build/seal_dir_test
         echo "Build OK -> build/seal_dir_test"
+        nasm -f elf64 $INC -Isrc/crypto/ -DCybouDB_LIBRARY=1 src/crypto/mlkem_poly.asm \
+            -o build/mlkem_poly.o
+        "$CC" -O2 -no-pie -Wall -Wextra tests/mlkem_poly_test.c \
+            build/mlkem_poly.o -o build/mlkem_poly_test
+        echo "Build OK -> build/mlkem_poly_test"
     fi
     if [ "${1:-}" = "--crypto-probe" ]; then
         CC=gcc
