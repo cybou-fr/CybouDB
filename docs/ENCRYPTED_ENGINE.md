@@ -6,9 +6,15 @@ The internal engine path now creates an encrypted file, attaches with an
 ML-KEM private key, resolves and writes encrypted pages through a private
 cache, commits with two durability barriers, and reopens the published
 generation. Seal trees of more than one internal level are created, traversed
-and committed as well. The remaining boundary is the ordinary `db_open` and
-public C API path: they still have no credential-bearing entry point and
-therefore return `CybouDB_E_NEEDS_KEY` for an encrypted header.
+and committed as well. Attaching chooses between the two superblock copies
+itself, with the key rather than with a checksum.
+
+Two boundaries remain, and they are both integration rather than cryptography.
+The first is the ordinary `db_open` and public C API path: they still have no
+credential-bearing entry point and therefore return `CybouDB_E_NEEDS_KEY` for
+an encrypted header. The second is that `cyboudb_encrypted_create` writes a
+container, not a canonical CybouDB database: no `MAP_SPAN` allocation map, no
+catalog, and therefore no ordinary allocator above it.
 
 ---
 
@@ -122,14 +128,51 @@ that exists must already be a file every later build can open. Until then the
 only encrypted files are the ones the two harnesses write into `build/`, which
 no CLI can produce and no test leaves behind.
 
-The internal implementation currently has two commit cost profiles. A
-depth-one tree records dirty leaves before flush and updates only their MACs;
-its inactive copy catches up only divergent leaves. A deeper tree uses the
-safe baseline: copy the active metadata tree, flush changed leaves, and rebuild
-only child MACs whose physical child changed, level by level. That baseline
-does not bless pre-existing damage in an untouched branch, but it still reads
-the whole tree. A transaction-sized dirty-leaf journal is therefore required
-before the `cost proportional to changed graph` claim applies to every depth.
+### Commit cost
+
+A commit at any depth now costs what the transaction changed, and it gets
+there in two halves.
+
+*Catching the inactive copy up.* It can be two generations behind, so it has
+to be brought level with the active copy before this transaction is applied on
+top of it. A depth-one tree compares the two root nodes and copies the leaves
+whose MACs differ. A deeper tree does the same thing recursively: it descends
+from the root and stops at the first node whose bytes already match its
+opposite number, because a node's child MACs cover everything beneath it. A
+worklist of 256 divergent nodes bounds the descent; past that it falls back to
+copying the whole tree, which is slow and never wrong.
+
+*Rebuilding.* `db_pages_flush` writes down the index of every seal leaf it
+changes, because by the time the commit runs the ciphertext frames it would
+have read that back from have been invalidated. The commit then rebuilds one
+root-ward path per journalled leaf instead of one pass per level. The journal
+holds 256 entries and reports its own overflow; on overflow the commit walks
+every leaf, which again is slow and never wrong.
+
+The journal's capacity is its own. An earlier version sized it to the page
+cache and then refused to attach to a cache with more frames than it held,
+which made an internal scratch array the ceiling on the one setting that
+matters most to an encrypted database's speed. A cache budget is a first-class
+setting; nothing internal gets to cap it.
+
+What is still true: an encrypted transaction's dirty working set cannot exceed
+the cache, because dirty eviction is a refusal rather than a writeback. That
+is a real limit and a separate piece of work.
+
+### Recovery
+
+`db_encrypted_attach` reads both superblock copies, keeps every one whose
+checksum verifies, and then tries them newest first. A candidate is accepted
+only when its tag and the seal-tree root it publishes both authenticate under
+the key the caller supplied, so a torn commit that left a perfect CRC over a
+forged or half-written generation is rejected rather than opened. Falling back
+to the copy before it is a success, and it is also damage: `DB_DAMAGED` records
+the generation that failed, which is what lets an open return the older
+database while a check still says what was lost.
+
+One failure is not retried. A wrong key is refused immediately, because both
+copies name the same key slots and a second attempt would spend another
+decapsulation to reach the same answer.
 
 ## What "did not get slower" means here
 

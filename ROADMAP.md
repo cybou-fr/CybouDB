@@ -628,14 +628,21 @@ the release, not after it.
                                      What remains is integration into normal
                                      cyboudb_open and the allocator/catalog
                                      path rather than the internal test API
- 8. Crash-safe encrypted transactions depth-1 publication is implemented with
-                                     paired seal-tree copies, two barriers,
-                                     inactive-superblock update, and handle
-                                     poisoning after uncertain I/O. Depth-one
-                                     catch-up copies only divergent leaves and
-                                     the root reads only dirty leaves. General
-                                     level layout and creation are implemented;
-                                     open and commit of multi-level paths remain
+ 8. Crash-safe encrypted transactions publication is implemented at every
+                                     depth: paired seal-tree copies, two
+                                     barriers, inactive-superblock update, and
+                                     handle poisoning after uncertain I/O.
+                                     Multi-level trees are created, traversed
+                                     on open and published on commit, and the
+                                     cost is proportional to what changed - the
+                                     inactive copy is caught up by difference
+                                     and only journalled dirty leaves have
+                                     their paths rebuilt. Attach chooses
+                                     between both superblocks with the key and
+                                     falls back to the previous authenticated
+                                     generation, recording DB_DAMAGED.
+                                     What remains is dirty eviction as
+                                     writeback rather than refusal
  9. Scoped DEKs
 10. The signed access manifest
 11. Permissions and scoped keys

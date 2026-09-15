@@ -72,13 +72,6 @@ extern cyboudb_seal_geometry
 extern cyboudb_seal_node_validate
 extern cyboudb_seal_node_verify
 
-; The encryption bit is NOT in include/format.inc, and that is deliberate:
-; docs/ENCRYPTED_ENGINE.md keeps it out of the normative header until the whole
-; chain works through the engine, because the first file in the world carrying
-; it is a public commitment. Until then it lives here, where only this file and
-; the tests that build encrypted files can see it.
-%define CybouDB_FEATURE_ENCRYPTION 131072
-
 section .rodata
 sb_label: db "CybouDB/0.7/superblock"
 SB_LABEL_LEN equ $ - sb_label
