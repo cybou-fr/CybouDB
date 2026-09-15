@@ -504,6 +504,67 @@ did not need.
 
 ---
 
+## Decision 6b - the order of an encrypted commit, and what each barrier buys
+
+A commit publishes a generation. In an encrypted file it also publishes the
+only evidence that the generation's pages are what they claim to be, and those
+two things have to become durable in the right order or the file can be
+published while the evidence for it is still in a write cache.
+
+The order, and it is not negotiable:
+
+```text
+1. write the new payload pages, sealed under the new generation
+2. write the seal directory leaves that cover them
+3. write the seal tree nodes above those leaves
+
+   ---- barrier 1 ----------------------------------------------------
+   everything the new generation needs, except the claim that it exists
+
+4. write the superblock: the new generation, the new seal tree root,
+   and the tag over both
+
+   ---- barrier 2 ----------------------------------------------------
+   the new generation exists
+```
+
+**What barrier 1 buys.** Without it, a crash can leave a superblock that
+names a seal tree root whose node never reached the disk. The reader then has
+a valid, authenticated superblock pointing at nothing - a *hybrid*: the new
+generation published, the old generation's pages underneath it. Neither
+"the old database" nor "the new database", which is the one outcome a storage
+engine may never produce.
+
+**What barrier 2 buys.** Only that the commit is acknowledged. A crash between
+the superblock write and barrier 2 is indistinguishable from a crash before the
+superblock write: either the superblock made it and the new generation is
+current, or it did not and the old one is. Both are whole.
+
+**The tag must cover every byte the reader uses.** A field that lives past the
+tagged range is a field a torn write can change invisibly, and the fallback to
+the other copy would never trigger for it. This is a requirement on the
+engine's superblock layout and not a property of the crypto: the test that
+found it was asserting that a tear in the untagged tail should fall back, which
+was the wrong assertion - a tear there is harmless precisely because nothing
+reads those bytes, and would stop being harmless the moment something did.
+
+**Why the superblock's tag is what decides.** Recovery reads both superblocks,
+verifies each tag under the metadata key, and takes the newest that verifies. A
+superblock half-written by a crash does not verify - the tag covers the
+generation and the tree root together - so a torn publication falls back to the
+other copy rather than being read as a generation that never existed. That is
+the same two-copy discipline `0.5` already uses for the allocation map, with
+the tag doing what the CRC does there and more.
+
+**The invariant.** For every prefix of that write sequence, a reader sees the
+old generation whole or the new generation whole. `tests/encrypted_commit_test.c`
+runs every prefix, and runs the sequence again with the superblock moved ahead
+of the barrier to show that the ordering is what produces the invariant rather
+than luck: in that version a prefix exists that publishes a generation whose
+seal tree is not there, and the test demands that it exists.
+
+---
+
 ## Decision 7 — encrypted mode does not use the shared mapping
 
 This is the decision with the largest engineering cost and the least choice

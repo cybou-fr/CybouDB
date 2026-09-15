@@ -295,6 +295,12 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
             build/checksum_crypto.o build/os_efile.o \
             -o build/encrypted_file_test
         echo "Build OK -> build/encrypted_file_test"
+        "$CC" -O2 -no-pie -Wall -Wextra tests/encrypted_commit_test.c \
+            build/kmac.o build/kdf.o build/seal_dir.o build/page_seal.o \
+            build/aead.o build/chacha20.o build/poly1305.o \
+            build/keccak.o build/checksum_crypto.o build/os_efile.o \
+            -o build/encrypted_commit_test
+        echo "Build OK -> build/encrypted_commit_test"
     fi
     if [ "${1:-}" = "--crypto-probe" ]; then
         CC=gcc
