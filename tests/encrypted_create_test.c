@@ -63,7 +63,8 @@
 #define DB_SEAL_DEPTH   (DB_SEAL_PAGES + 8)
 #define DB_SEAL_ROOT    (DB_SEAL_DEPTH + 8)
 #define DB_DIRTY_LEAF_N (DB_SEAL_ROOT + 16)
-#define DB_DIRTY_LEAVES (DB_DIRTY_LEAF_N + 8)
+#define DB_DIRTY_LEAF_OVF (DB_DIRTY_LEAF_N + 8)
+#define DB_DIRTY_LEAVES (DB_DIRTY_LEAF_OVF + 8)
 #define CTX_BYTES       4096
 
 #define EK_BYTES 1184
@@ -341,7 +342,8 @@ int main(void) {
     /* --- the smallest useful multi-level creation shape ---------------------- */
     {
         int64_t big = vfs_create_truncate(VFS_PATH("build/too_big.cdb"), 0);
-        uint64_t big_geo[4], root_page;
+        uint64_t big_geo[4], root_page, big_cache_bytes;
+        uint8_t *big_cache_mem, *big_cache_raw;
         args.handle = big;
         args.pages = 30000;             /* 362 leaves, then 2 nodes, then root */
         {
@@ -361,14 +363,20 @@ int main(void) {
               rd64(page, SNODE_LEVEL) == 2 &&
               rd64(page, SNODE_CHILD_COUNT) == 2 &&
               rd32(page, SNODE_CRC) == crc32c(page, SNODE_CRC));
+        /* A cache far larger than the dirty-leaf journal holds. It used to be
+           refused: the journal was sized to the cache and then made the limit
+           on it, so an encrypted database could not be given more than a
+           mebibyte of plaintext cache. Nothing about the journal is a reason
+           for that, and this is the shape that proves it. */
+        big_cache_bytes = cyboudb_pcache_bytes(1024);
+        big_cache_raw = malloc((size_t)big_cache_bytes + PAGE);
+        big_cache_mem = (uint8_t *)(((uintptr_t)big_cache_raw + PAGE - 1) &
+                                    ~(uintptr_t)(PAGE - 1));
         memset(ctx, 0, sizeof ctx);
         memcpy(ctx + DB_HANDLE, &big, 8);
-        {
-            uint64_t sb_page = 1;
-            memcpy(ctx + DB_SB_PAGE, &sb_page, 8);
-        }
-        check("the engine attaches through that level-two root",
-              db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 32) == 0 &&
+        check("a cache of a thousand frames is not a reason to refuse a key",
+              db_encrypted_attach(ctx, dk, big_cache_mem, big_cache_bytes,
+                                  1024) == 0 &&
               rd64(ctx, DB_SEAL_DEPTH) == 2);
         vfs_read_at(big, page, PAGE, PAGE);       /* live superblock */
         {
@@ -397,12 +405,9 @@ int main(void) {
             big = vfs_open_rw(VFS_PATH("build/too_big.cdb"), 0);
             memset(ctx, 0, sizeof ctx);
             memcpy(ctx + DB_HANDLE, &big, 8);
-            {
-                uint64_t sb_page = 2;
-                memcpy(ctx + DB_SB_PAGE, &sb_page, 8);
-            }
             check("the committed level-two generation reattaches",
-                  db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 32) == 0 &&
+                  db_encrypted_attach(ctx, dk, big_cache_mem, big_cache_bytes,
+                                      1024) == 0 &&
                   rd64(ctx, DB_GENERATION) == 2);
             frame = db_page_resolve(ctx, usable);
             check("and authenticates the page through both node levels",
@@ -413,6 +418,7 @@ int main(void) {
                   rd64(ctx, DB_ENC_ERROR) == E_SEAL);
         }
         vfs_close(big);
+        free(big_cache_raw);
 #ifdef _WIN32
         _wremove(VFS_PATH("build/too_big.cdb"));
 #else

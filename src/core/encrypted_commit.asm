@@ -65,7 +65,9 @@ section .text
 ;   [rbp - 64] which superblock copy it goes to
 ;   [rbp - 72] active seal copy base   [rbp - 80] inactive copy base
 ;   [rbp - 128] one MAC
-;   [rbp - 384] the KMAC context
+;   [rbp - 384] the KMAC context, which the multi-level walk borrows for its
+;               own counters ([rbp - 144] to [rbp - 208]): the tree is finished
+;               before a superblock is tagged, so the two never overlap in time
 ;   [rbp - 4608] a page to read leaves and build the superblock in
 ;   [rbp - 8768] the inactive node
 ;   [rbp - 12864] the active node used to find divergent leaves
@@ -482,13 +484,28 @@ db_encrypted_commit:
     test    eax, eax
     jnz     .failed
 
-    mov     qword [rbp - 144], 0        ; dirty-journal position
+    ; The work this level owes is one path per leaf the transaction changed.
+    ; If the journal overflowed, the flush could not say which leaves those
+    ; were, and the only safe answer is all of them: publishing fewer paths
+    ; than the pages need would leave a root that does not cover them.
+    mov     rbx, [rbp - 40]
+    mov     rax, [rbx + DB_SEAL_LEAVES]
+    cmp     qword [rbx + DB_DIRTY_LEAF_OVF], 0
+    jne     .multi_paths_known
+    mov     rax, [rbx + DB_DIRTY_LEAF_N]
+.multi_paths_known:
+    mov     [rbp - 176], rax            ; paths at this level
+    mov     qword [rbp - 144], 0        ; position within them
 .multi_path:
     mov     rbx, [rbp - 40]
     mov     r12, [rbp - 144]
-    cmp     r12, [rbx + DB_DIRTY_LEAF_N]
+    cmp     r12, [rbp - 176]
     jae     .multi_level_done
+    mov     r13, r12                    ; overflow: the leaves in order
+    cmp     qword [rbx + DB_DIRTY_LEAF_OVF], 0
+    jne     .multi_leaf_known
     mov     r13, [rbx + DB_DIRTY_LEAVES + r12 * 8]
+.multi_leaf_known:
 
     mov     rcx, [rbp - 88]
     mov     rax, 1

@@ -156,8 +156,22 @@
 %define DB_SEAL_PAGES     (DB_TREE_KEY + 32)   ; pages in one tree copy
 %define DB_SEAL_DEPTH     (DB_SEAL_PAGES + 8)  ; root level, one or greater
 %define DB_SEAL_ROOT      (DB_SEAL_DEPTH + 8)  ; MAC published by superblock
+; --- which seal leaves a transaction changed -------------------------------
+; A deep commit wants to touch only the ancestor paths of the leaves this
+; transaction actually changed, and by the time it runs, the evidence is gone:
+; the flush has already invalidated the ciphertext frames it read them from.
+; So the flush writes the leaf indices down as it goes.
+;
+; The capacity is the journal's own, and deliberately nothing else's. An
+; earlier version sized it to the page cache and then refused to attach to a
+; cache larger than it - which quietly made an internal scratch array the
+; ceiling on the one setting that matters most to an encrypted database's
+; speed. It follows DB_RUNS instead: when the list does not fit, say so and
+; let the commit fall back to the exhaustive walk. A superset of the work is
+; slow; a subset would publish a tree that does not cover the pages under it.
 %define DB_DIRTY_LEAF_N   (DB_SEAL_ROOT + 16)  ; snapshot retained by flush
-%define DB_DIRTY_LEAVES   (DB_DIRTY_LEAF_N + 8)
+%define DB_DIRTY_LEAF_OVF (DB_DIRTY_LEAF_N + 8); 1 = did not fit; walk them all
+%define DB_DIRTY_LEAVES   (DB_DIRTY_LEAF_OVF + 8)
 %define CybouDB_DIRTY_LEAF_MAX 256
 
 ;  Three keys stay resident while a database is open, and it is worth being

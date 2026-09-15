@@ -547,6 +547,7 @@ db_pages_flush:
     mov     [rbp - 40], rbx
     mov     qword [rbp - 72], -1        ; no leaf held yet
     mov     qword [rbx + DB_DIRTY_LEAF_N], 0
+    mov     qword [rbx + DB_DIRTY_LEAF_OVF], 0
 
     mov     ARG1, [rbx + DB_CACHE]
     call    cyboudb_pcache_frames
@@ -609,16 +610,20 @@ db_pages_flush:
     mov     [rbp - 72], rax
 
     ; A deeper commit needs the dirty leaf set after this routine invalidates
-    ; ciphertext frames. Attach caps frames to the journal capacity, so even
-    ; the deliberately simple duplicate-preserving list cannot overflow.
+    ; the ciphertext frames it would otherwise read it back from. Past the
+    ; journal's capacity the commit is told to walk every leaf instead: the
+    ; transaction is still published, it just costs what it used to.
     cmp     qword [rbx + DB_SEAL_DEPTH], 1
     jbe     .leaf_journaled
     mov     rcx, [rbx + DB_DIRTY_LEAF_N]
     cmp     rcx, CybouDB_DIRTY_LEAF_MAX
-    jae     .failed
+    jae     .leaf_journal_full
     mov     rax, [rbp - 96]
     mov     [rbx + DB_DIRTY_LEAVES + rcx * 8], rax
     inc     qword [rbx + DB_DIRTY_LEAF_N]
+    jmp     .leaf_journaled
+.leaf_journal_full:
+    mov     qword [rbx + DB_DIRTY_LEAF_OVF], 1
 .leaf_journaled:
 
     mov     ARG1, [rbx + DB_HANDLE]

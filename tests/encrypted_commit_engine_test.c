@@ -13,11 +13,21 @@
 #define DB_SEAL_DIR (DB_SEAL_EPOCH + 8)
 #define DB_SEAL_LEAVES (DB_SEAL_DIR + 8)
 #define DB_ENC_ERROR (DB_SEAL_LEAVES + 8)
+#define DB_META_KEY (DB_ENC_ERROR + 8)
+#define DB_TREE_KEY (DB_META_KEY + 32)
+#define DB_SEAL_PAGES (DB_TREE_KEY + 32)
+#define DB_SEAL_DEPTH (DB_SEAL_PAGES + 8)
+#define DB_SEAL_ROOT (DB_SEAL_DEPTH + 8)
+#define DB_DIRTY_LEAF_N (DB_SEAL_ROOT + 16)
+#define DB_DIRTY_LEAF_OVF (DB_DIRTY_LEAF_N + 8)
+#define DB_DIRTY_LEAVES (DB_DIRTY_LEAF_OVF + 8)
+#define CTX_BYTES 4096
 #define E_SYNC 19
 
 static int checks, failures, sync_calls, fail_sync;
 static int read_calls, write_calls, nodes_differ;
 static int dirty_frames;
+static uint64_t stub_leaves = 1;
 
 static uint64_t rd64(const uint8_t *p, int off) {
     uint64_t v; memcpy(&v, p + off, 8); return v;
@@ -60,7 +70,11 @@ void cyboudb_seal_leaf_mac(uint8_t *out, const uint8_t *key,
     (void)key; (void)page; memset(out, 0x11, 16);
 }
 int cyboudb_seal_level(uint64_t *out, uint64_t total_pages, uint64_t level) {
-    (void)total_pages; out[0] = level; out[1] = 1; return 0;
+    (void)total_pages;
+    /* Level zero is the leaf array; every level above it is one node here. */
+    out[0] = level == 0 ? 0 : stub_leaves + (level - 1);
+    out[1] = level == 0 ? stub_leaves : 1;
+    return 0;
 }
 void cyboudb_seal_node_init(uint8_t *page, uint64_t index, uint64_t level,
                             uint64_t generation, uint64_t epoch) {
@@ -88,7 +102,7 @@ void cyboudb_kmac256_final(uint8_t *ctx, uint8_t *out, uint64_t out_len) {
 }
 
 static void fresh(uint8_t *ctx) {
-    memset(ctx, 0, 1024);
+    memset(ctx, 0, CTX_BYTES);
     wr64(ctx, DB_HANDLE, 1);
     wr64(ctx, DB_GENERATION, 7);
     wr64(ctx, DB_SB_PAGE, 1);
@@ -101,7 +115,8 @@ static void fresh(uint8_t *ctx) {
 }
 
 int main(void) {
-    uint8_t ctx[1024];
+    uint8_t ctx[CTX_BYTES];
+    int journalled_writes;
     printf("CybouDB encrypted commit engine test\n\n");
 
     fresh(ctx); fail_sync = 0;
@@ -139,6 +154,34 @@ int main(void) {
     check("and also poisons the handle", rd64(ctx, DB_MODE) == UINT64_MAX);
     check("because the durable generation is uncertain",
           rd64(ctx, DB_GENERATION) == 7 && rd64(ctx, DB_SB_PAGE) == 1);
+
+    /* --- a deeper tree, and the journal that says which paths to rebuild ----
+       Three leaves, one of which this transaction changed. The journal names
+       it, so the commit rebuilds one path per level. */
+    stub_leaves = 3;
+    fresh(ctx); fail_sync = 0;
+    wr64(ctx, DB_SEAL_LEAVES, 3);
+    wr64(ctx, DB_SEAL_PAGES, 5);
+    wr64(ctx, DB_SEAL_DEPTH, 2);
+    wr64(ctx, DB_DIRTY_LEAF_N, 1);
+    wr64(ctx, DB_DIRTY_LEAVES, 2);
+    check("a deep commit driven by the journal succeeds",
+          db_encrypted_commit(ctx) == 0);
+    journalled_writes = write_calls;
+
+    /* And when the flush could not record them, every leaf is a path. The
+       transaction is still published; it just costs what it used to. */
+    fresh(ctx); fail_sync = 0;
+    wr64(ctx, DB_SEAL_LEAVES, 3);
+    wr64(ctx, DB_SEAL_PAGES, 5);
+    wr64(ctx, DB_SEAL_DEPTH, 2);
+    wr64(ctx, DB_DIRTY_LEAF_N, 0);
+    wr64(ctx, DB_DIRTY_LEAF_OVF, 1);
+    check("an overflowed journal still publishes the generation",
+          db_encrypted_commit(ctx) == 0);
+    check("by walking every leaf instead of the ones it could not name",
+          write_calls > journalled_writes);
+    stub_leaves = 1;
 
     printf("\nencrypted commit engine suite: %d checks, %d failed\n",
            checks, failures);
