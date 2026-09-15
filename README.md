@@ -149,6 +149,35 @@ fn main() -> Result<()> {
 
 See [`bindings/rust/README.md`](bindings/rust/README.md) and [`examples/quickstart.rs`](bindings/rust/cyboudb/examples/quickstart.rs).
 
+### Python (Official Package)
+
+Native Python bindings are provided in [`bindings/python/`](bindings/python/):
+
+```bash
+pip install cyboudb
+```
+
+```python
+import cyboudb
+
+db = cyboudb.Database.create("app.cdb", pages=512)
+db.execute("CREATE TABLE results (id INT64, note TEXT);")
+db.execute("CREATE QUEUE inbox;")
+
+# Atomic cross-primitive transaction
+with db.transaction() as tx:
+    tx.enqueue("inbox", "job_payload")
+    tx.execute("INSERT INTO results VALUES (?, ?);", [42, "completed"])
+
+rows = db.query("SELECT note FROM results WHERE id = ?;", [42])
+for row in rows:
+    print(f"Note: {row[0]}")
+
+db.close()
+```
+
+See [`bindings/python/README.md`](bindings/python/README.md) and [`examples/quickstart.py`](bindings/python/examples/quickstart.py).
+
 ---
 
 ## Capabilities

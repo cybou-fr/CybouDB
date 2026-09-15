@@ -25,7 +25,8 @@ crashes.
 9. [Unified Cross-Primitive Transactions](#9-unified-cross-primitive-transactions)
 10. [Embedding CybouDB with the C API](#10-embedding-cyboudb-with-the-c-api)
 11. [Embedding CybouDB in Rust](#11-embedding-cyboudb-in-rust)
-12. [Performance & Operational Best Practices](#12-performance--operational-best-practices)
+12. [Embedding CybouDB in Python](#12-embedding-cyboudb-in-python)
+13. [Performance & Operational Best Practices](#13-performance--operational-best-practices)
 
 ---
 
@@ -700,7 +701,67 @@ fn main() -> Result<()> {
 
 ---
 
-## 12. Performance & Operational Best Practices
+## 12. Embedding CybouDB in Python
+
+CybouDB provides an official high-performance Python package (`cyboudb`) built with PyO3:
+
+```bash
+pip install cyboudb
+```
+
+### Pythonic Ergonomics & Safety
+
+The Python package brings the zero-libc assembly engine directly to the Python ecosystem:
+- **Automatic Context Managers**: `with db.transaction() as tx:` automatically commits when leaving the block normally, and executes an instant `ROLLBACK` if an unhandled Python exception occurs.
+- **Dynamic Parameter Conversion**: Pass standard Python objects (`int`, `float`, `str`, `bytes`, `list[float]`, `None`) to queries; CybouDB binds them safely with type checking.
+- **Thread Safety**: Connection handles are safely synchronized across threads with internal locks.
+- **Unified Stack for AI & Edge**: Replaces the typical combination of SQLite + Chroma + Redis with a single file `.cdb` and no background daemons.
+
+### Example: Unified Workflow in Python
+
+```python
+import cyboudb
+
+# 1. Create or open database
+db = cyboudb.Database.create("app.cdb", pages=512)
+
+# 2. Setup schema
+db.execute("CREATE TABLE workers (id INT32 NOT NULL, name TEXT, completed INT32);")
+db.execute("CREATE UNIQUE INDEX idx_workers_id ON workers (id);")
+db.execute("CREATE QUEUE tasks;")
+db.execute("CREATE STREAM audit_log;")
+db.execute("CREATE CURSOR monitor ON audit_log;")
+
+# 3. Populate workers
+db.execute("INSERT INTO workers VALUES (?, ?, ?);", [1, "Worker Alpha", 0])
+db.enqueue("tasks", "compute_embeddings")
+
+# 4. Atomic transaction across Queue + Table + Stream
+with db.transaction() as tx:
+    task = tx.dequeue("tasks")
+    if task:
+        print(f"Processing task: {task.decode('utf-8')}")
+
+    tx.execute("UPDATE workers SET completed = 1 WHERE id = 1;")
+    tx.append("audit_log", "Worker Alpha completed compute_embeddings")
+    # Automatically COMMITS here; ROLLS BACK on exception
+
+# 5. Query results
+rows = db.query("SELECT id, name, completed FROM workers WHERE id = ?;", [1])
+for row in rows:
+    print(f"Worker #{row[0]}: {row[1]} (completed: {row[2]})")
+
+# 6. Read stream event
+event = db.read_stream("audit_log", "monitor")
+if event:
+    print(f"Stream Event: {event.decode('utf-8')}")
+
+db.close()
+```
+
+---
+
+## 13. Performance & Operational Best Practices
 
 ### 1. Batch Write Operations
 CybouDB enforces durability by issuing two storage flushes (`vfs_sync`) per

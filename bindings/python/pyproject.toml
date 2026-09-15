@@ -1,0 +1,24 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "cyboudb"
+version = "0.5.0"
+description = "Fast, dependency-free embedded database unifying relational tables, vectors, queues, and streams."
+readme = "README.md"
+authors = [{ name = "Stanislav Saveliev" }]
+license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: 3",
+    "Topic :: Database",
+    "Topic :: Database :: Database Engines/Servers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[tool.maturin]
+module-name = "cyboudb"
+features = ["pyo3/extension-module"]
