@@ -634,8 +634,8 @@ the release, not after it.
                                      poisoning after uncertain I/O. Depth-one
                                      catch-up copies only divergent leaves and
                                      the root reads only dirty leaves. General
-                                     level layout is implemented; construction
-                                     and commit of multi-level paths remain
+                                     level layout and creation are implemented;
+                                     open and commit of multi-level paths remain
  9. Scoped DEKs
 10. The signed access manifest
 11. Permissions and scoped keys

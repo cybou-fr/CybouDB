@@ -208,6 +208,8 @@ Levels are stored consecutively inside each copy: all leaves at level zero,
 then their parents, through the single root as the copy's final page.
 `cyboudb_seal_level` is the shared resolver for a level's offset and count, so
 create, open and commit do not acquire separate versions of this arithmetic.
+The creator builds those levels bottom-up and writes identical A and B copies;
+each parent MAC is computed from the child page already written below it.
 
 ### The invariant this establishes
 

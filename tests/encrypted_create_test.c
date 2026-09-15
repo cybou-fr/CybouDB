@@ -37,7 +37,13 @@
 
 #define CROOT_SEAL_EPOCH     8
 #define CROOT_SEAL_DIR_FIRST 24
+#define CROOT_SEAL_DIR_PAGES 32
+#define CROOT_SEAL_TREE_ROOT 40
 #define CROOT_KEM_ROOT       4016
+
+#define SNODE_LEVEL       16
+#define SNODE_CHILD_COUNT 40
+#define SNODE_CRC         4092
 
 #define DB_HANDLE       0
 #define DB_GENERATION   40
@@ -330,13 +336,29 @@ int main(void) {
     }
     vfs_close(h);
 
-    /* --- a file too large for one level of tree ------------------------------- */
+    /* --- the smallest useful multi-level creation shape ---------------------- */
     {
         int64_t big = vfs_create_truncate(VFS_PATH("build/too_big.cdb"), 0);
+        uint64_t big_geo[4], root_page;
         args.handle = big;
-        args.pages = 30000;             /* past 251 leaves */
-        check("a file needing two levels of tree is refused, not half written",
-              cyboudb_encrypted_create(&args) == E_COW_PAGES);
+        args.pages = 30000;             /* 362 leaves, then 2 nodes, then root */
+        {
+            int create_rc = cyboudb_encrypted_create(&args);
+            if (create_rc != 0) printf("multi-level create rc=%d\n", create_rc);
+            check("a file needing two node levels is created", create_rc == 0);
+        }
+        cyboudb_seal_geometry(big_geo, args.pages);
+        vfs_read_at(big, page, PAGE, 3 * PAGE);
+        root_page = rd64(page, CROOT_SEAL_TREE_ROOT);
+        check("its crypto root describes one complete copy",
+              rd64(page, CROOT_SEAL_DIR_PAGES) ==
+                  big_geo[0] + big_geo[1] &&
+              root_page == 5 + big_geo[0] + big_geo[1] - 1);
+        vfs_read_at(big, page, PAGE, root_page * PAGE);
+        check("and the final page is a level-two root over two parents",
+              rd64(page, SNODE_LEVEL) == 2 &&
+              rd64(page, SNODE_CHILD_COUNT) == 2 &&
+              rd32(page, SNODE_CRC) == crc32c(page, SNODE_CRC));
         vfs_close(big);
 #ifdef _WIN32
         _wremove(VFS_PATH("build/too_big.cdb"));

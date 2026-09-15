@@ -17,11 +17,8 @@
 ;      pages 5+S .. 5+2S   seal-tree copy B
 ;      pages 5+2S ..       everything a database actually holds
 ;
-;  **One node, so one level.** A node covers 251 leaves and a leaf covers 83
-;  pages, so this writes files up to 20,833 pages - about 81 MiB - and refuses
-;  anything larger rather than writing a tree it cannot walk. Depth two is
-;  arithmetic this file does not have yet, and a create path that silently
-;  produced a file its own reader could not open would be worse than a refusal.
+;  Nodes are built bottom-up until one root remains. Every level is contiguous
+;  inside each copy, using the layout shared with open and commit.
 ;
 ;  **The root key is drawn here and never leaves.** It is sealed to the public
 ;  key the caller supplies, the keys below it are derived, used, and wiped with
@@ -39,6 +36,7 @@ global cyboudb_encrypted_create
 
 extern os_random
 extern vfs_write_at
+extern vfs_read_at
 extern vfs_sync_file
 extern vfs_resize
 extern crc32c
@@ -119,8 +117,6 @@ cyboudb_encrypted_create:
     mov     [rbp - 56], rax             ; leaves
     mov     rax, [rbp - EC_MAC + 8]
     mov     [rbp - 64], rax             ; nodes
-    cmp     qword [rbp - EC_MAC + 16], 1
-    ja      .too_big                    ; depth two is not written here yet
     mov     qword [rbp - 80], EC_P_DIR
     mov     rax, [rbp - 56]
     add     rax, [rbp - 64]
@@ -196,6 +192,8 @@ cyboudb_encrypted_create:
     mov     [r10 + HDR_CRC], eax
     xor     r12, r12                    ; page 0
     call    write_page
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .write_failed
 
     ; --- page 3: the crypto root ---------------------------------------------
     mov     rbx, [rbp - 48]
@@ -204,7 +202,8 @@ cyboudb_encrypted_create:
     mov     ARG3, [rbp - 80]            ; the first leaf
     mov     ARG4, [rbp - 88]            ; pages in each of the two copies
     mov     rax, [rbp - 80]
-    add     rax, [rbp - 56]             ; the node sits above the leaves
+    add     rax, [rbp - 88]
+    dec     rax                         ; copy A's final page is the root
     PASS_ARG5 rax
     mov     rax, [rbx + ECREATE_PAGES]
     PASS_ARG6 rax
@@ -221,6 +220,8 @@ cyboudb_encrypted_create:
     mov     [r10 + CROOT_CRC], eax
     mov     r12, EC_P_CROOT
     call    write_page
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .write_failed
 
     ; --- page 4: the key slots -----------------------------------------------
     mov     rbx, [rbp - 48]
@@ -262,19 +263,13 @@ cyboudb_encrypted_create:
     jnz     .refused
     mov     r12, EC_P_SLOTS
     call    write_page
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .write_failed
 
-    ; --- the seal directory, and the node above it ---------------------------
+    ; --- the seal directory, and the tree above it ---------------------------
     ;  Every leaf is written empty: a database with no pages sealed yet has a
     ;  directory of entries that are all zero, and that is a fact about it
-    ;  rather than an absence. The node records each leaf's MAC as it goes.
-    mov     rbx, [rbp - 48]
-    lea     ARG1, [rbp - EC_NODE]
-    xor     ARG2, ARG2
-    mov     ARG3, 1                     ; level one: the parent of leaves
-    mov     ARG4, [rbx + ECREATE_GENERATION]
-    mov     rax, [rbx + ECREATE_EPOCH]
-    PASS_ARG5 rax
-    call    cyboudb_seal_node_init
+    ;  rather than an absence.
 
     xor     r13, r13                    ; which leaf
 .leaf:
@@ -288,66 +283,119 @@ cyboudb_encrypted_create:
     mov     ARG4, [rbx + ECREATE_EPOCH]
     call    cyboudb_seal_leaf_init
 
-    lea     ARG1, [rbp - EC_MAC]
-    lea     ARG2, [rbp - EC_TREEKEY]
-    lea     ARG3, [rbp - EC_PAGE]
-    call    cyboudb_seal_leaf_mac
-
-    lea     ARG1, [rbp - EC_NODE]
-    mov     ARG2, r13
-    lea     ARG3, [rbp - EC_MAC]
-    call    cyboudb_seal_node_set_child
-    test    eax, eax
-    jnz     .refused
-
     mov     r12, [rbp - 80]
     add     r12, r13
     call    write_page                  ; copy A
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .write_failed
     add     r12, [rbp - 88]
     call    write_page                  ; copy B starts one stride later
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .write_failed
 
     inc     r13
     jmp     .leaf
 
 .leaves_done:
-    ; the node, and its own MAC, which is what the superblock will publish
-    lea     ARG1, [rbp - EC_NODE]
-    mov     ARG2, SNODE_CRC
-    CALL_ABI crc32c
-    lea     r10, [rbp - EC_NODE]
-    mov     [r10 + SNODE_CRC], eax
+    mov     qword [rbp - 96], 0         ; previous level offset: leaves
+    mov     rax, [rbp - 56]
+    mov     [rbp - 104], rax            ; previous level count
+    mov     [rbp - 112], rax            ; current level follows it
+    mov     qword [rbp - 128], 1        ; parents of leaves
+.tree_level:
+    mov     rax, [rbp - 104]
+    add     rax, CybouDB_SEAL_CHILDREN_PER_NODE - 1
+    xor     rdx, rdx
+    mov     rcx, CybouDB_SEAL_CHILDREN_PER_NODE
+    div     rcx
+    mov     [rbp - 120], rax            ; nodes in this level
+    mov     qword [rbp - 136], 0        ; node index
+.tree_node:
+    mov     r13, [rbp - 136]
+    cmp     r13, [rbp - 120]
+    jae     .tree_level_done
 
+    mov     rbx, [rbp - 48]
+    lea     ARG1, [rbp - EC_NODE]
+    mov     ARG2, r13
+    mov     ARG3, [rbp - 128]
+    mov     ARG4, [rbx + ECREATE_GENERATION]
+    mov     rax, [rbx + ECREATE_EPOCH]
+    PASS_ARG5 rax
+    call    cyboudb_seal_node_init
+
+    mov     qword [rbp - 144], 0        ; slot within this node
+.tree_child:
+    cmp     qword [rbp - 144], CybouDB_SEAL_CHILDREN_PER_NODE
+    jae     .tree_node_ready
+    mov     rax, [rbp - 136]
+    imul    rax, rax, CybouDB_SEAL_CHILDREN_PER_NODE
+    add     rax, [rbp - 144]            ; child index in previous level
+    cmp     rax, [rbp - 104]
+    jae     .tree_node_ready
+
+    add     rax, [rbp - 96]
+    add     rax, [rbp - 80]
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     rbx, [rbp - 48]
+    mov     ARG1, [rbx + ECREATE_HANDLE]
+    lea     ARG2, [rbp - EC_PAGE]
+    mov     ARG3, CybouDB_PAGE_SIZE
+    mov     ARG4, rax
+    call    vfs_read_at
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .write_failed
+
+    lea     ARG1, [rbp - EC_MAC]
+    lea     ARG2, [rbp - EC_TREEKEY]
+    lea     ARG3, [rbp - EC_PAGE]
+    cmp     qword [rbp - 128], 1
+    jne     .child_is_node
+    call    cyboudb_seal_leaf_mac
+    jmp     .child_mac_ready
+.child_is_node:
+    call    cyboudb_seal_node_mac
+.child_mac_ready:
+    lea     ARG1, [rbp - EC_NODE]
+    mov     ARG2, [rbp - 144]
+    lea     ARG3, [rbp - EC_MAC]
+    call    cyboudb_seal_node_set_child
+    test    eax, eax
+    jnz     .refused
+    inc     qword [rbp - 144]
+    jmp     .tree_child
+
+.tree_node_ready:
+    mov     r12, [rbp - 80]
+    add     r12, [rbp - 112]
+    add     r12, [rbp - 136]
+    lea     r14, [rbp - EC_NODE]
+    call    write_buffer_page           ; copy A
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .write_failed
+    add     r12, [rbp - 88]
+    call    write_buffer_page           ; copy B
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .write_failed
+    inc     qword [rbp - 136]
+    jmp     .tree_node
+
+.tree_level_done:
+    cmp     qword [rbp - 120], 1
+    je      .tree_done
+    mov     rax, [rbp - 112]
+    mov     [rbp - 96], rax
+    mov     rax, [rbp - 120]
+    mov     [rbp - 104], rax
+    add     [rbp - 112], rax
+    inc     qword [rbp - 128]
+    jmp     .tree_level
+
+.tree_done:
     lea     ARG1, [rbp - EC_MAC]
     lea     ARG2, [rbp - EC_TREEKEY]
     lea     ARG3, [rbp - EC_NODE]
     call    cyboudb_seal_node_mac
-
-    ; Both copies begin identical. A commit rewrites only the inactive copy,
-    ; so either superblock always retains a complete tree it can authenticate.
-    mov     rbx, [rbp - 48]
-    mov     ARG1, [rbx + ECREATE_HANDLE]
-    lea     ARG2, [rbp - EC_NODE]
-    mov     ARG3, CybouDB_PAGE_SIZE
-    mov     rax, [rbp - 80]
-    add     rax, [rbp - 56]
-    shl     rax, CybouDB_PAGE_SHIFT
-    mov     ARG4, rax
-    call    vfs_write_at
-    cmp     rax, CybouDB_PAGE_SIZE
-    jne     .write_failed
-
-    mov     rbx, [rbp - 48]
-    mov     ARG1, [rbx + ECREATE_HANDLE]
-    lea     ARG2, [rbp - EC_NODE]
-    mov     ARG3, CybouDB_PAGE_SIZE
-    mov     rax, [rbp - 80]
-    add     rax, [rbp - 56]
-    add     rax, [rbp - 88]
-    shl     rax, CybouDB_PAGE_SHIFT
-    mov     ARG4, rax
-    call    vfs_write_at
-    cmp     rax, CybouDB_PAGE_SIZE
-    jne     .write_failed
 
     ; --- the superblocks, which publish all of it ----------------------------
     call    zero_page
@@ -400,8 +448,12 @@ cyboudb_encrypted_create:
 
     mov     r12, CybouDB_SB_PAGE_A
     call    write_page
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .write_failed
     mov     r12, CybouDB_SB_PAGE_B
     call    write_page
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .write_failed
 
     ; --- the file is as long as it says it is --------------------------------
     ;  Without this the file ends after the metadata, and the first page a
@@ -488,6 +540,24 @@ write_page:
     mov     rax, [r10 - 48]             ; args
     mov     ARG1, [rax + ECREATE_HANDLE]
     lea     ARG2, [r10 - EC_PAGE]
+    mov     ARG3, CybouDB_PAGE_SIZE
+    mov     rax, r12
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     ARG4, rax
+    call    vfs_write_at
+    mov     rsp, rbp
+    pop     rbp
+    ret
+
+; r12 is the page number and r14 is a page-sized buffer.
+write_buffer_page:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 32 + SHADOW_SPACE
+    mov     r10, [rbp]
+    mov     rax, [r10 - 48]
+    mov     ARG1, [rax + ECREATE_HANDLE]
+    mov     ARG2, r14
     mov     ARG3, CybouDB_PAGE_SIZE
     mov     rax, r12
     shl     rax, CybouDB_PAGE_SHIFT
