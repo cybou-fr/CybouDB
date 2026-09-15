@@ -28,6 +28,7 @@ static int checks, failures, sync_calls, fail_sync;
 static int read_calls, write_calls, nodes_differ;
 static int dirty_frames;
 static uint64_t stub_leaves = 1;
+static uint64_t differ_page;            /* a page the two copies disagree on */
 
 static uint64_t rd64(const uint8_t *p, int off) {
     uint64_t v; memcpy(&v, p + off, 8); return v;
@@ -53,6 +54,7 @@ uint64_t cyboudb_pcache_dirty_at(const uint8_t *cache, uint64_t slot) {
 int64_t vfs_read_at(int64_t h, void *buf, uint64_t bytes, uint64_t offset) {
     (void)h; read_calls++; memset(buf, 0, (size_t)bytes);
     if (nodes_differ && offset == 6 * PAGE) ((uint8_t *)buf)[64] = 1;
+    if (differ_page && offset == differ_page * PAGE) ((uint8_t *)buf)[64] = 1;
     return (int64_t)bytes;
 }
 int64_t vfs_write_at(int64_t h, const void *buf, uint64_t bytes,
@@ -168,6 +170,12 @@ int main(void) {
     check("a deep commit driven by the journal succeeds",
           db_encrypted_commit(ctx) == 0);
     journalled_writes = write_calls;
+    /* Two node writes and one superblock. Nothing else: the two copies of the
+       tree already agreed, so the catch-up compared the root pair and stopped.
+       Copying the copy would have been five reads and five writes here, and
+       75,904 of each on a file of six million pages. */
+    check("and copies nothing when the two copies already agree",
+          write_calls == 3);
 
     /* And when the flush could not record them, every leaf is a path. The
        transaction is still published; it just costs what it used to. */
@@ -181,6 +189,21 @@ int main(void) {
           db_encrypted_commit(ctx) == 0);
     check("by walking every leaf instead of the ones it could not name",
           write_calls > journalled_writes);
+
+    /* And when they do not agree, it descends to the difference rather than
+       to the bottom. The inactive root differs; the child it names does not. */
+    fresh(ctx); fail_sync = 0;
+    wr64(ctx, DB_SEAL_LEAVES, 3);
+    wr64(ctx, DB_SEAL_PAGES, 5);
+    wr64(ctx, DB_SEAL_DEPTH, 2);
+    wr64(ctx, DB_DIRTY_LEAF_N, 1);
+    wr64(ctx, DB_DIRTY_LEAVES, 2);
+    differ_page = 14;                   /* the inactive copy's root */
+    check("a divergent root is caught up too",
+          db_encrypted_commit(ctx) == 0);
+    check("by copying the nodes that differ and not the copy",
+          write_calls == journalled_writes + 1);
+    differ_page = 0;
     stub_leaves = 1;
 
     printf("\nencrypted commit engine suite: %d checks, %d failed\n",

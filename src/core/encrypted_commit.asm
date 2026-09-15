@@ -72,15 +72,25 @@ section .text
 ;   [rbp - 8768] the inactive node
 ;   [rbp - 12864] the active node used to find divergent leaves
 ;   [rbp - 12928] bitmap of leaves dirtied by this transaction
-;   [rbp - 17024] active child used to prove an inactive child changed
+;   [rbp - 17024] the catch-up worklist: nodes known to differ between the two
+;                 copies, not yet descended into
+;   [rbp - 17152] its counters
 %define CM_MAC     128
 %define CM_KMAC    384
 %define CM_PAGE    4608
 %define CM_NODE    8768
 %define CM_ACTIVE_NODE 12864
 %define CM_DIRTY_LEAVES 12928
-%define CM_CHILD_ACTIVE 17024
-%define CM_FRAME   17088
+%define CM_WORK    17024
+%define CybouDB_SEAL_CATCHUP_MAX 256        ; entries the worklist holds
+%define CB_N       17152
+%define CB_LEVEL   17144
+%define CB_INDEX   17136
+%define CB_SLOT    17128
+%define CB_CHILD   17120
+%define CB_LAY     17112
+%define CB_CLAY    17096
+%define CM_FRAME   17152
 
 ; =============================================================================
 ;  db_encrypted_commit(ctx) -> int
@@ -411,10 +421,23 @@ db_encrypted_commit:
     xor     eax, eax
     jmp     .done
 
-; A deeper tree is uncommon enough that correctness is the first useful
-; implementation: catch the inactive copy up in full, apply dirty leaves, then
-; deterministically rebuild every internal level bottom-up. Later work can
-; replace the full-copy step with authenticated divergent-subtree copying.
+; A deeper tree publishes the same way, and pays the same way: only what
+; changed. Two things have to change, and they are different problems.
+;
+; The first is that the inactive copy can be two generations behind, so it has
+; to be caught up before this transaction is applied on top of it. Copying it
+; whole is correct and costs the tree - 75,904 pages for a file of six million.
+; What it actually owes is the difference, and a MAC tree says where the
+; difference is: if a node's bytes match its opposite number in the other copy,
+; every page beneath it matches too, because the node's child MACs cover them.
+; So the catch-up descends from the root and stops at the first node that is
+; already equal. In steady state that is the root's second child.
+;
+; The second is the rebuild, and that is what the dirty-leaf journal is for:
+; one path per changed leaf rather than one pass per level.
+;
+; Both have a fallback, and both fall back the same way: do the exhaustive
+; thing. Being slow is a cost, and being wrong is not an option.
 .multi_commit:
     mov     rax, [rbx + DB_SEAL_DIR]
     mov     [rbp - 72], rax
@@ -428,6 +451,174 @@ db_encrypted_commit:
 .multi_bases_ready:
     mov     [rbp - 80], rax
 
+    ; --- the catch-up, by difference -----------------------------------------
+    ; The root is the one node that always has to be looked at, because it is
+    ; the only one nothing above it can vouch for.
+    lea     r10, [rbp - CM_WORK]
+    mov     rax, [rbx + DB_SEAL_DEPTH]
+    mov     [r10], rax
+    mov     qword [r10 + 8], 0
+    mov     qword [rbp - CB_N], 1
+
+.catchup:
+    cmp     qword [rbp - CB_N], 0
+    je      .multi_copy_done
+    dec     qword [rbp - CB_N]
+    mov     rcx, [rbp - CB_N]
+    shl     rcx, 4
+    lea     r10, [rbp - CM_WORK]
+    mov     rax, [r10 + rcx]
+    mov     [rbp - CB_LEVEL], rax
+    mov     rax, [r10 + rcx + 8]
+    mov     [rbp - CB_INDEX], rax
+
+    mov     rbx, [rbp - 40]
+    lea     ARG1, [rbp - CB_LAY]
+    mov     ARG2, [rbx + DB_PAGES]
+    mov     ARG3, [rbp - CB_LEVEL]
+    call    cyboudb_seal_level
+    test    eax, eax
+    jnz     .failed
+    mov     rbx, [rbp - 40]
+    lea     ARG1, [rbp - CB_CLAY]
+    mov     ARG2, [rbx + DB_PAGES]
+    mov     rax, [rbp - CB_LEVEL]
+    dec     rax
+    mov     ARG3, rax
+    call    cyboudb_seal_level
+    test    eax, eax
+    jnz     .failed
+
+    mov     rbx, [rbp - 40]
+    mov     rax, [rbp - 72]
+    add     rax, [rbp - CB_LAY + SLAYOUT_OFFSET]
+    add     rax, [rbp - CB_INDEX]
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     ARG1, [rbx + DB_HANDLE]
+    lea     ARG2, [rbp - CM_ACTIVE_NODE]
+    mov     ARG3, CybouDB_PAGE_SIZE
+    mov     ARG4, rax
+    call    vfs_read_at
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .failed
+
+    mov     rbx, [rbp - 40]
+    mov     rax, [rbp - 80]
+    add     rax, [rbp - CB_LAY + SLAYOUT_OFFSET]
+    add     rax, [rbp - CB_INDEX]
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     ARG1, [rbx + DB_HANDLE]
+    lea     ARG2, [rbp - CM_NODE]
+    mov     ARG3, CybouDB_PAGE_SIZE
+    mov     ARG4, rax
+    call    vfs_read_at
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .failed
+
+    ; Equal here means equal everywhere below. This is the line that makes the
+    ; catch-up proportional to what changed rather than to the tree.
+    lea     r10, [rbp - CM_ACTIVE_NODE]
+    lea     r11, [rbp - CM_NODE]
+    xor     rcx, rcx
+.catchup_compare:
+    mov     rax, [r10 + rcx]
+    cmp     rax, [r11 + rcx]
+    jne     .catchup_differs
+    add     rcx, 8
+    cmp     rcx, CybouDB_PAGE_SIZE
+    jb      .catchup_compare
+    jmp     .catchup
+
+.catchup_differs:
+    mov     qword [rbp - CB_SLOT], 0
+.catchup_child:
+    mov     rcx, [rbp - CB_SLOT]
+    cmp     rcx, CybouDB_SEAL_CHILDREN_PER_NODE
+    jae     .catchup_node
+    mov     rax, [rbp - CB_INDEX]
+    imul    rax, rax, CybouDB_SEAL_CHILDREN_PER_NODE
+    jo      .failed
+    add     rax, rcx
+    cmp     rax, [rbp - CB_CLAY + SLAYOUT_COUNT]
+    jae     .catchup_node               ; the level below ends here
+    mov     [rbp - CB_CHILD], rax
+
+    shl     rcx, 4
+    lea     r10, [rbp - CM_ACTIVE_NODE + SNODE_CHILDREN]
+    lea     r11, [rbp - CM_NODE + SNODE_CHILDREN]
+    mov     rdx, [r10 + rcx]
+    xor     rdx, [r11 + rcx]
+    mov     r8, [r10 + rcx + 8]
+    xor     r8, [r11 + rcx + 8]
+    or      rdx, r8
+    jz      .catchup_next_child
+
+    cmp     qword [rbp - CB_LEVEL], 1
+    jne     .catchup_push
+
+    ; a leaf, and leaves are copied rather than descended into
+    mov     rbx, [rbp - 40]
+    mov     rax, [rbp - 72]
+    add     rax, [rbp - CB_CHILD]
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     ARG1, [rbx + DB_HANDLE]
+    lea     ARG2, [rbp - CM_PAGE]
+    mov     ARG3, CybouDB_PAGE_SIZE
+    mov     ARG4, rax
+    call    vfs_read_at
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .failed
+    mov     rbx, [rbp - 40]
+    mov     rax, [rbp - 80]
+    add     rax, [rbp - CB_CHILD]
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     ARG1, [rbx + DB_HANDLE]
+    lea     ARG2, [rbp - CM_PAGE]
+    mov     ARG3, CybouDB_PAGE_SIZE
+    mov     ARG4, rax
+    call    vfs_write_at
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .failed
+    jmp     .catchup_next_child
+
+.catchup_push:
+    mov     rcx, [rbp - CB_N]
+    cmp     rcx, CybouDB_SEAL_CATCHUP_MAX
+    jae     .multi_copy_all             ; more divergence than fits: copy it all
+    shl     rcx, 4
+    lea     r10, [rbp - CM_WORK]
+    mov     rax, [rbp - CB_LEVEL]
+    dec     rax
+    mov     [r10 + rcx], rax
+    mov     rax, [rbp - CB_CHILD]
+    mov     [r10 + rcx + 8], rax
+    inc     qword [rbp - CB_N]
+
+.catchup_next_child:
+    inc     qword [rbp - CB_SLOT]
+    jmp     .catchup_child
+
+.catchup_node:
+    ; The node itself. Its children are either equal already or on the
+    ; worklist, so copying it now cannot publish a MAC over a page that is
+    ; still behind: nothing is published until the barrier, and the worklist
+    ; empties before then.
+    mov     rbx, [rbp - 40]
+    mov     rax, [rbp - 80]
+    add     rax, [rbp - CB_LAY + SLAYOUT_OFFSET]
+    add     rax, [rbp - CB_INDEX]
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     ARG1, [rbx + DB_HANDLE]
+    lea     ARG2, [rbp - CM_ACTIVE_NODE]
+    mov     ARG3, CybouDB_PAGE_SIZE
+    mov     ARG4, rax
+    call    vfs_write_at
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .failed
+    jmp     .catchup
+
+.multi_copy_all:
+    mov     rbx, [rbp - 40]
     xor     r13, r13
 .multi_copy:
     cmp     r13, [rbx + DB_SEAL_PAGES]
