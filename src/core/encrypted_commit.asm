@@ -44,6 +44,7 @@ extern vfs_write_at
 extern vfs_sync_file
 extern crc32c
 extern cyboudb_seal_leaf_mac
+extern cyboudb_seal_level
 extern cyboudb_seal_node_init
 extern cyboudb_seal_node_set_child
 extern cyboudb_seal_node_mac
@@ -463,69 +464,77 @@ db_encrypted_commit:
     mov     rax, [rbx + DB_GENERATION]
     inc     rax
     mov     [rbp - 56], rax
-    mov     qword [rbp - 96], 0         ; previous-level offset
-    mov     rax, [rbx + DB_SEAL_LEAVES]
-    mov     [rbp - 104], rax            ; previous-level count
-    mov     [rbp - 112], rax            ; current-level offset
     mov     qword [rbp - 88], 1         ; current level
 .multi_level:
-    mov     rax, [rbp - 104]
-    add     rax, CybouDB_SEAL_CHILDREN_PER_NODE - 1
+    lea     ARG1, [rbp - 192]           ; current level layout
+    mov     ARG2, [rbx + DB_PAGES]
+    mov     ARG3, [rbp - 88]
+    call    cyboudb_seal_level
+    test    eax, eax
+    jnz     .failed
+    lea     ARG1, [rbp - 208]           ; child level layout
+    mov     rbx, [rbp - 40]
+    mov     ARG2, [rbx + DB_PAGES]
+    mov     rax, [rbp - 88]
+    dec     rax
+    mov     ARG3, rax
+    call    cyboudb_seal_level
+    test    eax, eax
+    jnz     .failed
+
+    mov     qword [rbp - 144], 0        ; dirty-journal position
+.multi_path:
+    mov     rbx, [rbp - 40]
+    mov     r12, [rbp - 144]
+    cmp     r12, [rbx + DB_DIRTY_LEAF_N]
+    jae     .multi_level_done
+    mov     r13, [rbx + DB_DIRTY_LEAVES + r12 * 8]
+
+    mov     rcx, [rbp - 88]
+    mov     rax, 1
+.multi_power:
+    imul    rax, rax, CybouDB_SEAL_CHILDREN_PER_NODE
+    jo      .failed
+    dec     rcx
+    jnz     .multi_power
+    mov     [rbp - 120], rax
+    mov     rcx, rax
+    mov     rax, r13
+    xor     rdx, rdx
+    div     rcx
+    mov     [rbp - 136], rax            ; parent index
+
+    mov     rax, [rbp - 120]
     xor     rdx, rdx
     mov     rcx, CybouDB_SEAL_CHILDREN_PER_NODE
     div     rcx
-    mov     [rbp - 136], rax            ; nodes in current level
-    mov     qword [rbp - 144], 0
-.multi_node:
-    mov     r12, [rbp - 144]
-    cmp     r12, [rbp - 136]
-    jae     .multi_level_done
-    ; Start from the authenticated active parent. Its child MACs remain the
-    ; authority for every child that the transaction did not actually change.
-    mov     rax, [rbp - 72]
-    add     rax, [rbp - 112]
-    add     rax, r12
+    mov     rcx, rax
+    mov     rax, r13
+    xor     rdx, rdx
+    div     rcx
+    mov     [rbp - 168], rax            ; child index at previous level
+    xor     rdx, rdx
+    mov     rcx, CybouDB_SEAL_CHILDREN_PER_NODE
+    div     rcx
+    mov     [rbp - 152], rdx            ; slot in parent
+
+    mov     rax, [rbp - 80]
+    add     rax, [rbp - 192]
+    add     rax, [rbp - 136]
     shl     rax, CybouDB_PAGE_SHIFT
     mov     ARG1, [rbx + DB_HANDLE]
-    lea     ARG2, [rbp - CM_ACTIVE_NODE]
+    lea     ARG2, [rbp - CM_NODE]
     mov     ARG3, CybouDB_PAGE_SIZE
     mov     ARG4, rax
     call    vfs_read_at
     cmp     rax, CybouDB_PAGE_SIZE
     jne     .failed
-    lea     r10, [rbp - CM_ACTIVE_NODE]
-    lea     r11, [rbp - CM_NODE]
-    xor     rcx, rcx
-.multi_parent_copy:
-    mov     rax, [r10 + rcx]
-    mov     [r11 + rcx], rax
-    add     rcx, 8
-    cmp     rcx, CybouDB_PAGE_SIZE
-    jb      .multi_parent_copy
-    mov     qword [rbp - 160], 0        ; no changed child yet
-    mov     qword [rbp - 152], 0
-.multi_child:
-    cmp     qword [rbp - 152], CybouDB_SEAL_CHILDREN_PER_NODE
-    jae     .multi_node_ready
-    mov     rax, [rbp - 144]
-    imul    rax, rax, CybouDB_SEAL_CHILDREN_PER_NODE
-    add     rax, [rbp - 152]
-    cmp     rax, [rbp - 104]
-    jae     .multi_node_ready
-    add     rax, [rbp - 96]
-    mov     [rbp - 168], rax            ; child page within either copy
-    add     rax, [rbp - 72]
-    shl     rax, CybouDB_PAGE_SHIFT
-    mov     rbx, [rbp - 40]
-    mov     ARG1, [rbx + DB_HANDLE]
-    lea     ARG2, [rbp - CM_CHILD_ACTIVE]
-    mov     ARG3, CybouDB_PAGE_SIZE
-    mov     ARG4, rax
-    call    vfs_read_at
-    cmp     rax, CybouDB_PAGE_SIZE
-    jne     .failed
-    mov     rax, [rbp - 168]
-    add     rax, [rbp - 80]
+    mov     rax, [rbp - 56]
+    mov     [rbp - CM_NODE + SNODE_GENERATION], rax
+
+    mov     rax, [rbp - 80]
+    add     rax, [rbp - 208]
+    add     rax, [rbp - 168]
     shl     rax, CybouDB_PAGE_SHIFT
     mov     rbx, [rbp - 40]
     mov     ARG1, [rbx + DB_HANDLE]
@@ -535,25 +544,6 @@ db_encrypted_commit:
     call    vfs_read_at
     cmp     rax, CybouDB_PAGE_SIZE
     jne     .failed
-
-    lea     r10, [rbp - CM_CHILD_ACTIVE]
-    lea     r11, [rbp - CM_PAGE]
-    xor     rcx, rcx
-.multi_child_compare:
-    mov     rax, [r10 + rcx]
-    xor     rax, [r11 + rcx]
-    jnz     .multi_child_changed
-    add     rcx, 8
-    cmp     rcx, CybouDB_PAGE_SIZE
-    jb      .multi_child_compare
-    jmp     .multi_next_child
-.multi_child_changed:
-    cmp     qword [rbp - 160], 0
-    jne     .multi_generation_set
-    mov     rax, [rbp - 56]
-    mov     [rbp - CM_NODE + SNODE_GENERATION], rax
-    mov     qword [rbp - 160], 1
-.multi_generation_set:
     lea     ARG1, [rbp - CM_MAC]
     lea     ARG2, [rbx + DB_TREE_KEY]
     lea     ARG3, [rbp - CM_PAGE]
@@ -570,13 +560,10 @@ db_encrypted_commit:
     call    cyboudb_seal_node_set_child
     test    eax, eax
     jnz     .failed
-.multi_next_child:
-    inc     qword [rbp - 152]
-    jmp     .multi_child
-.multi_node_ready:
+
     mov     rax, [rbp - 80]
-    add     rax, [rbp - 112]
-    add     rax, [rbp - 144]
+    add     rax, [rbp - 192]
+    add     rax, [rbp - 136]
     shl     rax, CybouDB_PAGE_SHIFT
     mov     rbx, [rbp - 40]
     mov     ARG1, [rbx + DB_HANDLE]
@@ -587,17 +574,25 @@ db_encrypted_commit:
     cmp     rax, CybouDB_PAGE_SIZE
     jne     .failed
     inc     qword [rbp - 144]
-    jmp     .multi_node
+    jmp     .multi_path
 .multi_level_done:
-    cmp     qword [rbp - 136], 1
-    je      .multi_tree_done
-    mov     rax, [rbp - 112]
-    mov     [rbp - 96], rax
-    mov     rax, [rbp - 136]
-    mov     [rbp - 104], rax
-    add     [rbp - 112], rax
     inc     qword [rbp - 88]
-    jmp     .multi_level
+    mov     rbx, [rbp - 40]
+    mov     rax, [rbp - 88]
+    cmp     rax, [rbx + DB_SEAL_DEPTH]
+    jbe     .multi_level
+
+    mov     rax, [rbp - 80]
+    add     rax, [rbx + DB_SEAL_PAGES]
+    dec     rax
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     ARG1, [rbx + DB_HANDLE]
+    lea     ARG2, [rbp - CM_NODE]
+    mov     ARG3, CybouDB_PAGE_SIZE
+    mov     ARG4, rax
+    call    vfs_read_at
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .failed
 .multi_tree_done:
     mov     rbx, [rbp - 40]
     lea     ARG1, [rbp - CM_MAC]

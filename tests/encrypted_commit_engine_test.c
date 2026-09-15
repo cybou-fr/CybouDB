@@ -59,6 +59,9 @@ void cyboudb_seal_leaf_mac(uint8_t *out, const uint8_t *key,
                            const uint8_t *page) {
     (void)key; (void)page; memset(out, 0x11, 16);
 }
+int cyboudb_seal_level(uint64_t *out, uint64_t total_pages, uint64_t level) {
+    (void)total_pages; out[0] = level; out[1] = 1; return 0;
+}
 void cyboudb_seal_node_init(uint8_t *page, uint64_t index, uint64_t level,
                             uint64_t generation, uint64_t epoch) {
     (void)index; (void)level; (void)generation; (void)epoch;
