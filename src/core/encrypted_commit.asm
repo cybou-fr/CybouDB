@@ -270,6 +270,10 @@ db_encrypted_commit:
     jmp     .done
 .failed:
     mov     rbx, [rbp - 40]
+    ; As in the plain commit path, an I/O failure can mean either generation
+    ; reached durable storage. Continuing through this handle could then build
+    ; on a generation different from the one a reopen would select.
+    mov     qword [rbx + DB_MODE], -1   ; outcome uncertain; reopen required
     mov     qword [rbx + DB_ENC_ERROR], CybouDB_E_SYNC
     mov     eax, CybouDB_E_SYNC
 

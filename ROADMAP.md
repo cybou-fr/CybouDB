@@ -622,16 +622,17 @@ the release, not after it.
                                      second door are done; the English
                                      wordlist is not, and
                                      docs/RECOVERY_PHRASE.md says why
- 7. Authenticated page encryption     the primitives are done - seal
-                                     directory, keyed tree, page seal. The
-                                     chain is proved to compose by
-                                     tests/encrypted_file_test.c, which
-                                     writes a real file and reopens it with a
-                                     private key. What remains is the engine:
-                                     cyboudb_open, the real superblock and
-                                     allocation map, and page access through
-                                     the cache
- 8. Crash-safe encrypted transactions
+ 7. Authenticated page encryption     internal engine path done: encrypted
+                                     create, private-key attach, page cache,
+                                     sealed reads/writes, commit and reopen.
+                                     What remains is integration into normal
+                                     cyboudb_open and the allocator/catalog
+                                     path rather than the internal test API
+ 8. Crash-safe encrypted transactions depth-1 publication is implemented with
+                                     two barriers, inactive-superblock update,
+                                     and handle poisoning after uncertain I/O.
+                                     Multi-level trees and changed-path-only
+                                     MAC updates remain
  9. Scoped DEKs
 10. The signed access manifest
 11. Permissions and scoped keys
@@ -652,7 +653,7 @@ the structure does not change - page 0, the superblocks, the allocation map and
 every page layout stay where they are, and what changes is a transformation
 applied to a page's bytes between the file and the engine. v2 would have been
 the answer if page bodies had to shrink to hold a tag; a seal directory in
-pages of its own avoids that, at a flat 2% of the file. The reasoning, the
+pages of its own avoids that, at about 2.4% of the file. The reasoning, the
 rejected alternatives and what each field of the authenticated data prevents
 are in [docs/ENCRYPTED_FORMAT.md](docs/ENCRYPTED_FORMAT.md).
 
@@ -661,7 +662,8 @@ themselves authenticated**, by a keyed tree whose root sits in the superblock.
 Without it an adversary restores an old page *and* its old seal entry, and the
 AEAD accepts the pair because the pair is genuine - it is simply last week's.
 The tree makes the rule one sentence - *what is current is exactly what a valid
-superblock says is current* - at a depth of 2 for any file up to 24 GiB.
+superblock says is current*. With 83 entries per leaf it has depth 2 up to
+about 20 GiB and depth 3 at 24 GiB.
 
 It also found the expensive part of this release, and it is not the
 cryptography: the engine reads every page as a pointer into one shared mapping,
