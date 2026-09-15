@@ -116,6 +116,11 @@ active one. The depth-one implementation compares the child MACs in the two
 authenticated nodes and copies only leaves that differ. Publication never
 changes the copy named by the live superblock.
 
+The transaction records a bitmap of leaves represented by its dirty cache
+frames before flush invalidates those frames. The new root node inherits the
+active node and recomputes only those child MACs, so pages in one leaf cost one
+leaf read no matter how many of them changed.
+
 **One entry per page: 24-byte nonce, 16-byte tag, and the 8-byte generation
 under which the page was sealed: 48 bytes.** With a 64-byte page header and
 the CRC in its usual place, an entry page covers

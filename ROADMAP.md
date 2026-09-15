@@ -632,9 +632,9 @@ the release, not after it.
                                      paired seal-tree copies, two barriers,
                                      inactive-superblock update, and handle
                                      poisoning after uncertain I/O. Depth-one
-                                     catch-up copies only divergent leaves;
-                                     multi-level paths and incremental root-MAC
-                                     rebuilding remain
+                                     catch-up copies only divergent leaves and
+                                     the root reads only dirty leaves. General
+                                     multi-level authentication paths remain
  9. Scoped DEKs
 10. The signed access manifest
 11. Permissions and scoped keys

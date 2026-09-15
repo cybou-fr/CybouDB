@@ -37,6 +37,8 @@ default rel
 global db_encrypted_commit
 
 extern db_pages_flush
+extern cyboudb_pcache_frames
+extern cyboudb_pcache_dirty_at
 extern vfs_read_at
 extern vfs_write_at
 extern vfs_sync_file
@@ -66,12 +68,14 @@ section .text
 ;   [rbp - 4608] a page to read leaves and build the superblock in
 ;   [rbp - 8768] the inactive node
 ;   [rbp - 12864] the active node used to find divergent leaves
+;   [rbp - 12928] bitmap of leaves dirtied by this transaction
 %define CM_MAC     128
 %define CM_KMAC    384
 %define CM_PAGE    4608
 %define CM_NODE    8768
 %define CM_ACTIVE_NODE 12864
-%define CM_FRAME   12928
+%define CM_DIRTY_LEAVES 12928
+%define CM_FRAME   12992
 
 ; =============================================================================
 ;  db_encrypted_commit(ctx) -> int
@@ -87,6 +91,39 @@ db_encrypted_commit:
 
     cmp     qword [rbx + DB_CACHE], 0
     je      .not_encrypted
+
+    ; Record which leaf MACs the flush will change before it invalidates dirty
+    ; frames. A depth-one tree has at most 251 leaves, so four qwords cover it.
+    xor     eax, eax
+    mov     [rbp - CM_DIRTY_LEAVES], rax
+    mov     [rbp - CM_DIRTY_LEAVES + 8], rax
+    mov     [rbp - CM_DIRTY_LEAVES + 16], rax
+    mov     [rbp - CM_DIRTY_LEAVES + 24], rax
+    mov     ARG1, [rbx + DB_CACHE]
+    call    cyboudb_pcache_frames
+    mov     [rbp - 88], rax
+    xor     r12, r12
+.dirty_slot:
+    cmp     r12, [rbp - 88]
+    jae     .dirty_slots_done
+    mov     rbx, [rbp - 40]
+    mov     ARG1, [rbx + DB_CACHE]
+    mov     ARG2, r12
+    call    cyboudb_pcache_dirty_at
+    cmp     rax, -1
+    je      .next_dirty_slot
+    xor     rdx, rdx
+    mov     rcx, CybouDB_SEAL_ENTRIES_PER_LEAF
+    div     rcx
+    mov     rbx, [rbp - 40]
+    cmp     rax, [rbx + DB_SEAL_LEAVES]
+    jae     .failed
+    bts     qword [rbp - CM_DIRTY_LEAVES], rax
+.next_dirty_slot:
+    inc     r12
+    jmp     .dirty_slot
+.dirty_slots_done:
+    mov     rbx, [rbp - 40]
 
     ; The inactive copy may be two generations behind. Its root node and the
     ; active root tell us exactly which leaves differ, so only those leaves are
@@ -177,10 +214,7 @@ db_encrypted_commit:
     test    eax, eax
     jnz     .failed
 
-    ; --- 3: the node above the leaves ----------------------------------------
-    ;  Rebuilt from the leaves as they now stand on the disk rather than from
-    ;  anything remembered: what the node must attest to is what a reader will
-    ;  find, and the only way to be sure of that is to read it.
+    ; --- 3: the node above the changed leaves --------------------------------
     mov     rbx, [rbp - 40]
     mov     rax, [rbp - 80]
     add     rax, [rbx + DB_SEAL_LEAVES]
@@ -190,19 +224,29 @@ db_encrypted_commit:
     inc     rax
     mov     [rbp - 56], rax             ; the generation being published
 
-    lea     ARG1, [rbp - CM_NODE]
-    xor     ARG2, ARG2
-    mov     ARG3, 1
-    mov     ARG4, [rbp - 56]
-    mov     rax, [rbx + DB_SEAL_EPOCH]
-    PASS_ARG5 rax
-    call    cyboudb_seal_node_init
+    ; The inactive leaves now equal the active set plus this transaction. Start
+    ; from the authenticated active node and replace only child MACs named by
+    ; the bitmap captured above.
+    lea     r10, [rbp - CM_ACTIVE_NODE]
+    lea     r11, [rbp - CM_NODE]
+    xor     rcx, rcx
+.copy_node:
+    mov     rax, [r10 + rcx]
+    mov     [r11 + rcx], rax
+    add     rcx, 8
+    cmp     rcx, CybouDB_PAGE_SIZE
+    jb      .copy_node
+    mov     rax, [rbp - 56]
+    mov     [r11 + SNODE_GENERATION], rax
 
     xor     r13, r13
 .leaf:
     mov     rbx, [rbp - 40]
     cmp     r13, [rbx + DB_SEAL_LEAVES]
     jae     .leaves_done
+
+    bt      qword [rbp - CM_DIRTY_LEAVES], r13
+    jnc     .next_leaf
 
     mov     rax, [rbp - 80]
     add     rax, r13
@@ -228,6 +272,7 @@ db_encrypted_commit:
     test    eax, eax
     jnz     .failed
 
+.next_leaf:
     inc     r13
     jmp     .leaf
 

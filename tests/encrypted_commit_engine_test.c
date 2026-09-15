@@ -17,6 +17,7 @@
 
 static int checks, failures, sync_calls, fail_sync;
 static int read_calls, write_calls, nodes_differ;
+static int dirty_frames;
 
 static uint64_t rd64(const uint8_t *p, int off) {
     uint64_t v; memcpy(&v, p + off, 8); return v;
@@ -33,6 +34,12 @@ static void check(const char *what, int ok) {
 int db_encrypted_commit(uint8_t *ctx);
 
 int db_pages_flush(uint8_t *ctx) { (void)ctx; return 0; }
+uint64_t cyboudb_pcache_frames(const uint8_t *cache) {
+    (void)cache; return (uint64_t)dirty_frames;
+}
+uint64_t cyboudb_pcache_dirty_at(const uint8_t *cache, uint64_t slot) {
+    (void)cache; return slot < (uint64_t)dirty_frames ? slot + 1 : UINT64_MAX;
+}
 int64_t vfs_read_at(int64_t h, void *buf, uint64_t bytes, uint64_t offset) {
     (void)h; read_calls++; memset(buf, 0, (size_t)bytes);
     if (nodes_differ && offset == 6 * PAGE) ((uint8_t *)buf)[64] = 1;
@@ -100,14 +107,21 @@ int main(void) {
           rd64(ctx, DB_GENERATION) == 8 && rd64(ctx, DB_SB_PAGE) == 2);
     check("without poisoning the handle", rd64(ctx, DB_MODE) == 1);
     check("and does not copy an unchanged inactive leaf",
-          read_calls == 4 && write_calls == 2);
+          read_calls == 3 && write_calls == 2);
 
     fresh(ctx); fail_sync = 0; nodes_differ = 1;
     check("a commit with a divergent leaf succeeds",
           db_encrypted_commit(ctx) == 0);
     check("and catches up exactly that leaf",
-          read_calls == 5 && write_calls == 3);
+          read_calls == 4 && write_calls == 3);
     nodes_differ = 0;
+
+    fresh(ctx); fail_sync = 0; dirty_frames = 2;
+    check("two dirty pages in one leaf commit",
+          db_encrypted_commit(ctx) == 0);
+    check("and cause one leaf read for one child MAC update",
+          read_calls == 4 && write_calls == 2);
+    dirty_frames = 0;
 
     fresh(ctx); fail_sync = 1;
     check("a failure at the first barrier reports sync",
