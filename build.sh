@@ -82,6 +82,15 @@ if [ "${1:-}" = "--bench" ]; then
     SOURCES="benchmarks/bench_harness.asm $BASE_SOURCES"
 fi
 
+if [ "${1:-}" = "--cache-probe" ]; then
+    mkdir -p build
+    CC=gcc
+    command -v gcc >/dev/null 2>&1 || CC=clang
+    "$CC" -O2 -Wall -Wextra benchmarks/cache_probe.c -o build/cache_probe
+    echo "Build OK -> build/cache_probe"
+    exit 0
+fi
+
 if [ "${1:-}" = "--sqlite-bench" ]; then
     mkdir -p build
     CC=gcc

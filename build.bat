@@ -255,6 +255,7 @@ if "%~1"=="--lease-probe" goto :build_lib
 if "%~1"=="--for-experiment" goto :build_lib
 if "%~1"=="--c-tests" goto :build_c_tests
 if "%~1"=="--io-spike" goto :build_io_spike
+if "%~1"=="--cache-probe" goto :build_cache_probe
 if "%~1"=="--crypto-probe" goto :build_crypto_probe
 if "%~1"=="--crypto-tests" goto :build_crypto_tests
 
@@ -468,6 +469,23 @@ goto :fail
 
 rem The 0.7 crypto probe is plain C: MSVC needs no switch for the AES-NI
 rem and PCLMULQDQ intrinsics, and the probe asks CPUID before using them.
+rem The cache shape probe simulates an index structure and nothing else:
+rem no engine, no I/O, no crypto.
+:build_cache_probe
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist "!VSWHERE!" (
+    for /f "usebackq tokens=*" %%i in (`"!VSWHERE!" -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do if exist "%%i\VC\Auxiliary\Build\vcvars64.bat" set "VSPATH=%%i"
+)
+if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
+    call "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+    cl.exe /O2 /W3 /nologo benchmarks\cache_probe.c /Febuild\cache_probe.exe /Fobuild\cache_probe.obj
+    if errorlevel 1 goto :fail
+    echo Build OK -^> build\cache_probe.exe
+    goto :eof
+)
+echo error: the cache probe needs the MSVC C compiler.
+goto :fail
+
 :build_crypto_probe
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if exist "!VSWHERE!" (
