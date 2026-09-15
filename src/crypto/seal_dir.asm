@@ -43,6 +43,7 @@ BITS 64
 default rel
 
 global cyboudb_seal_geometry
+global cyboudb_seal_level
 global cyboudb_seal_leaf_init
 global cyboudb_seal_node_init
 global cyboudb_seal_entry
@@ -142,6 +143,58 @@ cyboudb_seal_geometry:
     mov     rbx, [rbp - 8]
     mov     r12, [rbp - 16]
     FRAME_END
+    ret
+
+; =============================================================================
+;  cyboudb_seal_level(out, total_pages, level) -> SEAL_OK or SEAL_E_FIELDS
+;
+;  Answers where one level starts inside either seal-tree copy and how many
+;  pages it contains. Level zero is the leaf array. Higher levels follow it in
+;  order, so the root is always the last page of the copy.
+; =============================================================================
+cyboudb_seal_level:
+    mov     r10, ARG1                   ; output pair
+    mov     r11, ARG2                   ; protected pages
+    mov     r9, ARG3                    ; requested level
+
+    test    r11, r11
+    jz      .level_bad
+    mov     rax, r11
+    add     rax, CybouDB_SEAL_ENTRIES_PER_LEAF - 1
+    jc      .level_bad
+    xor     rdx, rdx
+    mov     rcx, CybouDB_SEAL_ENTRIES_PER_LEAF
+    div     rcx                         ; leaf count
+    xor     r8, r8                      ; offset of this level
+    test    r9, r9
+    jz      .level_found
+
+    mov     r11, rax                    ; children of level one
+    mov     rcx, 1                      ; level being calculated
+.level_up:
+    add     r8, r11
+    jc      .level_bad
+    mov     rax, r11
+    add     rax, CybouDB_SEAL_CHILDREN_PER_NODE - 1
+    jc      .level_bad
+    xor     rdx, rdx
+    mov     r11, CybouDB_SEAL_CHILDREN_PER_NODE
+    div     r11
+    cmp     rcx, r9
+    je      .level_found
+    cmp     rax, 1
+    jbe     .level_bad                  ; there is no level above the root
+    mov     r11, rax
+    inc     rcx
+    jmp     .level_up
+
+.level_found:
+    mov     [r10 + SLAYOUT_OFFSET], r8
+    mov     [r10 + SLAYOUT_COUNT], rax
+    xor     eax, eax
+    ret
+.level_bad:
+    mov     eax, SEAL_E_FIELDS
     ret
 
 ; =============================================================================

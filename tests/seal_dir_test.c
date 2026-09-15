@@ -52,6 +52,8 @@
 #define SGEO_NODES  1
 #define SGEO_DEPTH  2
 #define SGEO_PAGES  3
+#define SLAYOUT_OFFSET 0
+#define SLAYOUT_COUNT  1
 
 #define SEAL_OK         0
 #define SEAL_E_MAGIC    1
@@ -62,6 +64,7 @@
 #define SEAL_E_MAC      6
 
 void cyboudb_seal_geometry(uint64_t *out, uint64_t total_pages);
+int cyboudb_seal_level(uint64_t *out, uint64_t total_pages, uint64_t level);
 void cyboudb_seal_leaf_init(uint8_t *page, uint64_t leaf_index,
                             uint64_t generation, uint64_t seal_epoch);
 void cyboudb_seal_node_init(uint8_t *page, uint64_t node_index, uint64_t level,
@@ -167,6 +170,39 @@ int main(void) {
               geo[SGEO_LEAVES] == 1);
         cyboudb_seal_geometry(geo, ENTRIES_PER_LEAF + 1);
         check("while one more page needs two", geo[SGEO_LEAVES] == 2);
+
+        {
+            uint64_t level[2];
+            check("level zero locates all leaves",
+                  cyboudb_seal_level(level, 6300000, 0) == SEAL_OK &&
+                  level[SLAYOUT_OFFSET] == 0 &&
+                  level[SLAYOUT_COUNT] == 75904);
+            check("level one follows the leaves",
+                  cyboudb_seal_level(level, 6300000, 1) == SEAL_OK &&
+                  level[SLAYOUT_OFFSET] == 75904 &&
+                  level[SLAYOUT_COUNT] == 303);
+            check("level two follows level one",
+                  cyboudb_seal_level(level, 6300000, 2) == SEAL_OK &&
+                  level[SLAYOUT_OFFSET] == 76207 &&
+                  level[SLAYOUT_COUNT] == 2);
+            check("the root is the final page of either copy",
+                  cyboudb_seal_level(level, 6300000, 3) == SEAL_OK &&
+                  level[SLAYOUT_OFFSET] == 76209 &&
+                  level[SLAYOUT_COUNT] == 1);
+            check("and a level above the root is refused",
+                  cyboudb_seal_level(level, 6300000, 4) == SEAL_E_FIELDS);
+            check("zero protected pages have no seal-tree layout",
+                  cyboudb_seal_level(level, 0, 0) == SEAL_E_FIELDS);
+            check("20,833 pages end at a single level-one root",
+                  cyboudb_seal_level(level, 20833, 1) == SEAL_OK &&
+                  level[SLAYOUT_COUNT] == 1 &&
+                  cyboudb_seal_level(level, 20833, 2) == SEAL_E_FIELDS);
+            check("and one more page introduces a level-two root",
+                  cyboudb_seal_level(level, 20834, 1) == SEAL_OK &&
+                  level[SLAYOUT_COUNT] == 2 &&
+                  cyboudb_seal_level(level, 20834, 2) == SEAL_OK &&
+                  level[SLAYOUT_COUNT] == 1);
+        }
     }
 
     /* --- a leaf, and which pages it speaks for ------------------------------ */

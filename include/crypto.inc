@@ -394,6 +394,12 @@
 %define SGEO_PAGES     24               ; both copies, which is what a file pays
 %define CybouDB_SGEO_SIZE 32
 
+; One level within a single seal-tree copy. Level zero is the leaves; level one
+; is their parents, and the last level contains the single root.
+%define SLAYOUT_OFFSET 0
+%define SLAYOUT_COUNT  8
+%define CybouDB_SLAYOUT_SIZE 16
+
 ; --- what a malformed seal page is refused with ------------------------------
 %define SEAL_OK          0
 %define SEAL_E_MAGIC     1

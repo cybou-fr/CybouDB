@@ -204,6 +204,11 @@ holds `(4092 - 64) / 16 = 251` child MACs, so one node covers
 updates at most *k* leaves, at most *k* nodes, one root and the superblock:
 bounded, and independent of how large the database is.
 
+Levels are stored consecutively inside each copy: all leaves at level zero,
+then their parents, through the single root as the copy's final page.
+`cyboudb_seal_level` is the shared resolver for a level's offset and count, so
+create, open and commit do not acquire separate versions of this arithmetic.
+
 ### The invariant this establishes
 
 > **What is current is exactly what a valid superblock says is current.**
