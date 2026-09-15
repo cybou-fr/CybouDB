@@ -32,6 +32,13 @@
 #define SB_TOTAL_PAGES     16
 #define SB_ALLOC_PAGES     24
 #define SB_FEATURE_ROOT    56
+#define SB_BITMAP_ROOT     48
+#define MAP_MAGIC_VALUE    0x424D5141u
+#define MAP_TOTAL          24
+#define MAP_ALLOC          32
+#define MAP_SPAN           40
+#define MAP_LEAF_PAGES     ((4092 - 64) * 4)
+#define PTYPE_MAP          2
 #define SB_SEAL_ROOT       64
 #define SB_SEAL_TAG        104
 #define SB_CRC             124
@@ -144,6 +151,7 @@ int main(void) {
     struct ecreate_args args;
     uint8_t *cache_mem, *cache_raw, *frame;
     uint64_t cache_bytes, geo[4];
+    uint64_t map_k, p_croot, p_dir, first_usable;
     int64_t h;
 
     printf("CybouDB encrypted create test\n\n");
@@ -184,16 +192,25 @@ int main(void) {
           rd32(page, HDR_CRC) == crc32c(page, HDR_CRC));
 
     cyboudb_seal_geometry(geo, 1000);
-    vfs_read_at(h, page, PAGE, 3 * PAGE);
+    /* The canonical layout: the allocation map keeps the position every
+       CybouDB file gives it, and the crypto pages follow it. */
+    map_k = (1000 + MAP_LEAF_PAGES - 1) / MAP_LEAF_PAGES;
+    p_croot = 3 + 2 * map_k;
+    p_dir = p_croot + 2;
+    first_usable = p_dir + geo[3];
+    vfs_read_at(h, page, PAGE, p_croot * PAGE);
     check("the crypto root says where the directory is and how big",
-          rd64(page, CROOT_SEAL_DIR_FIRST) == 5 &&
+          rd64(page, CROOT_SEAL_DIR_FIRST) == p_dir &&
           rd64(page, 32) == geo[0] + geo[1] &&
-          rd64(page, CROOT_KEM_ROOT) == 4);
+          rd64(page, CROOT_KEM_ROOT) == p_croot + 1);
 
     vfs_read_at(h, page, PAGE, 1 * PAGE);
     check("the superblock publishes the first usable page past the metadata",
-          rd64(page, SB_ALLOC_PAGES) == 5 + geo[3]);
-    check("and names the crypto root", rd64(page, SB_FEATURE_ROOT) == 3);
+          rd64(page, SB_ALLOC_PAGES) == first_usable);
+    check("and names the crypto root",
+          rd64(page, SB_FEATURE_ROOT) == p_croot);
+    check("and the allocation map, where every CybouDB file keeps it",
+          rd64(page, SB_BITMAP_ROOT) == 3);
     {
         uint8_t zero[16];
         memset(zero, 0, 16);
@@ -212,7 +229,42 @@ int main(void) {
     check("the private key opens what the engine wrote",
           db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 32) == 0);
     check("and the context knows the epoch and the directory",
-          rd64(ctx, DB_SEAL_EPOCH) == 1 && rd64(ctx, DB_SEAL_DIR) == 5);
+          rd64(ctx, DB_SEAL_EPOCH) == 1 && rd64(ctx, DB_SEAL_DIR) == p_dir);
+
+    /* --- and the allocation map is a page, sealed like any other ------------ */
+    {
+        uint8_t *frame = db_page_resolve(ctx, 3);
+        check("the allocation map opens through the seal directory",
+              frame != NULL && rd32(frame, 0) == MAP_MAGIC_VALUE);
+        if (frame) {
+            check("and says what the creator laid out",
+                  rd64(frame, MAP_TOTAL) == 1000 &&
+                  rd64(frame, MAP_ALLOC) == first_usable &&
+                  rd64(frame, MAP_SPAN) == 0);
+        }
+        frame = db_page_resolve(ctx, 3 + map_k);
+        check("and so does the copy beside it",
+              frame != NULL && rd32(frame, 0) == MAP_MAGIC_VALUE);
+    }
+    {
+        /* A map page an attacker rewrites is a map page that does not open:
+           it is under the same seal tree as everything else. */
+        uint8_t forged[PAGE];
+        int64_t hf = h;
+        vfs_read_at(hf, forged, PAGE, 3 * PAGE);
+        forged[10] ^= 0x80;
+        vfs_write_at(hf, forged, PAGE, 3 * PAGE);
+        memset(ctx, 0, sizeof ctx);
+        memcpy(ctx + DB_HANDLE, &h, 8);
+        db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 32);
+        check("a rewritten allocation map does not open",
+              db_page_resolve(ctx, 3) == NULL);
+        forged[10] ^= 0x80;
+        vfs_write_at(hf, forged, PAGE, 3 * PAGE);
+        vfs_sync_file(hf);
+    }
+    vfs_close(h);
+    h = vfs_open_rw(path, 0);
 
     {
         memset(ctx, 0, sizeof ctx);
@@ -224,7 +276,6 @@ int main(void) {
     /* --- a page written into it, and read back after a reopen ---------------- */
     {
         uint8_t *frame;
-        uint64_t first_usable = 5 + geo[3]; /* both seal-tree copies */
 
         memset(ctx, 0, sizeof ctx);
         memcpy(ctx + DB_HANDLE, &h, 8);
@@ -294,7 +345,7 @@ int main(void) {
         check("and commits back into seal copy A",
               db_encrypted_commit(ctx) == 0 &&
               rd64(ctx, DB_GENERATION) == 3 && rd64(ctx, DB_SB_PAGE) == 1 &&
-              rd64(ctx, DB_SEAL_DIR) == 5);
+              rd64(ctx, DB_SEAL_DIR) == p_dir);
         vfs_close(h);
 
         h = vfs_open_rw(path, 0);
@@ -343,6 +394,7 @@ int main(void) {
     {
         int64_t big = vfs_create_truncate(VFS_PATH("build/too_big.cdb"), 0);
         uint64_t big_geo[4], root_page, big_cache_bytes;
+        uint64_t big_k, big_croot, big_dir;
         uint8_t *big_cache_mem, *big_cache_raw;
         args.handle = big;
         args.pages = 30000;             /* 362 leaves, then 2 nodes, then root */
@@ -352,12 +404,17 @@ int main(void) {
             check("a file needing two node levels is created", create_rc == 0);
         }
         cyboudb_seal_geometry(big_geo, args.pages);
-        vfs_read_at(big, page, PAGE, 3 * PAGE);
+        /* Two map leaves this time, so everything after them moves by one. */
+        big_k = (args.pages + MAP_LEAF_PAGES - 1) / MAP_LEAF_PAGES;
+        big_croot = 3 + 2 * big_k;
+        big_dir = big_croot + 2;
+        check("a file large enough to need a second map leaf", big_k == 2);
+        vfs_read_at(big, page, PAGE, big_croot * PAGE);
         root_page = rd64(page, CROOT_SEAL_TREE_ROOT);
         check("its crypto root describes one complete copy",
               rd64(page, CROOT_SEAL_DIR_PAGES) ==
                   big_geo[0] + big_geo[1] &&
-              root_page == 5 + big_geo[0] + big_geo[1] - 1);
+              root_page == big_dir + big_geo[0] + big_geo[1] - 1);
         vfs_read_at(big, page, PAGE, root_page * PAGE);
         check("and the final page is a level-two root over two parents",
               rd64(page, SNODE_LEVEL) == 2 &&

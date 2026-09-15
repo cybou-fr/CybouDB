@@ -17,7 +17,7 @@ set OBJDIR=build
 set INC=-Iinclude/
 
 rem Modules: portable core + SQL engine + Windows platform layer
-set BASE_SOURCES=src\core\database.asm src\core\cow.asm src\core\bitmap.asm src\core\catalog.asm src\core\pax.asm src\core\varlen.asm src\core\zonemap.asm src\core\index.asm src\core\queue.asm src\core\stream.asm src\core\compress.asm src\core\vector_arena.asm src\core\checksum.asm src\sql\tokenizer.asm src\sql\parser.asm src\sql\binder.asm src\sql\executor.asm src\sql\select_cursor.asm src\sql\join_cursor.asm src\sql\order_executor.asm src\sql\zone_predicate.asm src\sql\result_rows.asm src\sql\kernels_scalar.asm src\sql\kernels_avx2.asm src\sql\for_kernels_avx2.asm src\sql\vector_kernels_scalar.asm src\sql\vector_kernels_avx2.asm src\sql\vector_topk.asm src\sql\bmi2.asm src\sql\popcount.asm src\platform\windows\os_win.asm
+set BASE_SOURCES=src\core\database.asm src\core\cow.asm src\core\bitmap.asm src\core\bitmap_leaf.asm src\core\catalog.asm src\core\pax.asm src\core\varlen.asm src\core\zonemap.asm src\core\index.asm src\core\queue.asm src\core\stream.asm src\core\compress.asm src\core\vector_arena.asm src\core\checksum.asm src\sql\tokenizer.asm src\sql\parser.asm src\sql\binder.asm src\sql\executor.asm src\sql\select_cursor.asm src\sql\join_cursor.asm src\sql\order_executor.asm src\sql\zone_predicate.asm src\sql\result_rows.asm src\sql\kernels_scalar.asm src\sql\kernels_avx2.asm src\sql\for_kernels_avx2.asm src\sql\vector_kernels_scalar.asm src\sql\vector_kernels_avx2.asm src\sql\vector_topk.asm src\sql\bmi2.asm src\sql\popcount.asm src\platform\windows\os_win.asm
 set SOURCES=src\main.asm src\console\repl.asm !BASE_SOURCES!
 if "%~1"=="--audit" (
     set OUT=build\cyboudb_audit.exe
@@ -40,19 +40,19 @@ if "%~1"=="--no-leases" (
 if "%~1"=="--core-tests" (
     set OUT=build\cow_harness.exe
     set OBJDIR=build\core-tests
-    set SOURCES=tests\cow_harness.asm src\core\database.asm src\core\cow.asm src\core\bitmap.asm src\core\catalog.asm src\core\pax.asm src\core\varlen.asm src\core\zonemap.asm src\core\index.asm src\core\queue.asm src\core\stream.asm src\core\compress.asm src\core\checksum.asm src\platform\windows\os_win.asm
+    set SOURCES=tests\cow_harness.asm src\core\database.asm src\core\cow.asm src\core\bitmap.asm src\core\bitmap_leaf.asm src\core\catalog.asm src\core\pax.asm src\core\varlen.asm src\core\zonemap.asm src\core\index.asm src\core\queue.asm src\core\stream.asm src\core\compress.asm src\core\checksum.asm src\platform\windows\os_win.asm
 )
 
 if "%~1"=="--varlen-tests" (
     set OUT=build\varlen_harness.exe
     set OBJDIR=build\varlen-tests
-    set SOURCES=tests\varlen_harness.asm src\core\database.asm src\core\cow.asm src\core\bitmap.asm src\core\catalog.asm src\core\pax.asm src\core\varlen.asm src\core\zonemap.asm src\core\index.asm src\core\queue.asm src\core\stream.asm src\core\compress.asm src\core\checksum.asm src\platform\windows\os_win.asm
+    set SOURCES=tests\varlen_harness.asm src\core\database.asm src\core\cow.asm src\core\bitmap.asm src\core\bitmap_leaf.asm src\core\catalog.asm src\core\pax.asm src\core\varlen.asm src\core\zonemap.asm src\core\index.asm src\core\queue.asm src\core\stream.asm src\core\compress.asm src\core\checksum.asm src\platform\windows\os_win.asm
 )
 
 if "%~1"=="--varlen-fragmentation-tests" (
     set OUT=build\varlen_fragmentation_harness.exe
     set OBJDIR=build\varlen-fragmentation-tests
-    set SOURCES=tests\varlen_fragmentation_harness.asm src\core\database.asm src\core\cow.asm src\core\bitmap.asm src\core\catalog.asm src\core\pax.asm src\core\varlen.asm src\core\zonemap.asm src\core\index.asm src\core\queue.asm src\core\stream.asm src\core\compress.asm src\core\checksum.asm src\platform\windows\os_win.asm
+    set SOURCES=tests\varlen_fragmentation_harness.asm src\core\database.asm src\core\cow.asm src\core\bitmap.asm src\core\bitmap_leaf.asm src\core\catalog.asm src\core\pax.asm src\core\varlen.asm src\core\zonemap.asm src\core\index.asm src\core\queue.asm src\core\stream.asm src\core\compress.asm src\core\checksum.asm src\platform\windows\os_win.asm
 )
 
 if "%~1"=="--sql-tests" (
@@ -490,6 +490,8 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     cl.exe /O2 /W3 /nologo tests\encrypted_open_test.c build\encrypted_open.obj build\page_resolve.obj build\page_cache.obj build\key_slots.obj build\crypto_root.obj build\kdf.obj build\kmac.obj build\seal_dir.obj build\page_seal.obj build\aead.obj build\chacha20.obj build\poly1305.obj build\keccak.obj build\mlkem.obj build\mlkem_poly.obj build\mlkem_encode.obj build\mlkem_sample.obj build\checksum_crypto.obj build\os_efile.obj /Febuild\encrypted_open_test.exe /Fobuild\encrypted_open_test.obj /link kernel32.lib
     if errorlevel 1 goto :fail
     echo Build OK -^> build\encrypted_open_test.exe
+        "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\core\bitmap_leaf.asm -o build\bitmap_leaf.obj
+    if errorlevel 1 goto :fail
     "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\core\encrypted_create.asm -o build\encrypted_create.obj
     if errorlevel 1 goto :fail
     "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\core\encrypted_commit.asm -o build\encrypted_commit.obj
@@ -497,7 +499,7 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     cl.exe /O2 /W3 /nologo tests\encrypted_commit_engine_test.c build\encrypted_commit.obj /Febuild\encrypted_commit_engine_test.exe /Fobuild\encrypted_commit_engine_test.obj
     if errorlevel 1 goto :fail
     echo Build OK -^> build\encrypted_commit_engine_test.exe
-    cl.exe /O2 /W3 /nologo tests\encrypted_create_test.c build\encrypted_create.obj build\encrypted_commit.obj build\encrypted_open.obj build\page_resolve.obj build\page_cache.obj build\key_slots.obj build\crypto_root.obj build\kdf.obj build\kmac.obj build\seal_dir.obj build\page_seal.obj build\aead.obj build\chacha20.obj build\poly1305.obj build\keccak.obj build\mlkem.obj build\mlkem_poly.obj build\mlkem_encode.obj build\mlkem_sample.obj build\checksum_crypto.obj build\os_efile.obj /Febuild\encrypted_create_test.exe /Fobuild\encrypted_create_test.obj /link kernel32.lib
+    cl.exe /O2 /W3 /nologo tests\encrypted_create_test.c build\encrypted_create.obj build\bitmap_leaf.obj build\encrypted_commit.obj build\encrypted_open.obj build\page_resolve.obj build\page_cache.obj build\key_slots.obj build\crypto_root.obj build\kdf.obj build\kmac.obj build\seal_dir.obj build\page_seal.obj build\aead.obj build\chacha20.obj build\poly1305.obj build\keccak.obj build\mlkem.obj build\mlkem_poly.obj build\mlkem_encode.obj build\mlkem_sample.obj build\checksum_crypto.obj build\os_efile.obj /Febuild\encrypted_create_test.exe /Fobuild\encrypted_create_test.obj /link kernel32.lib
     if errorlevel 1 goto :fail
     echo Build OK -^> build\encrypted_create_test.exe
     goto :eof

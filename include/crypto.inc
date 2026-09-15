@@ -97,6 +97,18 @@
 %define PSEAL_EPOCH      56
 %define CybouDB_PSEAL_ARGS_SIZE 64
 
+; --- what a page says it is --------------------------------------------------
+;  page_type goes into the associated data and nowhere else: it is not written
+;  into the page and it is not stored beside it. A reader recovers it from the
+;  nonce, so a page presented as a different kind of page fails to open rather
+;  than being opened and then questioned. docs/ENCRYPTED_FORMAT.md, Decision 5.
+;
+;  The values are a registry, and this is the whole of it. They are small
+;  integers because nothing else needs them to be anything else, and zero is
+;  left out so that an uninitialised field is not a valid kind.
+%define CybouDB_PTYPE_DATA   1          ; anything the allocator handed out
+%define CybouDB_PTYPE_MAP    2          ; a leaf of the allocation map
+
 
 ; --- KMAC256, one shot ------------------------------------------------------
 ;  NIST SP 800-185. Seven values, so they arrive as a struct like the AEAD's.

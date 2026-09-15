@@ -39,11 +39,13 @@
 BITS 64
 default rel
 extern vfs_reclaim_safe
+extern db_bitmap_leaf_build
+extern db_bitmap_leaves
 extern crc32c
 extern db_catalog_validate
 global db_bitmap_init, db_bitmap_validate, db_bitmap_seal
 global db_bitmap_alloc, db_bitmap_alloc_run, db_bitmap_is_payload
-global db_bitmap_candidate_payload, db_bitmap_leaves
+global db_bitmap_candidate_payload
 global db_bitmap_retire, db_bitmap_recount, db_bitmap_headroom
 global db_bitmap_is_fresh, db_bitmap_deep
 global cs_record, cs_reset, cs_release, cs_audit, cs_leaf_explained
@@ -181,15 +183,6 @@ db_dirty_reset:
     mov     qword [r10 + DB_RUN_OVF], 0
     ret
 
-; db_bitmap_leaves(total_pages) -> RAX = map pages per copy in the span layout.
-db_bitmap_leaves:
-    mov     rax, ARG1
-    add     rax, CybouDB_MAP_LEAF_PAGES - 1
-    xor     edx, edx
-    mov     r10, CybouDB_MAP_LEAF_PAGES
-    div     r10
-    ret
-
 ; map_locate(ARG1 = mapping base, ARG2 = first map page, ARG3 = page id,
 ;            ARG4 = nonzero in the span layout)
 ;   -> RAX = address of the leaf holding that page, RDX = index inside it
@@ -299,71 +292,25 @@ db_bitmap_init:
     add     rax, CybouDB_MIN_PAGES
     mov     [rbp - 48], rax             ; header, superblocks and both copies
     mov     qword [rbp - 56], 0
-.header:
-    mov     ARG1, [rbp - 8]
-    mov     ARG2, CybouDB_MIN_PAGES
-    mov     ARG3, [rbp - 56]
-    call    leaf_addr
-    mov     [rbp - 32], rax
-    mov     ARG1, rax
-    call    zero_page
-    mov     r10, [rbp - 32]
-    mov     dword [r10 + MAP_MAGIC], CybouDB_MAP_MAGIC
-    mov     dword [r10 + MAP_HEADER_SIZE], MAP_DATA
-    mov     qword [r10 + MAP_GENERATION], 1
-    mov     rax, [rbp - 16]
-    mov     [r10 + MAP_TOTAL], rax
-    ; A leaf is identified by where it sits, so MAP_PAGE_ID stays zero and a
-    ; copy from the other half of the pair is byte-identical when unchanged.
+.span_leaf:
     mov     rax, [rbp - 56]
     xor     edx, edx
     div     qword [rbp - 40]            ; rdx = index of this leaf in its copy
-    mov     rax, rdx
-    imul    rax, CybouDB_MAP_LEAF_PAGES
-    mov     [r10 + MAP_SPAN], rax
-    test    rdx, rdx
-    jnz     .next_header
-    mov     rax, [rbp - 48]
-    mov     [r10 + MAP_ALLOC], rax      ; the high-water lives in leaf zero
-.next_header:
-    inc     qword [rbp - 56]
-    mov     rax, [rbp - 40]
-    shl     rax, 1
-    cmp     [rbp - 56], rax
-    jb      .header
-
-    mov     qword [rbp - 56], 0
-.reserve_copy:
-    mov     ARG1, [rbp - 8]
-    mov     ARG2, CybouDB_MIN_PAGES
-    mov     ARG3, [rbp - 56]
-    imul    ARG3, [rbp - 40]
-    call    leaf_addr
-    mov     r10, rax                    ; leaf zero of this copy
-    xor     r8d, r8d
-    mov     r9d, MAP_METADATA
-.reserve:
-    call    map_set
-    inc     r8
-    cmp     r8, [rbp - 48]
-    jb      .reserve
-    inc     qword [rbp - 56]
-    cmp     qword [rbp - 56], 2
-    jb      .reserve_copy
-
-    mov     qword [rbp - 56], 0
-.seal:
+    mov     [rbp - 64], rdx
     mov     ARG1, [rbp - 8]
     mov     ARG2, CybouDB_MIN_PAGES
     mov     ARG3, [rbp - 56]
     call    leaf_addr
     mov     ARG1, rax
-    call    seal_leaf
+    mov     ARG2, [rbp - 64]
+    mov     ARG3, [rbp - 16]
+    mov     ARG4, [rbp - 48]
+    call    db_bitmap_leaf_build
     inc     qword [rbp - 56]
     mov     rax, [rbp - 40]
     shl     rax, 1
     cmp     [rbp - 56], rax
-    jb      .seal
+    jb      .span_leaf
     mov     rax, [rbp - 48]
     FRAME_END
     ret

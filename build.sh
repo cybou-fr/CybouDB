@@ -19,7 +19,7 @@ OBJDIR=build
 INC="-Iinclude/"
 
 # Modules: portable core + SQL engine + Linux platform layer
-BASE_SOURCES="src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/queue.asm src/core/stream.asm src/core/compress.asm src/core/vector_arena.asm src/core/checksum.asm src/sql/tokenizer.asm src/sql/parser.asm src/sql/binder.asm src/sql/executor.asm src/sql/select_cursor.asm src/sql/join_cursor.asm src/sql/order_executor.asm src/sql/zone_predicate.asm src/sql/result_rows.asm src/sql/kernels_scalar.asm src/sql/kernels_avx2.asm src/sql/for_kernels_avx2.asm src/sql/vector_kernels_scalar.asm src/sql/vector_kernels_avx2.asm src/sql/vector_topk.asm src/sql/bmi2.asm src/sql/popcount.asm src/platform/linux/os_posix.asm"
+BASE_SOURCES="src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/bitmap_leaf.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/queue.asm src/core/stream.asm src/core/compress.asm src/core/vector_arena.asm src/core/checksum.asm src/sql/tokenizer.asm src/sql/parser.asm src/sql/binder.asm src/sql/executor.asm src/sql/select_cursor.asm src/sql/join_cursor.asm src/sql/order_executor.asm src/sql/zone_predicate.asm src/sql/result_rows.asm src/sql/kernels_scalar.asm src/sql/kernels_avx2.asm src/sql/for_kernels_avx2.asm src/sql/vector_kernels_scalar.asm src/sql/vector_kernels_avx2.asm src/sql/vector_topk.asm src/sql/bmi2.asm src/sql/popcount.asm src/platform/linux/os_posix.asm"
 SOURCES="src/main.asm src/console/repl.asm $BASE_SOURCES"
 
 if [ "${1:-}" = "--audit" ]; then
@@ -43,19 +43,19 @@ fi
 if [ "${1:-}" = "--core-tests" ]; then
     OUT=build/cow_harness
     OBJDIR=build/core-tests
-    SOURCES="tests/cow_harness.asm src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/queue.asm src/core/stream.asm src/core/compress.asm src/core/checksum.asm src/platform/linux/os_posix.asm"
+    SOURCES="tests/cow_harness.asm src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/bitmap_leaf.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/queue.asm src/core/stream.asm src/core/compress.asm src/core/checksum.asm src/platform/linux/os_posix.asm"
 fi
 
 if [ "${1:-}" = "--varlen-tests" ]; then
     OUT=build/varlen_harness
     OBJDIR=build/varlen-tests
-    SOURCES="tests/varlen_harness.asm src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/queue.asm src/core/stream.asm src/core/compress.asm src/core/checksum.asm src/platform/linux/os_posix.asm"
+    SOURCES="tests/varlen_harness.asm src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/bitmap_leaf.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/queue.asm src/core/stream.asm src/core/compress.asm src/core/checksum.asm src/platform/linux/os_posix.asm"
 fi
 
 if [ "${1:-}" = "--varlen-fragmentation-tests" ]; then
     OUT=build/varlen_fragmentation_harness
     OBJDIR=build/varlen-fragmentation-tests
-    SOURCES="tests/varlen_fragmentation_harness.asm src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/queue.asm src/core/stream.asm src/core/compress.asm src/core/checksum.asm src/platform/linux/os_posix.asm"
+    SOURCES="tests/varlen_fragmentation_harness.asm src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/bitmap_leaf.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/queue.asm src/core/stream.asm src/core/compress.asm src/core/checksum.asm src/platform/linux/os_posix.asm"
 fi
 
 if [ "${1:-}" = "--sql-tests" ]; then
@@ -317,13 +317,15 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         echo "Build OK -> build/encrypted_open_test"
         nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/core/encrypted_create.asm \
             -o build/encrypted_create.o
+        nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/core/bitmap_leaf.asm \
+            -o build/bitmap_leaf.o
         nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/core/encrypted_commit.asm \
             -o build/encrypted_commit.o
         "$CC" -O2 -no-pie -Wall -Wextra tests/encrypted_commit_engine_test.c \
             build/encrypted_commit.o -o build/encrypted_commit_engine_test
         echo "Build OK -> build/encrypted_commit_engine_test"
         "$CC" -O2 -no-pie -Wall -Wextra tests/encrypted_create_test.c \
-            build/encrypted_create.o build/encrypted_commit.o build/encrypted_open.o build/page_resolve.o build/page_cache.o build/key_slots.o build/crypto_root.o build/kdf.o build/kmac.o build/seal_dir.o build/page_seal.o build/aead.o build/chacha20.o build/poly1305.o build/keccak.o build/mlkem.o build/mlkem_poly.o build/mlkem_encode.o build/mlkem_sample.o build/checksum_crypto.o build/os_efile.o \
+            build/encrypted_create.o build/bitmap_leaf.o build/encrypted_commit.o build/encrypted_open.o build/page_resolve.o build/page_cache.o build/key_slots.o build/crypto_root.o build/kdf.o build/kmac.o build/seal_dir.o build/page_seal.o build/aead.o build/chacha20.o build/poly1305.o build/keccak.o build/mlkem.o build/mlkem_poly.o build/mlkem_encode.o build/mlkem_sample.o build/checksum_crypto.o build/os_efile.o \
             -o build/encrypted_create_test
         echo "Build OK -> build/encrypted_create_test"
     fi

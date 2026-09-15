@@ -7,15 +7,31 @@
 ;  writes, and between them they are the first pair in this project that can
 ;  make a file no other build can read without a key.
 ;
-;  The layout it chooses, once, so that attach does not have to guess:
+;  The layout it chooses, once, so that attach does not have to guess. With
+;  K = ceil(pages / CybouDB_MAP_LEAF_PAGES) and S the pages of one seal-tree
+;  copy:
 ;
 ;      page 0              the header, plaintext: identity and the bit
 ;      pages 1, 2          superblock A and B, plaintext with a tag
-;      page 3              the crypto root
-;      page 4              the key slots
-;      pages 5 .. 5+S      seal-tree copy A: S leaves and one node
-;      pages 5+S .. 5+2S   seal-tree copy B
-;      pages 5+2S ..       everything a database actually holds
+;      pages 3 .. 3+K      allocation map copy A
+;      pages 3+K .. 3+2K   allocation map copy B
+;      page 3+2K           the crypto root
+;      page 3+2K+1         the key slots
+;      pages 3+2K+2 ..     seal-tree copy A: S pages, then copy B
+;      then                everything a database actually holds
+;
+;  The allocation map keeps the position the plain format gives it, and the
+;  crypto pages move to make room. That is the way round it has to be: the map
+;  is at pages 3 and 3+K in every CybouDB file and the allocator's validator
+;  says so in as many words, while the crypto root is reached through a pointer
+;  in the superblock and the key slots and the directory through pointers in
+;  the crypto root. Moving what is pointed at costs nothing; moving what is
+;  fixed would be a second allocation-map format.
+;
+;  The map pages are sealed, like every other page and for the same reasons.
+;  They are the only pages this creator seals: a fresh database has nothing
+;  else in it, and a map nobody can move, replay or forge is what makes the
+;  allocator above it mean anything.
 ;
 ;  Nodes are built bottom-up until one root remains. Every level is contiguous
 ;  inside each copy, using the layout shared with open and commit.
@@ -47,6 +63,10 @@ extern cyboudb_kem_key_id
 extern cyboudb_kem_seal_root
 extern cyboudb_kdf
 extern cyboudb_seal_geometry
+extern cyboudb_seal_entry
+extern cyboudb_page_seal
+extern db_bitmap_leaves
+extern db_bitmap_leaf_build
 extern cyboudb_seal_leaf_init
 extern cyboudb_seal_leaf_mac
 extern cyboudb_seal_node_init
@@ -76,7 +96,10 @@ section .text
 ;   [rbp - 704] the KMAC context
 ;   [rbp - 1920] one key slot, 1176 bytes
 ;   [rbp - 6080] a page to build in
-;   [rbp - 10240] a second page: the node, while the leaves are written
+;   [rbp - 10240] a second page: the node, while the leaves are written, and
+;                 the allocation map leaf while it is sealed into one
+;   [rbp - 10304] the page numbers this file's geometry works out to
+;   [rbp - 10368] the arguments one page seal takes
 %define EC_ROOTKEY   160
 %define EC_METAKEY   224
 %define EC_PAGEKEY   288
@@ -87,11 +110,15 @@ section .text
 %define EC_SLOT      1920
 %define EC_PAGE      6080
 %define EC_NODE      10240
-%define EC_FRAME     10304
-
-%define EC_P_CROOT   3
-%define EC_P_SLOTS   4
-%define EC_P_DIR     5
+%define ECV_K        10304          ; map pages in one copy
+%define ECV_CROOT    10296
+%define ECV_SLOTS    10288
+%define ECV_FREE     10280          ; the first page the allocator may hand out
+%define ECV_MAP      10272          ; the map page being sealed
+%define ECV_MAPEND   10264          ; one past the last one in this leaf
+%define ECV_TMP      10256
+%define EC_ARGS      10368
+%define EC_FRAME     10368
 
 ; =============================================================================
 ;  cyboudb_encrypted_create(args) -> int
@@ -117,10 +144,26 @@ cyboudb_encrypted_create:
     mov     [rbp - 56], rax             ; leaves
     mov     rax, [rbp - EC_MAC + 8]
     mov     [rbp - 64], rax             ; nodes
-    mov     qword [rbp - 80], EC_P_DIR
     mov     rax, [rbp - 56]
     add     rax, [rbp - 64]
     mov     [rbp - 88], rax             ; one complete directory/tree copy
+
+    ; Where everything lands, given the allocation map's fixed position.
+    mov     rbx, [rbp - 48]
+    mov     ARG1, [rbx + ECREATE_PAGES]
+    call    db_bitmap_leaves
+    mov     [rbp - ECV_K], rax
+    shl     rax, 1
+    add     rax, CybouDB_MIN_PAGES      ; past the header, both superblocks and
+    mov     [rbp - ECV_CROOT], rax      ; both map copies
+    inc     rax
+    mov     [rbp - ECV_SLOTS], rax
+    inc     rax
+    mov     [rbp - 80], rax             ; the first leaf of seal-tree copy A
+    mov     rcx, [rbp - 88]
+    shl     rcx, 1
+    add     rax, rcx
+    mov     [rbp - ECV_FREE], rax       ; and the first page nothing has claimed
 
     ; --- the root key, and everything under it -------------------------------
     lea     ARG1, [rbp - EC_ROOTKEY]
@@ -176,7 +219,12 @@ cyboudb_encrypted_create:
     mov     dword [r10 + HDR_HEADER_SIZE], CybouDB_HDR_SIZE
     mov     dword [r10 + HDR_VERSION], CybouDB_VERSION
     mov     dword [r10 + HDR_PAGE_SIZE], CybouDB_PAGE_SIZE
-    mov     qword [r10 + HDR_FLAGS_INCOMPAT], CybouDB_FEATURE_ENCRYPTION
+    ; The canonical profile, and the encryption bit on top of it. An encrypted
+    ; database is an ordinary CybouDB database whose pages are sealed, not a
+    ; second kind of database, so it claims the same capabilities - and db_open
+    ; still refuses the whole file for want of a key before it looks at any of
+    ; them.
+    mov     qword [r10 + HDR_FLAGS_INCOMPAT], CybouDB_FEATURES_DEFAULT | CybouDB_FEATURE_ENCRYPTION
     mov     qword [r10 + HDR_SB_PAGE_A], CybouDB_SB_PAGE_A
     mov     qword [r10 + HDR_SB_PAGE_B], CybouDB_SB_PAGE_B
     mov     r11, [rbx + ECREATE_UUID]
@@ -195,7 +243,7 @@ cyboudb_encrypted_create:
     cmp     rax, CybouDB_PAGE_SIZE
     jne     .write_failed
 
-    ; --- page 3: the crypto root ---------------------------------------------
+    ; --- the crypto root ------------------------------------------------------
     mov     rbx, [rbp - 48]
     lea     ARG1, [rbp - EC_PAGE]
     mov     ARG2, [rbx + ECREATE_EPOCH]
@@ -212,18 +260,19 @@ cyboudb_encrypted_create:
     jnz     .refused
 
     lea     r10, [rbp - EC_PAGE]
-    mov     qword [r10 + CROOT_KEM_ROOT], EC_P_SLOTS
+    mov     rax, [rbp - ECV_SLOTS]
+    mov     [r10 + CROOT_KEM_ROOT], rax
     lea     ARG1, [rbp - EC_PAGE]
     mov     ARG2, CROOT_CRC_LEN
     CALL_ABI crc32c
     lea     r10, [rbp - EC_PAGE]
     mov     [r10 + CROOT_CRC], eax
-    mov     r12, EC_P_CROOT
+    mov     r12, [rbp - ECV_CROOT]
     call    write_page
     cmp     rax, CybouDB_PAGE_SIZE
     jne     .write_failed
 
-    ; --- page 4: the key slots -----------------------------------------------
+    ; --- the key slots --------------------------------------------------------
     mov     rbx, [rbp - 48]
     lea     ARG1, [rbp - 72]
     mov     ARG2, [rbx + ECREATE_EK]
@@ -261,15 +310,16 @@ cyboudb_encrypted_create:
     call    cyboudb_keypage_add
     test    eax, eax
     jnz     .refused
-    mov     r12, EC_P_SLOTS
+    mov     r12, [rbp - ECV_SLOTS]
     call    write_page
     cmp     rax, CybouDB_PAGE_SIZE
     jne     .write_failed
 
     ; --- the seal directory, and the tree above it ---------------------------
-    ;  Every leaf is written empty: a database with no pages sealed yet has a
-    ;  directory of entries that are all zero, and that is a fact about it
-    ;  rather than an absence.
+    ;  A leaf is written empty unless it covers part of the allocation map,
+    ;  which is the only thing in a fresh database that is a page rather than
+    ;  an absence. An entry of zeroes is a page nothing has sealed yet, and
+    ;  that is a fact about the database rather than a gap in it.
 
     xor     r13, r13                    ; which leaf
 .leaf:
@@ -282,6 +332,90 @@ cyboudb_encrypted_create:
     mov     ARG3, [rbx + ECREATE_GENERATION]
     mov     ARG4, [rbx + ECREATE_EPOCH]
     call    cyboudb_seal_leaf_init
+
+    ; --- the map pages this leaf covers, if it covers any -------------------
+    ;  They are sealed here rather than after the tree is built, because the
+    ;  leaf has to carry their nonces and tags before anything MACs the leaf.
+    mov     rax, r13
+    imul    rax, rax, CybouDB_SEAL_ENTRIES_PER_LEAF
+    cmp     rax, CybouDB_MIN_PAGES
+    jae     .map_first_known
+    mov     rax, CybouDB_MIN_PAGES
+.map_first_known:
+    mov     [rbp - ECV_MAP], rax
+    mov     rax, r13
+    inc     rax
+    imul    rax, rax, CybouDB_SEAL_ENTRIES_PER_LEAF
+    mov     rcx, [rbp - ECV_K]
+    shl     rcx, 1
+    add     rcx, CybouDB_MIN_PAGES      ; one past the last map page
+    cmp     rax, rcx
+    jbe     .map_last_known
+    mov     rax, rcx
+.map_last_known:
+    mov     [rbp - ECV_MAPEND], rax
+
+.map_page:
+    mov     rax, [rbp - ECV_MAP]
+    cmp     rax, [rbp - ECV_MAPEND]
+    jae     .leaf_ready
+
+    ; which leaf of which copy it is: the two copies are laid out alike, so
+    ; both hold the same leaf content for the same index
+    sub     rax, CybouDB_MIN_PAGES
+    xor     rdx, rdx
+    div     qword [rbp - ECV_K]
+    mov     [rbp - ECV_TMP], rdx
+    mov     rbx, [rbp - 48]
+    lea     ARG1, [rbp - EC_NODE]
+    mov     ARG2, [rbp - ECV_TMP]
+    mov     ARG3, [rbx + ECREATE_PAGES]
+    mov     ARG4, [rbp - ECV_FREE]
+    call    db_bitmap_leaf_build
+
+    ; the entry this page owns, inside the leaf being built
+    lea     ARG1, [rbp - EC_PAGE]
+    mov     ARG2, [rbp - ECV_MAP]
+    call    cyboudb_seal_entry
+    test    rax, rax
+    jz      .refused                    ; the leaf does not cover it after all
+    lea     r10, [rbp - EC_ARGS]
+    mov     [r10 + PSEAL_ENTRY], rax
+    lea     rax, [rbp - EC_PAGEKEY]
+    mov     [r10 + PSEAL_KEY], rax
+    lea     rax, [rbp - EC_NODE]
+    mov     [r10 + PSEAL_PAGE], rax
+    mov     rbx, [rbp - 48]
+    mov     rax, [rbx + ECREATE_UUID]
+    mov     [r10 + PSEAL_UUID], rax
+    mov     rax, [rbp - ECV_MAP]
+    mov     [r10 + PSEAL_PAGE_NO], rax
+    mov     rax, [rbx + ECREATE_GENERATION]
+    mov     [r10 + PSEAL_GENERATION], rax
+    mov     qword [r10 + PSEAL_PAGE_TYPE], CybouDB_PTYPE_MAP
+    mov     rax, [rbx + ECREATE_EPOCH]
+    mov     [r10 + PSEAL_EPOCH], rax
+    lea     ARG1, [rbp - EC_ARGS]
+    call    cyboudb_page_seal
+    test    eax, eax
+    jnz     .refused
+
+    mov     r12, [rbp - ECV_MAP]
+    lea     r14, [rbp - EC_NODE]
+    call    write_buffer_page
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .write_failed
+
+    inc     qword [rbp - ECV_MAP]
+    jmp     .map_page
+
+.leaf_ready:
+    ; Entries were written into it, so the leaf's own checksum is stale.
+    lea     ARG1, [rbp - EC_PAGE]
+    mov     ARG2, SLEAF_CRC
+    CALL_ABI crc32c
+    lea     r10, [rbp - EC_PAGE]
+    mov     [r10 + SLEAF_CRC], eax
 
     mov     r12, [rbp - 80]
     add     r12, r13
@@ -407,11 +541,11 @@ cyboudb_encrypted_create:
     mov     [r10 + SB_GENERATION], rax
     mov     rax, [rbx + ECREATE_PAGES]
     mov     [r10 + SB_TOTAL_PAGES], rax
-    mov     rax, [rbp - 88]
-    shl     rax, 1
-    add     rax, [rbp - 80]             ; first page after both tree copies
+    mov     rax, [rbp - ECV_FREE]
     mov     [r10 + SB_ALLOC_PAGES], rax
-    mov     qword [r10 + SB_FEATURE_ROOT], EC_P_CROOT
+    mov     qword [r10 + SB_BITMAP_ROOT], CybouDB_MIN_PAGES
+    mov     rax, [rbp - ECV_CROOT]
+    mov     [r10 + SB_FEATURE_ROOT], rax
 
     ; the seal tree root goes in, and then the tag over everything above it
     lea     r10, [rbp - EC_PAGE]
