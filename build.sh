@@ -16,10 +16,14 @@ set -e
 
 OUT=cyboudb
 OBJDIR=build
-INC="-Iinclude/"
+# The encrypted page branch in DB_PAGE_HERE. A plain database has DB_CACHE
+# zero and pays one compare and one perfectly predicted branch per page
+# address; an encrypted one goes through the resolver. See
+# docs/ENCRYPTED_ENGINE.md.
+INC="-Iinclude/ -DCybouDB_ENCRYPTED_PAGES=1"
 
 # Modules: portable core + SQL engine + Linux platform layer
-BASE_SOURCES="src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/bitmap_leaf.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/queue.asm src/core/stream.asm src/core/compress.asm src/core/vector_arena.asm src/core/checksum.asm src/sql/tokenizer.asm src/sql/parser.asm src/sql/binder.asm src/sql/executor.asm src/sql/select_cursor.asm src/sql/join_cursor.asm src/sql/order_executor.asm src/sql/zone_predicate.asm src/sql/result_rows.asm src/sql/kernels_scalar.asm src/sql/kernels_avx2.asm src/sql/for_kernels_avx2.asm src/sql/vector_kernels_scalar.asm src/sql/vector_kernels_avx2.asm src/sql/vector_topk.asm src/sql/bmi2.asm src/sql/popcount.asm src/platform/linux/os_posix.asm"
+BASE_SOURCES="src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/bitmap_leaf.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/queue.asm src/core/stream.asm src/core/compress.asm src/core/vector_arena.asm src/core/checksum.asm src/core/page_resolve.asm src/core/page_cache.asm src/crypto/page_seal.asm src/crypto/seal_dir.asm src/crypto/aead.asm src/crypto/chacha20.asm src/crypto/poly1305.asm src/crypto/kmac.asm src/crypto/keccak.asm src/sql/tokenizer.asm src/sql/parser.asm src/sql/binder.asm src/sql/executor.asm src/sql/select_cursor.asm src/sql/join_cursor.asm src/sql/order_executor.asm src/sql/zone_predicate.asm src/sql/result_rows.asm src/sql/kernels_scalar.asm src/sql/kernels_avx2.asm src/sql/for_kernels_avx2.asm src/sql/vector_kernels_scalar.asm src/sql/vector_kernels_avx2.asm src/sql/vector_topk.asm src/sql/bmi2.asm src/sql/popcount.asm src/platform/linux/os_posix.asm"
 SOURCES="src/main.asm src/console/repl.asm $BASE_SOURCES"
 
 if [ "${1:-}" = "--audit" ]; then
@@ -43,19 +47,19 @@ fi
 if [ "${1:-}" = "--core-tests" ]; then
     OUT=build/cow_harness
     OBJDIR=build/core-tests
-    SOURCES="tests/cow_harness.asm src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/bitmap_leaf.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/queue.asm src/core/stream.asm src/core/compress.asm src/core/checksum.asm src/platform/linux/os_posix.asm"
+    SOURCES="tests/cow_harness.asm src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/bitmap_leaf.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/queue.asm src/core/stream.asm src/core/compress.asm src/core/checksum.asm src/core/page_resolve.asm src/core/page_cache.asm src/crypto/page_seal.asm src/crypto/seal_dir.asm src/crypto/aead.asm src/crypto/chacha20.asm src/crypto/poly1305.asm src/crypto/kmac.asm src/crypto/keccak.asm src/platform/linux/os_posix.asm"
 fi
 
 if [ "${1:-}" = "--varlen-tests" ]; then
     OUT=build/varlen_harness
     OBJDIR=build/varlen-tests
-    SOURCES="tests/varlen_harness.asm src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/bitmap_leaf.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/queue.asm src/core/stream.asm src/core/compress.asm src/core/checksum.asm src/platform/linux/os_posix.asm"
+    SOURCES="tests/varlen_harness.asm src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/bitmap_leaf.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/queue.asm src/core/stream.asm src/core/compress.asm src/core/checksum.asm src/core/page_resolve.asm src/core/page_cache.asm src/crypto/page_seal.asm src/crypto/seal_dir.asm src/crypto/aead.asm src/crypto/chacha20.asm src/crypto/poly1305.asm src/crypto/kmac.asm src/crypto/keccak.asm src/platform/linux/os_posix.asm"
 fi
 
 if [ "${1:-}" = "--varlen-fragmentation-tests" ]; then
     OUT=build/varlen_fragmentation_harness
     OBJDIR=build/varlen-fragmentation-tests
-    SOURCES="tests/varlen_fragmentation_harness.asm src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/bitmap_leaf.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/queue.asm src/core/stream.asm src/core/compress.asm src/core/checksum.asm src/platform/linux/os_posix.asm"
+    SOURCES="tests/varlen_fragmentation_harness.asm src/core/database.asm src/core/cow.asm src/core/bitmap.asm src/core/bitmap_leaf.asm src/core/catalog.asm src/core/pax.asm src/core/varlen.asm src/core/zonemap.asm src/core/index.asm src/core/queue.asm src/core/stream.asm src/core/compress.asm src/core/checksum.asm src/core/page_resolve.asm src/core/page_cache.asm src/crypto/page_seal.asm src/crypto/seal_dir.asm src/crypto/aead.asm src/crypto/chacha20.asm src/crypto/poly1305.asm src/crypto/kmac.asm src/crypto/keccak.asm src/platform/linux/os_posix.asm"
 fi
 
 if [ "${1:-}" = "--sql-tests" ]; then
@@ -73,7 +77,7 @@ fi
 if [ "${1:-}" = "--hardware-tests" ]; then
     OUT=build/hardware_harness
     OBJDIR=build/hardware-tests
-    SOURCES="tests/hardware_harness.asm src/core/checksum.asm src/sql/bmi2.asm src/sql/popcount.asm src/platform/linux/os_posix.asm"
+    SOURCES="tests/hardware_harness.asm src/core/checksum.asm src/core/page_resolve.asm src/core/page_cache.asm src/crypto/page_seal.asm src/crypto/seal_dir.asm src/crypto/aead.asm src/crypto/chacha20.asm src/crypto/poly1305.asm src/crypto/kmac.asm src/crypto/keccak.asm src/sql/bmi2.asm src/sql/popcount.asm src/platform/linux/os_posix.asm"
 fi
 
 if [ "${1:-}" = "--bench" ]; then
@@ -231,7 +235,7 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         echo "Build OK -> build/kdf_test"
         nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/crypto/crypto_root.asm \
             -o build/crypto_root.o
-        nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/core/checksum.asm \
+        nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/core/checksum.asm src/core/page_resolve.asm src/core/page_cache.asm src/crypto/page_seal.asm src/crypto/seal_dir.asm src/crypto/aead.asm src/crypto/chacha20.asm src/crypto/poly1305.asm src/crypto/kmac.asm src/crypto/keccak.asm \
             -o build/checksum_crypto.o
         "$CC" -O2 -no-pie -Wall -Wextra tests/crypto_root_test.c \
             build/crypto_root.o build/checksum_crypto.o build/crypto_status.o -o build/crypto_root_test

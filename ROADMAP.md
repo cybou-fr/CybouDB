@@ -630,11 +630,14 @@ the release, not after it.
                                      MAP_SPAN allocation map in its usual
                                      place, both copies sealed under the seal
                                      tree. What remains is the allocator and
-                                     catalog reaching it: DB_PAGE_HERE's
-                                     encrypted branch is compiled out in every
-                                     build, and its call sites do not yet read
-                                     a null as a refusal. Then normal
-                                     cyboudb_open rather than the internal API
+                                     catalog reaching it. DB_PAGE_HERE's
+                                     encrypted branch is now compiled in and
+                                     the resolver is linked into the engine,
+                                     with no measurable cost to the plain path.
+                                     What remains is a key-bearing db_open, and
+                                     then the 81 branch sites learning to read
+                                     a null as a refusal - in that order, so
+                                     that a test exercises them
  8. Crash-safe encrypted transactions publication is implemented at every
                                      depth: paired seal-tree copies, two
                                      barriers, inactive-superblock update, and

@@ -76,6 +76,14 @@
     add     %1, [%2 + DB_BASE]
 %endmacro
 
+%ifdef CybouDB_ENCRYPTED_PAGES
+; Declared here rather than in each of the files that use DB_PAGE_HERE: the
+; macro is what calls it, so the macro's header is where the dependency
+; belongs. An object that never expands the macro carries an unused extern,
+; which costs a symbol-table entry and nothing else.
+extern db_page_resolve
+%endif
+
 ; -----------------------------------------------------------------------------
 ;  DB_PAGE_HERE <register>, <context>
 ;

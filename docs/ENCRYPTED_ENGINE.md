@@ -14,13 +14,19 @@ a container: the full feature profile in the header, the paired `MAP_SPAN`
 allocation map where every CybouDB file keeps it, and both map copies sealed
 under the same seal tree as everything else.
 
+`DB_PAGE_HERE`'s encrypted branch is now compiled in: every build defines
+`CybouDB_ENCRYPTED_PAGES`, and the resolver, the page cache and the seal and
+AEAD modules it needs are linked into the engine rather than only into the
+crypto harnesses.
+
 Two boundaries remain, and they are both integration rather than cryptography.
 The first is the ordinary `db_open` and public C API path: they still have no
 credential-bearing entry point and therefore return `CybouDB_E_NEEDS_KEY` for
-an encrypted header. The second is the allocator itself: it reaches the map
-through `DB_PAGE_HERE`, whose encrypted branch is compiled out because no build
-defines `CybouDB_ENCRYPTED_PAGES`, and each of those sites still has to learn
-to see the null the resolver returns for a page that did not verify.
+an encrypted header, so nothing reaches those 81 branches with `DB_CACHE` set.
+The second follows from it: those sites do not yet read the null the resolver
+returns for a page that did not verify. Writing that before an encrypted
+database can be driven through them would be writing code no test executes,
+so it waits for the first boundary.
 
 ### The layout an encrypted database has
 
@@ -143,9 +149,10 @@ verifiable on its own:
 2.  Convert the rest, module by module, still plain-only. *(done)*
     Verified by: the same suites after each module.
 
-3.  DB_CACHE, and the encrypted branch, for reads. *(internal path done)*
+3.  DB_CACHE, and the encrypted branch, for reads. *(branch compiled in;
+    its call sites do not yet read a null as a refusal)*
     Verified by: root-to-leaf MAC traversal, AEAD open, repaired-CRC attacks,
-    and depth-two close/reopen tests.
+    depth-two close/reopen tests, and every plain suite with the branch live.
 
 4.  Writes, dirty pages and the commit order of Decision 6b. *(done)*
     Verified by: production-path first- and second-barrier failures, poisoned
@@ -212,9 +219,27 @@ decapsulation to reach the same answer.
 
 ## What "did not get slower" means here
 
-The plain path gains a compare and a branch per page address. The benchmarks
-that must not move are the ones with the most page addresses per unit of work:
-the sequential scan and the point lookup, both already measured in
-`benchmarks/results/`. A regression under one percent is noise on this
-hardware; anything above that is a result, and this document is where it would
-be recorded rather than explained away.
+The plain path gains a compare and a perfectly predicted branch per page
+address, at 81 sites. The benchmarks that must not move are the ones with the
+most page addresses per unit of work: the sequential scan and the selective
+predicate.
+
+Measured by building the engine twice from the same tree, once with
+`CybouDB_ENCRYPTED_PAGES` and once without, and running the two binaries
+interleaved against one 126,976-row table, nine rounds each, best of nine:
+
+| scenario | delta |
+| :--- | ---: |
+| full scan | +0.90% |
+| int32 equality | -5.11% |
+| int32 range | +3.00% |
+| int64 range | -2.46% |
+
+The deltas scatter symmetrically around zero and the negative ones are as large
+as the positive ones, which says the effect is below this machine's noise floor
+rather than that it is zero. That is the honest reading and it is also what the
+shape of the change predicts: page addressing happens once per page while the
+kernels run once per row, so two predicted instructions per page cannot show up
+against per-row work. A number small enough to resolve one percent belongs on
+the benchmark hardware in `benchmarks/results/`, not on a developer laptop, and
+this table will be replaced by it rather than defended.
