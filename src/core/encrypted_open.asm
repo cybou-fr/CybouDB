@@ -198,9 +198,14 @@ db_encrypted_attach:
     mov     rax, [rbp - EA_PAGE + CROOT_SEAL_EPOCH]
     mov     [rbx + DB_SEAL_EPOCH], rax
     mov     rax, [rbp - EA_PAGE + CROOT_SEAL_DIR_FIRST]
-    mov     [rbx + DB_SEAL_DIR], rax
-    mov     rax, [rbp - EA_PAGE + CROOT_SEAL_DIR_PAGES]
-    mov     [rbx + DB_SEAL_LEAVES], rax
+    mov     rcx, [rbp - EA_PAGE + CROOT_SEAL_DIR_PAGES]
+    cmp     qword [rbx + DB_SB_PAGE], CybouDB_SB_PAGE_B
+    jne     .seal_copy_selected
+    add     rax, rcx                    ; superblock B owns copy B
+.seal_copy_selected:
+    mov     [rbx + DB_SEAL_DIR], rax    ; active copy's first leaf
+    dec     rcx                         ; depth one: one root after the leaves
+    mov     [rbx + DB_SEAL_LEAVES], rcx
     mov     r15, [rbp - EA_PAGE + CROOT_KEM_ROOT]
     test    r15, r15
     jz      .no_key_slots

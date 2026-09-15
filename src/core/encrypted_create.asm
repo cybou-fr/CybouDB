@@ -13,9 +13,9 @@
 ;      pages 1, 2          superblock A and B, plaintext with a tag
 ;      page 3              the crypto root
 ;      page 4              the key slots
-;      pages 5 .. 5+S      the seal directory, S leaves
-;      page 5+S            the seal tree node above them
-;      pages 5+S+1 ..      everything a database actually holds
+;      pages 5 .. 5+S      seal-tree copy A: S leaves and one node
+;      pages 5+S .. 5+2S   seal-tree copy B
+;      pages 5+2S ..       everything a database actually holds
 ;
 ;  **One node, so one level.** A node covers 251 leaves and a leaf covers 83
 ;  pages, so this writes files up to 20,833 pages - about 81 MiB - and refuses
@@ -68,6 +68,7 @@ section .text
 ;   [rbp - 8 .. -40]  saved rbx, r12, r13, r14, r15
 ;   [rbp - 48] args     [rbp - 56] leaves     [rbp - 64] nodes
 ;   [rbp - 72] the key id                     [rbp - 80] the first leaf's page
+;   [rbp - 88] pages in one seal-tree copy (leaves plus root node)
 ;   [rbp - 160] the root key, wiped before this returns
 ;   [rbp - 224] the metadata key, wiped with it
 ;   [rbp - 288] the page seal key
@@ -121,6 +122,9 @@ cyboudb_encrypted_create:
     cmp     qword [rbp - EC_MAC + 16], 1
     ja      .too_big                    ; depth two is not written here yet
     mov     qword [rbp - 80], EC_P_DIR
+    mov     rax, [rbp - 56]
+    add     rax, [rbp - 64]
+    mov     [rbp - 88], rax             ; one complete directory/tree copy
 
     ; --- the root key, and everything under it -------------------------------
     lea     ARG1, [rbp - EC_ROOTKEY]
@@ -198,7 +202,7 @@ cyboudb_encrypted_create:
     lea     ARG1, [rbp - EC_PAGE]
     mov     ARG2, [rbx + ECREATE_EPOCH]
     mov     ARG3, [rbp - 80]            ; the first leaf
-    mov     ARG4, [rbp - 56]            ; how many
+    mov     ARG4, [rbp - 88]            ; pages in each of the two copies
     mov     rax, [rbp - 80]
     add     rax, [rbp - 56]             ; the node sits above the leaves
     PASS_ARG5 rax
@@ -298,7 +302,9 @@ cyboudb_encrypted_create:
 
     mov     r12, [rbp - 80]
     add     r12, r13
-    call    write_page
+    call    write_page                  ; copy A
+    add     r12, [rbp - 88]
+    call    write_page                  ; copy B starts one stride later
 
     inc     r13
     jmp     .leaf
@@ -316,13 +322,27 @@ cyboudb_encrypted_create:
     lea     ARG3, [rbp - EC_NODE]
     call    cyboudb_seal_node_mac
 
-    ; the node page goes out of its own buffer, not the shared one
+    ; Both copies begin identical. A commit rewrites only the inactive copy,
+    ; so either superblock always retains a complete tree it can authenticate.
     mov     rbx, [rbp - 48]
     mov     ARG1, [rbx + ECREATE_HANDLE]
     lea     ARG2, [rbp - EC_NODE]
     mov     ARG3, CybouDB_PAGE_SIZE
     mov     rax, [rbp - 80]
     add     rax, [rbp - 56]
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     ARG4, rax
+    call    vfs_write_at
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .write_failed
+
+    mov     rbx, [rbp - 48]
+    mov     ARG1, [rbx + ECREATE_HANDLE]
+    lea     ARG2, [rbp - EC_NODE]
+    mov     ARG3, CybouDB_PAGE_SIZE
+    mov     rax, [rbp - 80]
+    add     rax, [rbp - 56]
+    add     rax, [rbp - 88]
     shl     rax, CybouDB_PAGE_SHIFT
     mov     ARG4, rax
     call    vfs_write_at
@@ -339,9 +359,9 @@ cyboudb_encrypted_create:
     mov     [r10 + SB_GENERATION], rax
     mov     rax, [rbx + ECREATE_PAGES]
     mov     [r10 + SB_TOTAL_PAGES], rax
-    mov     rax, [rbp - 80]
-    add     rax, [rbp - 56]
-    add     rax, [rbp - 64]             ; the first page a database may use
+    mov     rax, [rbp - 88]
+    shl     rax, 1
+    add     rax, [rbp - 80]             ; first page after both tree copies
     mov     [r10 + SB_ALLOC_PAGES], rax
     mov     qword [r10 + SB_FEATURE_ROOT], EC_P_CROOT
 

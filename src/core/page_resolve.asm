@@ -453,13 +453,29 @@ db_pages_flush:
     mov     rcx, CybouDB_SEAL_ENTRIES_PER_LEAF
     div     rcx
     mov     r14, rdx                    ; the entry index
-    add     rax, [rbx + DB_SEAL_DIR]    ; the leaf's page number
+    ; Dirty entries go to the copy the inactive superblock owns. The active
+    ; directory must remain byte-for-byte available until publication.
+    mov     r10, [rbx + DB_SEAL_DIR]
+    mov     rcx, [rbx + DB_SEAL_LEAVES]
+    inc     rcx                         ; leaves plus the depth-one root
+    cmp     qword [rbx + DB_SB_PAGE], CybouDB_SB_PAGE_A
+    je      .flush_to_b
+    cmp     qword [rbx + DB_SB_PAGE], CybouDB_SB_PAGE_B
+    jne     .flush_copy_ready           ; standalone resolver harness
+    sub     r10, rcx                    ; B active: prepare A
+    jmp     .flush_copy_ready
+.flush_to_b:
+    add     r10, rcx                    ; A active: prepare B
+.flush_copy_ready:
+    add     rax, r10                    ; the inactive leaf's page number
 
     ; a different leaf than the one in hand? write the one in hand first
     cmp     rax, [rbp - 72]
     je      .leaf_ready
     mov     [rbp - 64], rax
     call    flush_held_leaf
+    test    eax, eax
+    jnz     .failed
     mov     rbx, [rbp - 40]
     mov     rax, [rbp - 64]
     mov     [rbp - 72], rax
@@ -499,6 +515,7 @@ db_pages_flush:
     mov     [r10 + PSEAL_UUID], rax
     mov     [r10 + PSEAL_PAGE_NO], r13
     mov     rax, [rbx + DB_GENERATION]
+    inc     rax                         ; the generation being published
     mov     [r10 + PSEAL_GENERATION], rax
     mov     rax, [rbp - 88]             ; the type the writer recorded
     mov     [r10 + PSEAL_PAGE_TYPE], rax
@@ -536,6 +553,8 @@ db_pages_flush:
 
 .flush_leaf:
     call    flush_held_leaf
+    test    eax, eax
+    jnz     .failed
     xor     eax, eax
     jmp     .out
 
@@ -563,7 +582,7 @@ flush_held_leaf:
     sub     rsp, 32 + SHADOW_SPACE
     mov     r10, [rbp]                  ; the caller's rbp
     cmp     qword [r10 - 72], -1
-    je      .nothing
+    je      .success
 
     ; The leaf changed, so its CRC is no longer its CRC. A leaf written with a
     ; stale checksum reads as damage on the next open - the seal tree would
@@ -583,7 +602,14 @@ flush_held_leaf:
     shl     rax, CybouDB_PAGE_SHIFT
     mov     ARG4, rax
     call    vfs_write_at
-.nothing:
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .write_failed
+.success:
+    xor     eax, eax
+    jmp     .done
+.write_failed:
+    mov     eax, CybouDB_E_SEAL
+.done:
     mov     rsp, rbp
     pop     rbp
     ret

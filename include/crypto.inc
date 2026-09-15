@@ -183,8 +183,8 @@
 ;   +16      4   aead_id            which AEAD sealed this file
 ;   +20      4   kdf_id             which KDF derived its keys
 ;   +24      8   seal_dir_first     first page of seal directory copy A
-;   +32      8   seal_dir_pages     S, the leaves in one copy
-;   +40      8   seal_tree_root     page holding the root node of Decision 3b
+;   +32      8   seal_dir_pages     leaves plus nodes in one copy
+;   +40      8   seal_tree_root     root node in seal-tree copy A
 ;   +48      8   manifest_root      0 until step 10
 ;   +56      8   total_pages        the file this root was written for
 ;   +64     32   salt               public, and required before anything opens
@@ -309,7 +309,7 @@
 ;   +24      8   generation    the generation that published these entries
 ;   +32      8   seal_epoch    which page-seal key they were made under
 ;   +40     24   reserved      zero
-;   +64   4000   entries       100 x 40: a 24-byte nonce and a 16-byte tag
+;   +64   3984   entries       83 x 48: nonce, tag, sealing generation
 ; +4064     28   reserved_tail zero
 ; +4092      4   crc32c        over [0, 4092)
 ;

@@ -60,6 +60,7 @@ section .text
 ;   [rbp - 40] ctx        [rbp - 48] the node's page
 ;   [rbp - 56] the generation being published
 ;   [rbp - 64] which superblock copy it goes to
+;   [rbp - 72] active seal copy base   [rbp - 80] inactive copy base
 ;   [rbp - 128] one MAC
 ;   [rbp - 384] the KMAC context
 ;   [rbp - 4608] a page to read leaves and build the superblock in
@@ -85,7 +86,55 @@ db_encrypted_commit:
     cmp     qword [rbx + DB_CACHE], 0
     je      .not_encrypted
 
+    ; The inactive copy may be two generations behind. Bring its leaves to the
+    ; exact active state before applying this transaction. This is deliberately
+    ; the correctness-first implementation; comparing the two root nodes and
+    ; copying only divergent leaves is the next, measurable optimization.
+    mov     rax, [rbx + DB_SEAL_DIR]
+    mov     [rbp - 72], rax
+    mov     rcx, [rbx + DB_SEAL_LEAVES]
+    inc     rcx                         ; one depth-one root follows the leaves
+    cmp     qword [rbx + DB_SB_PAGE], CybouDB_SB_PAGE_A
+    jne     .inactive_is_a
+    add     rax, rcx
+    jmp     .inactive_known
+.inactive_is_a:
+    sub     rax, rcx
+.inactive_known:
+    mov     [rbp - 80], rax
+
+    xor     r13, r13
+.copy_leaf:
+    cmp     r13, [rbx + DB_SEAL_LEAVES]
+    jae     .copy_done
+    mov     rax, [rbp - 72]
+    add     rax, r13
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     ARG1, [rbx + DB_HANDLE]
+    lea     ARG2, [rbp - CM_PAGE]
+    mov     ARG3, CybouDB_PAGE_SIZE
+    mov     ARG4, rax
+    call    vfs_read_at
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .failed
+
+    mov     rbx, [rbp - 40]
+    mov     rax, [rbp - 80]
+    add     rax, r13
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     ARG1, [rbx + DB_HANDLE]
+    lea     ARG2, [rbp - CM_PAGE]
+    mov     ARG3, CybouDB_PAGE_SIZE
+    mov     ARG4, rax
+    call    vfs_write_at
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .failed
+    inc     r13
+    jmp     .copy_leaf
+.copy_done:
+
     ; --- 1 and 2: the pages and the leaves that describe them ----------------
+    mov     rbx, [rbp - 40]
     mov     ARG1, rbx
     call    db_pages_flush
     test    eax, eax
@@ -96,7 +145,7 @@ db_encrypted_commit:
     ;  anything remembered: what the node must attest to is what a reader will
     ;  find, and the only way to be sure of that is to read it.
     mov     rbx, [rbp - 40]
-    mov     rax, [rbx + DB_SEAL_DIR]
+    mov     rax, [rbp - 80]
     add     rax, [rbx + DB_SEAL_LEAVES]
     mov     [rbp - 48], rax             ; the node's page
 
@@ -118,7 +167,7 @@ db_encrypted_commit:
     cmp     r13, [rbx + DB_SEAL_LEAVES]
     jae     .leaves_done
 
-    mov     rax, [rbx + DB_SEAL_DIR]
+    mov     rax, [rbp - 80]
     add     rax, r13
     shl     rax, CybouDB_PAGE_SHIFT
     mov     ARG1, [rbx + DB_HANDLE]
@@ -261,6 +310,8 @@ db_encrypted_commit:
     mov     [rbx + DB_GENERATION], rax
     mov     rax, [rbp - 64]
     mov     [rbx + DB_SB_PAGE], rax
+    mov     rax, [rbp - 80]
+    mov     [rbx + DB_SEAL_DIR], rax
 
     xor     eax, eax
     jmp     .done

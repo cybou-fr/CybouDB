@@ -168,11 +168,12 @@ int main(void) {
     vfs_read_at(h, page, PAGE, 3 * PAGE);
     check("the crypto root says where the directory is and how big",
           rd64(page, CROOT_SEAL_DIR_FIRST) == 5 &&
+          rd64(page, 32) == geo[0] + geo[1] &&
           rd64(page, CROOT_KEM_ROOT) == 4);
 
     vfs_read_at(h, page, PAGE, 1 * PAGE);
     check("the superblock publishes the first usable page past the metadata",
-          rd64(page, SB_ALLOC_PAGES) == 5 + geo[0] + geo[1]);
+          rd64(page, SB_ALLOC_PAGES) == 5 + geo[3]);
     check("and names the crypto root", rd64(page, SB_FEATURE_ROOT) == 3);
     {
         uint8_t zero[16];
@@ -212,7 +213,7 @@ int main(void) {
     /* --- a page written into it, and read back after a reopen ---------------- */
     {
         uint8_t *frame;
-        uint64_t first_usable = 5 + geo[0] + geo[1];
+        uint64_t first_usable = 5 + geo[3]; /* both seal-tree copies */
 
         memset(ctx, 0, sizeof ctx);
         memcpy(ctx + DB_HANDLE, &h, 8);
@@ -273,6 +274,59 @@ int main(void) {
             check("but not as plaintext on the disk",
                   memcmp(disk, "written into", 12) != 0);
         }
+
+        /* A second publication returns to copy A. Its inactive directory was
+           last current at generation one, so commit must inherit copy B before
+           adding the new page; otherwise the first page disappears at gen 3. */
+        frame = db_page_new(ctx, first_usable + 1, 1);
+        check("a second generation opens another page", frame != NULL);
+        if (frame) {
+            memset(frame, 0, PAGE);
+            strcpy((char *)frame, "written in the following generation");
+        }
+        check("and commits back into seal copy A",
+              db_encrypted_commit(ctx) == 0 &&
+              rd64(ctx, DB_GENERATION) == 3 && rd64(ctx, DB_SB_PAGE) == 1 &&
+              rd64(ctx, DB_SEAL_DIR) == 5);
+        vfs_close(h);
+
+        h = vfs_open_rw(path, 0);
+        memset(ctx, 0, sizeof ctx);
+        memcpy(ctx + DB_HANDLE, &h, 8);
+        {
+            uint64_t sb = 1;
+            memcpy(ctx + DB_SB_PAGE, &sb, 8);
+        }
+        check("generation three reopens from superblock A",
+              db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 32) == 0);
+        frame = db_page_resolve(ctx, first_usable);
+        check("and inherited the page published through copy B",
+              frame != NULL &&
+              strcmp((char *)frame, "written into a database the engine made")
+                  == 0);
+        frame = db_page_resolve(ctx, first_usable + 1);
+        check("while also publishing its new page",
+              frame != NULL &&
+              strcmp((char *)frame, "written in the following generation") == 0);
+        vfs_close(h);
+
+        /* Superblock B and seal copy B are still a complete generation two.
+           Page two was not reachable then; page one was, and remains valid. */
+        h = vfs_open_rw(path, 0);
+        memset(ctx, 0, sizeof ctx);
+        memcpy(ctx + DB_HANDLE, &h, 8);
+        {
+            uint64_t sb = 2;
+            memcpy(ctx + DB_SB_PAGE, &sb, 8);
+        }
+        check("the previous superblock and its seal copy still attach",
+              db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 32) == 0 &&
+              rd64(ctx, DB_GENERATION) == 2);
+        frame = db_page_resolve(ctx, first_usable);
+        check("and retain the page that generation published",
+              frame != NULL &&
+              strcmp((char *)frame, "written into a database the engine made")
+                  == 0);
     }
     vfs_close(h);
 

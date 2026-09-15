@@ -111,6 +111,12 @@ span map already works. That is deliberate reuse rather than a new idea: the
 map's two-copy discipline is the thing that makes a half-written commit
 recoverable, and the seals have precisely the same requirement.
 
+Before changing the inactive copy, the engine brings it forward from the
+active one. The depth-one implementation copies all leaves; a later
+changed-path implementation can compare the two authenticated nodes and copy
+only leaves whose child MAC differs. Publication never changes the copy named
+by the live superblock.
+
 **One entry per page: 24-byte nonce, 16-byte tag, and the 8-byte generation
 under which the page was sealed: 48 bytes.** With a 64-byte page header and
 the CRC in its usual place, an entry page covers
@@ -781,11 +787,10 @@ no buffer to refill and therefore no refill to make crash-safe.
 
 ## Open, and named
 
-* **Does the seal directory need two copies?** Pairing is how the span map
-  survives a half-written commit, and the seals have the same requirement - but
-  the seal *tree* may make one copy plus the root's own generation binding
-  sufficient. Worth one experiment, because a per cent of the file is a real
-  number.
+* **The seal directory needs two copies.** A root generation binding cannot
+  preserve the old generation when the only leaf and node pages are rewritten
+  in place. Pairing is therefore part of publication, just as it is for the
+  span map; the remaining question is how cheaply the inactive copy catches up.
 * **Write amplification per commit shape**, measured with the existing flush
   instrument, on the queue and stream paths where a commit touches scattered
   pages. The seal tree bounds it at *k* leaves + *k* nodes + a root; what *k*

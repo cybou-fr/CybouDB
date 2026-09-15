@@ -629,10 +629,10 @@ the release, not after it.
                                      cyboudb_open and the allocator/catalog
                                      path rather than the internal test API
  8. Crash-safe encrypted transactions depth-1 publication is implemented with
-                                     two barriers, inactive-superblock update,
-                                     and handle poisoning after uncertain I/O.
-                                     Multi-level trees and changed-path-only
-                                     MAC updates remain
+                                     paired seal-tree copies, two barriers,
+                                     inactive-superblock update, and handle
+                                     poisoning after uncertain I/O. Multi-level
+                                     trees and changed-path-only catch-up remain
  9. Scoped DEKs
 10. The signed access manifest
 11. Permissions and scoped keys
