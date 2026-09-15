@@ -200,6 +200,17 @@
 %define CSLOT_WRAPPED        16
 %define CSLOT_RESERVED       88
 
+; docs/RECOVERY_PHRASE.md. A recovery slot is an ordinary wrapped key with an
+; ordinary purpose; what the flag says is where its KEK came from - twenty-four
+; words rather than a private key. It is a flag and not a purpose because the
+; derivation below it is the same one.
+%define CSLOT_FLAG_RECOVERY  1
+%define CSLOT_FLAGS_KNOWN    1          ; the bits this build understands
+
+%define CybouDB_RECOVERY_WORDS   24
+%define CybouDB_RECOVERY_BITS    11     ; 24 * 11 = 264 = 256 + 8
+%define CybouDB_RECOVERY_SECRET  32
+
 ; --- which primitives, by number --------------------------------------------
 ;  docs/CRYPTO_BACKEND.md: the file records which AEAD sealed it, so a later
 ;  build can refuse by name instead of guessing. One value each today; a

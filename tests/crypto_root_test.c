@@ -345,11 +345,21 @@ int main(void) {
     check("a slot whose purpose is not in the list is refused",
           cyboudb_crypto_root_validate(page) == CROOT_E_SLOTS);
 
+    /* Bit 0 is the recovery flag, which this build knows; bit 1 is not
+       anything yet, and an unknown flag is refused rather than ignored - the
+       same rule the format applies to feature bits. */
     good(page);
     cyboudb_crypto_root_add_slot(page, 0x1001, 4, wrapped);
     wr32(page, CROOT_SLOTS + CSLOT_FLAGS, 1);
     repair_crc(page);
-    check("and one with a flag this build does not know",
+    check("a slot flagged as a recovery slot is accepted",
+          cyboudb_crypto_root_validate(page) == CROOT_OK);
+
+    good(page);
+    cyboudb_crypto_root_add_slot(page, 0x1001, 4, wrapped);
+    wr32(page, CROOT_SLOTS + CSLOT_FLAGS, 2);
+    repair_crc(page);
+    check("and one with a flag this build does not know is refused",
           cyboudb_crypto_root_validate(page) == CROOT_E_SLOTS);
 
     good(page);

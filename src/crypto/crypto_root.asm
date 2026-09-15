@@ -335,8 +335,9 @@ cyboudb_crypto_root_validate:
     jz      .e_slots
     cmp     r10d, KDF_PURPOSE_MAX
     ja      .e_slots
-    cmp     dword [r8 + CSLOT_FLAGS], 0
-    jne     .e_slots
+    mov     eax, [r8 + CSLOT_FLAGS]
+    and     eax, ~CSLOT_FLAGS_KNOWN     ; a bit this build does not know is
+    jnz     .e_slots                    ; refused, not ignored
     cmp     qword [r8 + CSLOT_RESERVED], 0
     jne     .e_slots
 

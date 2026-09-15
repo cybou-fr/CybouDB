@@ -188,6 +188,7 @@ jobs:
           ./build/mlkem_sample_test
           ./build/mlkem_test
           ./build/key_slots_test
+          ./build/recovery_test
 
       - name: Interactive REPL and pipe tests
         run: python3 tests/repl_tests.py ./cyboudb
@@ -421,6 +422,7 @@ jobs:
           build\mlkem_sample_test.exe
           build\mlkem_test.exe
           build\key_slots_test.exe
+          build\recovery_test.exe
           if errorlevel 1 exit /b 1
 
       # Split the way the other two-binary steps are: the build under cmd, the

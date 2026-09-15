@@ -257,6 +257,13 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
             build/keccak.o build/os_rand.o build/checksum_crypto.o \
             -o build/key_slots_test
         echo "Build OK -> build/key_slots_test"
+        nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/crypto/recovery.asm \
+            -o build/recovery.o
+        "$CC" -O2 -no-pie -Wall -Wextra tests/recovery_test.c \
+            build/recovery.o build/kdf.o build/aead.o build/chacha20.o \
+            build/poly1305.o build/keccak.o build/os_rand.o \
+            -o build/recovery_test
+        echo "Build OK -> build/recovery_test"
     fi
     if [ "${1:-}" = "--crypto-probe" ]; then
         CC=gcc

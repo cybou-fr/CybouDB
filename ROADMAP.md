@@ -615,7 +615,10 @@ the release, not after it.
                                      interoperating with OpenSSL 3.5 both
                                      ways; key slot pages, and a root key
                                      sealed to a public key
- 6. Independent 24-word recovery
+ 6. Independent 24-word recovery     the encoding, the checksum and the
+                                     second door are done; the English
+                                     wordlist is not, and
+                                     docs/RECOVERY_PHRASE.md says why
  7. Authenticated page encryption     the seal directory and its keyed
                                      tree are built and tested ahead of this
                                      step, because the format needed them

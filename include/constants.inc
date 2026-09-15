@@ -81,7 +81,13 @@
 %define CybouDB_E_CRYPTO_ROOT 39            ; the crypto root page contradicts itself
 %define CybouDB_E_CRYPTO_CRC  40            ; the crypto root page is damaged
 
-%define CybouDB_E_COUNT      41            ; size of the message table
+; A mistyped recovery phrase is decidable without the file - the checksum says
+; so - which makes it a different sentence from a phrase that is well formed
+; and belongs to another database. One is "that is not a phrase we wrote", the
+; other is CybouDB_E_KEY.
+%define CybouDB_E_PHRASE      41            ; the phrase does not checksum
+
+%define CybouDB_E_COUNT      42            ; size of the message table
 
 ; --- Why an operating system call failed -------------------------------------
 ;  The platform layer translates its native error - errno on Linux, the Win32

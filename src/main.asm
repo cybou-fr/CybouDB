@@ -201,6 +201,8 @@ e_crypto_root: db "error: the crypto root page contradicts itself - the "
            db "encryption metadata is damaged", 10, 0
 e_crypto_crc: db "error: crypto root page checksum mismatch - the page is "
            db "damaged", 10, 0
+e_phrase:  db "error: that is not a recovery phrase this build wrote - check "
+           db "the words rather than the database", 10, 0
 
     align 8
 err_table:
@@ -212,7 +214,7 @@ err_table:
     dq e_catalog, e_schema, e_notfound, e_catalog_full
     dq e_rows, e_pax, e_value, e_busy, e_cursor, e_retained
     dq e_damaged, e_lease
-    dq e_key, e_crypto_root, e_crypto_crc
+    dq e_key, e_crypto_root, e_crypto_crc, e_phrase
 
 ; A code without a sentence prints whatever follows the table, so the table's
 ; length is checked here rather than discovered by a user.
