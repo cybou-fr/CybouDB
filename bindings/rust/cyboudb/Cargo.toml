@@ -1,0 +1,16 @@
+[package]
+name = "cyboudb"
+version = "0.5.0"
+edition = "2021"
+authors = ["Stanislav Saveliev", "CybouDB Contributors"]
+license = "Apache-2.0"
+description = "Safe, idiomatic Rust bindings for the CybouDB embedded database engine"
+repository = "https://github.com/cybou-fr/CybouDB"
+keywords = ["database", "embedded", "vector", "queue", "columnar"]
+categories = ["database", "embedded-database"]
+
+[dependencies]
+cyboudb-sys = { path = "../cyboudb-sys", version = "0.5.0" }
+
+[dev-dependencies]
+tempfile = "3"

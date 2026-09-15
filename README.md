@@ -119,6 +119,36 @@ that outlives a transaction, where a claim is held by a deadline and finished
 by a ticket; and [`examples/vector_search.c`](examples/vector_search.c),
 filtered exact search through the standalone vector runtime.
 
+### Rust (Official Crate)
+
+Idiomatic and memory-safe Rust bindings are provided in [`bindings/rust/`](bindings/rust/):
+
+```rust
+use cyboudb::{Database, Result};
+
+fn main() -> Result<()> {
+    let mut db = Database::create("app.cdb", 512)?;
+    db.execute("CREATE TABLE results (id INT64, note TEXT);")?;
+    db.execute("CREATE QUEUE inbox;")?;
+
+    // Atomic transaction across queue and table
+    db.transaction(|tx| {
+        tx.enqueue("inbox", "job_payload")?;
+        tx.execute("INSERT INTO results VALUES (42, 'completed');")?;
+        Ok(())
+    })?;
+
+    let mut stmt = db.prepare("SELECT note FROM results WHERE id = ?;")?;
+    let mut rows = stmt.query(&[&42i64])?;
+    if let Some(row) = rows.next() {
+        println!("Note: {}", row?.get::<String>(0)?);
+    }
+    Ok(())
+}
+```
+
+See [`bindings/rust/README.md`](bindings/rust/README.md) and [`examples/quickstart.rs`](bindings/rust/cyboudb/examples/quickstart.rs).
+
 ---
 
 ## Capabilities

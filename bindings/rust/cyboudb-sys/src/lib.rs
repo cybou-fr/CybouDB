@@ -166,3 +166,26 @@ extern "C" {
         out_length: *mut u64,
     ) -> c_int;
 }
+
+// Fallback hooks in case cyboudb.lib was compiled with --c-tests (CybouDB_API_TEST_ALLOC)
+#[cfg(windows)]
+extern "system" {
+    fn GetProcessHeap() -> *mut c_void;
+    fn HeapAlloc(hHeap: *mut c_void, dwFlags: u32, dwBytes: usize) -> *mut c_void;
+    fn HeapFree(hHeap: *mut c_void, dwFlags: u32, lpMem: *mut c_void) -> i32;
+}
+
+#[cfg(windows)]
+#[no_mangle]
+pub unsafe extern "C" fn cyboudb_test_mem_alloc(size: usize) -> *mut c_void {
+    HeapAlloc(GetProcessHeap(), 0, size)
+}
+
+#[cfg(windows)]
+#[no_mangle]
+pub unsafe extern "C" fn cyboudb_test_mem_free(ptr: *mut c_void, _size: usize) {
+    if !ptr.is_null() {
+        HeapFree(GetProcessHeap(), 0, ptr);
+    }
+}
+

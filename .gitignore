@@ -4,6 +4,7 @@
 
 # --- Build output ----------------------------------------------------------
 /build/
+target/
 *.o
 *.obj
 *.a
@@ -27,6 +28,8 @@ __pycache__/
 
 # --- Data produced by running the engine -----------------------------------
 # Database files are user data, never sources
+*.cdb
+*.cdb-*
 *.cyboudb
 *.cyboudb-wal
 *.cyboudb-journal
