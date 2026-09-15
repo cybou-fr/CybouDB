@@ -46,6 +46,27 @@ int cyboudb_xchacha20poly1305_seal(const cyboudb_aead_args *a);
 int cyboudb_xchacha20poly1305_open(const cyboudb_aead_args *a);
 int os_random(void *buffer, uint64_t length);
 
+/* --- sealing a whole page ------------------------------------------------ */
+#define PAGE_SIZE 4096
+#define SENTRY_NONCE 0
+#define SENTRY_TAG   24
+#define SENTRY_SIZE  40
+#define E_SEAL 42
+
+struct pseal_args {
+    const uint8_t *key;
+    uint8_t *page;
+    uint8_t *entry;
+    const uint8_t *uuid;
+    uint64_t page_no;
+    uint64_t generation;
+    uint64_t page_type;
+    uint64_t epoch;
+};
+
+int cyboudb_page_seal(const struct pseal_args *args);
+int cyboudb_page_open(const struct pseal_args *args);
+
 static int checks, failures;
 
 static void check(const char *what, int ok) {
@@ -198,6 +219,119 @@ int main(void) {
         printf("\n     24 bytes from the system: %.0f ns per draw\n",
                t * 1e9 / n);
         printf("     against ~3,700 ns to seal the page it is drawn for\n");
+    }
+
+    {
+        static uint8_t plain[PAGE_SIZE], page[PAGE_SIZE], copy[PAGE_SIZE];
+        static uint8_t entry[SENTRY_SIZE], entry2[SENTRY_SIZE];
+        uint8_t key[32], other_key[32], uuid[16], other_uuid[16];
+        struct pseal_args a;
+        unsigned k;
+
+        for (k = 0; k < PAGE_SIZE; k++) plain[k] = (uint8_t)(k * 7 + 11);
+        for (k = 0; k < 32; k++) key[k] = (uint8_t)(k * 5 + 1);
+        memcpy(other_key, key, 32);
+        other_key[0] ^= 0x10;
+        for (k = 0; k < 16; k++) uuid[k] = (uint8_t)(k + 3);
+        memcpy(other_uuid, uuid, 16);
+        other_uuid[15] ^= 0x01;
+
+        memcpy(page, plain, PAGE_SIZE);
+        a.key = key; a.page = page; a.entry = entry; a.uuid = uuid;
+        a.page_no = 817; a.generation = 42; a.page_type = 3; a.epoch = 5;
+
+        check("a page seals", cyboudb_page_seal(&a) == 0);
+        check("and the page is no longer the page",
+              memcmp(page, plain, PAGE_SIZE) != 0);
+        {
+            uint8_t zero[SENTRY_SIZE];
+            memset(zero, 0, sizeof zero);
+            check("and the entry holds a nonce and a tag",
+                  memcmp(entry, zero, SENTRY_SIZE) != 0);
+        }
+
+        memcpy(copy, page, PAGE_SIZE);
+        check("and opens again to what went in",
+              cyboudb_page_open(&a) == 0 &&
+              memcmp(page, plain, PAGE_SIZE) == 0);
+
+        /* Sealing the same page twice must not repeat a nonce: a repeated
+           nonce under one key is the end of the cipher, which is why
+           Decision 4 stores the nonce instead of deriving it. */
+        memcpy(page, plain, PAGE_SIZE);
+        a.entry = entry2;
+        check("sealing the same page again draws a different nonce",
+              cyboudb_page_seal(&a) == 0 &&
+              memcmp(entry, entry2, 24) != 0);
+        a.entry = entry;
+
+        /* --- what the associated data is for ------------------------------
+           Each of the five fields exists because leaving it out enables one
+           specific substitution. Here each one is changed on the way back in,
+           and the page has to refuse to open. */
+        {
+            struct pseal_args b;
+            memcpy(page, copy, PAGE_SIZE);
+            b = a; b.key = other_key;
+            check("another epoch's key does not open the page",
+                  cyboudb_page_open(&b) == E_SEAL);
+
+            memcpy(page, copy, PAGE_SIZE);
+            b = a; b.page_no = 818;
+            check("the page presented at another page number does not open",
+                  cyboudb_page_open(&b) == E_SEAL);
+
+            memcpy(page, copy, PAGE_SIZE);
+            b = a; b.generation = 41;
+            check("nor replayed into an earlier generation",
+                  cyboudb_page_open(&b) == E_SEAL);
+
+            memcpy(page, copy, PAGE_SIZE);
+            b = a; b.page_type = 4;
+            check("nor read as another kind of page",
+                  cyboudb_page_open(&b) == E_SEAL);
+
+            memcpy(page, copy, PAGE_SIZE);
+            b = a; b.epoch = 6;
+            check("nor accepted after the seal key was rotated away",
+                  cyboudb_page_open(&b) == E_SEAL);
+
+            memcpy(page, copy, PAGE_SIZE);
+            b = a; b.uuid = other_uuid;
+            check("nor spliced into another database of the same shape",
+                  cyboudb_page_open(&b) == E_SEAL);
+        }
+
+        /* --- and what the tag is for --------------------------------------- */
+        {
+            uint8_t torn[SENTRY_SIZE];
+            memcpy(page, copy, PAGE_SIZE);
+            page[2000] ^= 0x01;
+            check("a rewritten ciphertext is refused",
+                  cyboudb_page_open(&a) == E_SEAL);
+
+            memcpy(page, copy, PAGE_SIZE);
+            memcpy(torn, entry, SENTRY_SIZE);
+            torn[SENTRY_TAG + 3] ^= 0x01;
+            a.entry = torn;
+            check("a rewritten tag is refused",
+                  cyboudb_page_open(&a) == E_SEAL);
+
+            memcpy(torn, entry, SENTRY_SIZE);
+            torn[SENTRY_NONCE + 3] ^= 0x01;
+            memcpy(page, copy, PAGE_SIZE);
+            check("and a rewritten nonce is refused",
+                  cyboudb_page_open(&a) == E_SEAL);
+            a.entry = entry;
+
+            /* After every refusal above, the page that was right still opens -
+               so the refusals are about the change and not about the test
+               having broken something permanently. */
+            memcpy(page, copy, PAGE_SIZE);
+            check("while the page as it was written still opens",
+                  cyboudb_page_open(&a) == 0 &&
+                  memcmp(page, plain, PAGE_SIZE) == 0);
+        }
     }
 
     printf("\nPage seal suite: %d checks, %d failed\n", checks, failures);

@@ -33,6 +33,12 @@ BITS 64
 default rel
 
 global cyboudb_page_aad
+global cyboudb_page_seal
+global cyboudb_page_open
+
+extern os_random
+extern cyboudb_xchacha20poly1305_seal
+extern cyboudb_xchacha20poly1305_open
 
 section .text
 
@@ -81,6 +87,149 @@ cyboudb_page_aad:
 
     FRAME_END
     ret
+
+
+
+; =============================================================================
+;  cyboudb_page_seal(args) -> 0, or a CybouDB_E_* code
+;  cyboudb_page_open(args) -> 0, or CybouDB_E_SEAL
+;
+;  ARG1  const uint8_t *args    CybouDB_PSEAL_ARGS_SIZE, laid out in crypto.inc
+;
+;  One page in, one page out, in place, with the nonce and the tag going to the
+;  seal directory entry rather than into the page - a page is 4096 bytes before
+;  and after, which is what let the format keep every existing page layout.
+;
+;  The nonce is drawn per seal and stored, never derived. docs/ENCRYPTED_FORMAT.md
+;  Decision 4 has the argument: a nonce derived from (page, generation) is
+;  correct for the pages a commit publishes and wrong for the ones it rewrites
+;  after a crash, and a repeated nonce under one key is the end of the cipher.
+;
+;  Frame:
+;    [rbp - 8..24]  saved rbx, r12, r13
+;    [rbp - 32]  args
+;    [rbp - 96]  aad, 48 bytes
+;    [rbp - 160] aead args, 56 bytes
+; =============================================================================
+; -----------------------------------------------------------------------------
+;  BUILD_PAGE_AAD - rbx = args; fills [rbp - PS_AAD] from the five fields.
+;  Shared by seal and open so a page is bound and checked against one layout.
+;
+;  A macro and not a subroutine: PASS_ARG5 writes into the outgoing argument
+;  area, which is addressed from rsp, and a call moves rsp.
+; -----------------------------------------------------------------------------
+%macro BUILD_PAGE_AAD 0
+    mov     ARG1, rbp
+    sub     ARG1, PS_AAD
+    mov     ARG2, [rbx + PSEAL_UUID]
+    mov     ARG3, [rbx + PSEAL_PAGE_NO]
+    mov     ARG4, [rbx + PSEAL_GENERATION]
+    mov     rax, [rbx + PSEAL_PAGE_TYPE]
+    PASS_ARG5 rax
+    mov     rax, [rbx + PSEAL_EPOCH]
+    PASS_ARG6 rax
+    call    cyboudb_page_aad
+%endmacro
+
+; -----------------------------------------------------------------------------
+;  BUILD_AEAD_ARGS - rbx = args; fills [rbp - PS_AEAD] for the AEAD.
+;  The nonce and the tag point into the seal directory entry, which is where
+;  they live afterwards: nothing copies them into the page.
+; -----------------------------------------------------------------------------
+%macro BUILD_AEAD_ARGS 0
+    lea     r10, [rbp - PS_AEAD]
+    mov     rax, [rbx + PSEAL_KEY]
+    mov     [r10 + AEAD_KEY], rax
+    mov     rax, [rbx + PSEAL_ENTRY]
+    add     rax, SENTRY_NONCE
+    mov     [r10 + AEAD_NONCE], rax
+    lea     rax, [rbp - PS_AAD]
+    mov     [r10 + AEAD_AAD], rax
+    mov     qword [r10 + AEAD_AAD_LEN], CybouDB_PAGE_AAD_SIZE
+    mov     rax, [rbx + PSEAL_PAGE]
+    mov     [r10 + AEAD_BUF], rax
+    mov     qword [r10 + AEAD_BUF_LEN], CybouDB_PAGE_SIZE
+    mov     rax, [rbx + PSEAL_ENTRY]
+    add     rax, SENTRY_TAG
+    mov     [r10 + AEAD_TAG], rax
+%endmacro
+
+%define PS_AAD    96
+%define PS_AEAD   160
+%define PS_FRAME  192
+
+cyboudb_page_seal:
+    FRAME_BEGIN PS_FRAME, 2
+    mov     [rbp - 8], rbx
+    mov     [rbp - 16], r12
+    mov     [rbp - 24], r13
+
+    mov     rbx, ARG1
+    mov     [rbp - 32], rbx
+
+    ; A fresh nonce, into the entry where it will be stored.
+    mov     ARG1, [rbx + PSEAL_ENTRY]
+    add     ARG1, SENTRY_NONCE
+    mov     ARG2, CybouDB_XAEAD_NONCE_SIZE
+    call    os_random
+    test    eax, eax
+    jnz     .no_randomness
+
+    BUILD_PAGE_AAD
+
+    mov     rbx, [rbp - 32]
+    BUILD_AEAD_ARGS
+
+    mov     ARG1, rbp
+    sub     ARG1, PS_AEAD
+    call    cyboudb_xchacha20poly1305_seal
+    xor     eax, eax
+    jmp     .done
+
+.no_randomness:
+    mov     eax, CybouDB_E_STATE
+.done:
+    mov     rbx, [rbp - 8]
+    mov     r12, [rbp - 16]
+    mov     r13, [rbp - 24]
+    FRAME_END
+    ret
+
+cyboudb_page_open:
+    FRAME_BEGIN PS_FRAME, 2
+    mov     [rbp - 8], rbx
+    mov     [rbp - 16], r12
+    mov     [rbp - 24], r13
+
+    mov     rbx, ARG1
+    mov     [rbp - 32], rbx
+
+    BUILD_PAGE_AAD
+
+    mov     rbx, [rbp - 32]
+    BUILD_AEAD_ARGS
+
+    mov     ARG1, rbp
+    sub     ARG1, PS_AEAD
+    call    cyboudb_xchacha20poly1305_open
+    test    eax, eax
+    jnz     .refused
+    xor     eax, eax
+    jmp     .done
+
+.refused:
+    ; Everything this can mean - a wrong key, a wrong page number, a rewritten
+    ; ciphertext, a bit that flipped on the disk - looks identical from here,
+    ; and the sentence in main.asm names the two that matter.
+    mov     eax, CybouDB_E_SEAL
+.done:
+    mov     rbx, [rbp - 8]
+    mov     r12, [rbp - 16]
+    mov     r13, [rbp - 24]
+    FRAME_END
+    ret
+
+
 
 %ifdef CybouDB_LINUX
 section .note.GNU-stack noalloc noexec nowrite progbits

@@ -87,7 +87,13 @@
 ; other is CybouDB_E_KEY.
 %define CybouDB_E_PHRASE      41            ; the phrase does not checksum
 
-%define CybouDB_E_COUNT      42            ; size of the message table
+; A page whose tag does not verify was altered, or damaged in a way the CRC
+; cannot see. The engine cannot tell those apart and does not pretend to: the
+; sentence names both, because naming only one of them would be a guess about
+; whether there is an adversary.
+%define CybouDB_E_SEAL        42            ; a page is not the one that was written
+
+%define CybouDB_E_COUNT      43            ; size of the message table
 
 ; --- Why an operating system call failed -------------------------------------
 ;  The platform layer translates its native error - errno on Linux, the Win32

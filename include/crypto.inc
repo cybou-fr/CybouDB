@@ -78,6 +78,22 @@
 %define SHAKE_PAD      0x1f
 %define SHA3_PAD       0x06
 
+; --- sealing one page -------------------------------------------------------
+;  The arguments a page seal needs do not fit in registers, so they arrive as
+;  a struct - the same shape the AEAD's own arguments take, and for the same
+;  reason. Filling it out is how a caller states, field by field, what this
+;  page is; the associated data is built from those fields and a page that
+;  claims to be a different one fails to open.
+%define PSEAL_KEY        0              ; const uint8_t *, 32, the epoch's key
+%define PSEAL_PAGE       8              ; uint8_t *, 4096, sealed in place
+%define PSEAL_ENTRY      16             ; uint8_t *, 40: the nonce and the tag
+%define PSEAL_UUID       24             ; const uint8_t *, 16
+%define PSEAL_PAGE_NO    32
+%define PSEAL_GENERATION 40
+%define PSEAL_PAGE_TYPE  48
+%define PSEAL_EPOCH      56
+%define CybouDB_PSEAL_ARGS_SIZE 64
+
 ; --- key derivation ---------------------------------------------------------
 ;  docs/KEY_HIERARCHY.md, Decision 2. A purpose is a number in a closed list,
 ;  not a string a caller supplies: a KDF whose label comes from outside is an
