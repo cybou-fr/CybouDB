@@ -206,18 +206,20 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
             build/page_seal.o build/aead.o build/chacha20.o \
             build/poly1305.o build/os_rand.o -o build/page_seal_test
         echo "Build OK -> build/page_seal_test"
+        nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/crypto/crypto_status.asm \
+            -o build/crypto_status.o
         nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/crypto/kdf.asm \
             -o build/kdf.o
         "$CC" -O2 -no-pie -Wall -Wextra tests/kdf_test.c \
             build/kdf.o build/keccak.o build/aead.o build/chacha20.o \
-            build/poly1305.o build/os_rand.o -o build/kdf_test
+            build/poly1305.o build/os_rand.o build/crypto_status.o -o build/kdf_test
         echo "Build OK -> build/kdf_test"
         nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/crypto/crypto_root.asm \
             -o build/crypto_root.o
         nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/core/checksum.asm \
             -o build/checksum_crypto.o
         "$CC" -O2 -no-pie -Wall -Wextra tests/crypto_root_test.c \
-            build/crypto_root.o build/checksum_crypto.o -o build/crypto_root_test
+            build/crypto_root.o build/checksum_crypto.o build/crypto_status.o -o build/crypto_root_test
         echo "Build OK -> build/crypto_root_test"
     fi
     if [ "${1:-}" = "--crypto-probe" ]; then

@@ -195,6 +195,13 @@ e_lease:   db "error: the lease was reclaimed, or that message is not claimed",
 e_damaged: db "error: the newest generation is damaged - an older one is intact,"
            db " and an ordinary open would silently use it", 10, 0
 
+e_key:     db "error: this key does not open this file - the file itself is "
+           db "intact, and no amount of repair will change that", 10, 0
+e_crypto_root: db "error: the crypto root page contradicts itself - the "
+           db "encryption metadata is damaged", 10, 0
+e_crypto_crc: db "error: crypto root page checksum mismatch - the page is "
+           db "damaged", 10, 0
+
     align 8
 err_table:
     dq e_none, e_pages, e_create, e_open, e_size, e_small, e_map, e_magic
@@ -205,6 +212,13 @@ err_table:
     dq e_catalog, e_schema, e_notfound, e_catalog_full
     dq e_rows, e_pax, e_value, e_busy, e_cursor, e_retained
     dq e_damaged, e_lease
+    dq e_key, e_crypto_root, e_crypto_crc
+
+; A code without a sentence prints whatever follows the table, so the table's
+; length is checked here rather than discovered by a user.
+%if (($ - err_table) / 8) != CybouDB_E_COUNT
+  %error "err_table and CybouDB_E_COUNT disagree"
+%endif
 
 err_no_pax_cli:  db "error: database does not support PAX tables (create with create-pax-multi)", 10, 0
 msg_sql_table_created: db "Table created.", 10, 0

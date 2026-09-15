@@ -415,16 +415,18 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     cl.exe /O2 /W3 /nologo tests\page_seal_test.c build\page_seal.obj build\aead.obj build\chacha20.obj build\poly1305.obj build\os_rand.obj /Febuild\page_seal_test.exe /Fobuild\page_seal_test.obj /link kernel32.lib
     if errorlevel 1 goto :fail
     echo Build OK -^> build\page_seal_test.exe
+    "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\crypto\crypto_status.asm -o build\crypto_status.obj
+    if errorlevel 1 goto :fail
     "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\crypto\kdf.asm -o build\kdf.obj
     if errorlevel 1 goto :fail
-    cl.exe /O2 /W3 /nologo tests\kdf_test.c build\kdf.obj build\keccak.obj build\aead.obj build\chacha20.obj build\poly1305.obj build\os_rand.obj /Febuild\kdf_test.exe /Fobuild\kdf_test.obj /link kernel32.lib
+    cl.exe /O2 /W3 /nologo tests\kdf_test.c build\kdf.obj build\keccak.obj build\aead.obj build\chacha20.obj build\poly1305.obj build\os_rand.obj build\crypto_status.obj /Febuild\kdf_test.exe /Fobuild\kdf_test.obj /link kernel32.lib
     if errorlevel 1 goto :fail
     echo Build OK -^> build\kdf_test.exe
     "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\crypto\crypto_root.asm -o build\crypto_root.obj
     if errorlevel 1 goto :fail
     "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\core\checksum.asm -o build\checksum_crypto.obj
     if errorlevel 1 goto :fail
-    cl.exe /O2 /W3 /nologo tests\crypto_root_test.c build\crypto_root.obj build\checksum_crypto.obj /Febuild\crypto_root_test.exe /Fobuild\crypto_root_test.obj
+    cl.exe /O2 /W3 /nologo tests\crypto_root_test.c build\crypto_root.obj build\checksum_crypto.obj build\crypto_status.obj /Febuild\crypto_root_test.exe /Fobuild\crypto_root_test.obj
     if errorlevel 1 goto :fail
     echo Build OK -^> build\crypto_root_test.exe
     goto :eof

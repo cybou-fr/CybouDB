@@ -40,6 +40,9 @@ int cyboudb_key_wrap(uint8_t *out, const uint8_t *kek, const uint8_t *key,
 int cyboudb_key_unwrap(uint8_t *key_out, const uint8_t *kek,
                        const uint8_t *wrapped, const uint8_t *aad,
                        uint64_t aad_len);
+int cyboudb_key_status(int unwrap_rc);
+
+#define E_KEY 38
 
 static int checks, failures;
 
@@ -187,6 +190,14 @@ int main(void) {
             memset(back, 0xAA, 32);
             check("the wrong key-encryption key is refused",
                   cyboudb_key_unwrap(back, wrong_kek, wrapped, aad, 24) != 0);
+            /* And what the user hears. A wrong key is the one failure an
+               engine must not describe as damage: the file is perfect, and
+               the person holding the wrong passphrase should be told to find
+               the right one rather than to go looking for a backup. */
+            check("and reported as a key that does not open this file",
+                  cyboudb_key_status(
+                      cyboudb_key_unwrap(back, wrong_kek, wrapped, aad, 24))
+                      == E_KEY);
             check("and leaves zeroes rather than a plausible key",
                   memcmp(back, zero, 32) == 0);
         }

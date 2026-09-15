@@ -65,7 +65,23 @@
 ; worker whose lease was reclaimed is told - so it says so rather than sharing
 ; a message with a bad column value.
 %define CybouDB_E_LEASE      37
-%define CybouDB_E_COUNT      38            ; size of the message table
+; --- what a database sealed with a key can refuse with -----------------------
+;  docs/KEY_HIERARCHY.md, step 4. These three exist so that an engine never has
+;  to say one sentence for three different situations. A user who is told
+;  "damaged" reaches for a backup; a user who is told "this key does not open
+;  this file" reaches for the other passphrase. Collapsing them costs the first
+;  user nothing and costs the second one their afternoon.
+;
+;  A failed unwrap is ALWAYS E_KEY and never a damage code. It cannot be
+;  anything else: an AEAD tag that does not verify is what a wrong key looks
+;  like, what a flipped bit looks like, and what an attacker looks like, and
+;  the file cannot tell them apart. Of those three the only one the engine may
+;  assert is the one that does not accuse the storage of being broken.
+%define CybouDB_E_KEY         38            ; this key does not open this file
+%define CybouDB_E_CRYPTO_ROOT 39            ; the crypto root page contradicts itself
+%define CybouDB_E_CRYPTO_CRC  40            ; the crypto root page is damaged
+
+%define CybouDB_E_COUNT      41            ; size of the message table
 
 ; --- Why an operating system call failed -------------------------------------
 ;  The platform layer translates its native error - errno on Linux, the Win32

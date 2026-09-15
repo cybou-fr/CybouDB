@@ -56,6 +56,12 @@
 #define CROOT_E_SLOTS    7
 #define CROOT_E_RESERVED 8
 
+/* include/constants.inc holds these. */
+#define E_FEATURES     11
+#define E_KEY          38
+#define E_CRYPTO_ROOT  39
+#define E_CRYPTO_CRC   40
+
 #define WRAPPED_KEY_SIZE 72
 
 int cyboudb_crypto_root_init(uint8_t *page, uint64_t seal_epoch,
@@ -65,6 +71,8 @@ int cyboudb_crypto_root_add_slot(uint8_t *page, uint64_t key_id,
                                  uint64_t purpose, const uint8_t *wrapped);
 const uint8_t *cyboudb_crypto_root_find(const uint8_t *page, uint64_t key_id);
 int cyboudb_crypto_root_validate(const uint8_t *page);
+int cyboudb_crypto_root_status(int croot_err);
+int cyboudb_key_status(int unwrap_rc);
 
 static int checks, failures;
 
@@ -341,6 +349,44 @@ int main(void) {
     repair_crc(page);
     check("a key left past the count is refused, not quietly ignored",
           cyboudb_crypto_root_validate(page) == CROOT_E_SLOTS);
+
+    /* --- what the user is told ---------------------------------------------
+       The validator's codes are structural; these are the sentences. The
+       property being tested is not that the mapping is clever but that it
+       never reaches for E_KEY: not one of these situations is decidable with
+       a key, so not one of them may be blamed on one. */
+    check("a crypto root that is not one is metadata, not damage",
+          cyboudb_crypto_root_status(CROOT_E_MAGIC) == E_CRYPTO_ROOT);
+    check("a bad checksum is damage",
+          cyboudb_crypto_root_status(CROOT_E_CRC) == E_CRYPTO_CRC);
+    check("a newer version, AEAD or KDF is a feature this build lacks",
+          cyboudb_crypto_root_status(CROOT_E_VERSION) == E_FEATURES &&
+          cyboudb_crypto_root_status(CROOT_E_AEAD) == E_FEATURES &&
+          cyboudb_crypto_root_status(CROOT_E_KDF) == E_FEATURES);
+    check("impossible geometry and a contradictory slot table are metadata",
+          cyboudb_crypto_root_status(CROOT_E_GEOMETRY) == E_CRYPTO_ROOT &&
+          cyboudb_crypto_root_status(CROOT_E_SLOTS) == E_CRYPTO_ROOT &&
+          cyboudb_crypto_root_status(CROOT_E_RESERVED) == E_CRYPTO_ROOT);
+    check("a valid page is no error at all",
+          cyboudb_crypto_root_status(CROOT_OK) == 0);
+    {
+        int e, ok = 1;
+        for (e = 0; e < 64; e++)
+            if (cyboudb_crypto_root_status(e) == E_KEY) ok = 0;
+        check("and no structural refusal, known or not, is ever a key problem",
+              ok);
+        ok = 1;
+        for (e = 1; e < 64; e++)
+            if (cyboudb_crypto_root_status(e) == 0) ok = 0;
+        check("while every refusal is some error - none of them passes as ok",
+              ok);
+    }
+
+    check("a failed unwrap is the key, every time and without inspection",
+          cyboudb_key_status(1) == E_KEY && cyboudb_key_status(-1) == E_KEY &&
+          cyboudb_key_status(255) == E_KEY);
+    check("and a successful one is not an error",
+          cyboudb_key_status(0) == 0);
 
     printf("\ncrypto root suite: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

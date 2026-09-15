@@ -195,7 +195,34 @@ until its page is reused.
 | the derivation function | one entry point, the closed label list, and a test that two purposes never produce the same key | done - `src/crypto/kdf.asm`, all ten pairs |
 | wrap and unwrap | over the existing AEAD, with a test that a DEK for one scope does not unwrap in another | done - a refused unwrap leaves zeroes, not a plausible key |
 | the crypto root's byte layout | a `%define` map like every other page in this format, and a validator that refuses a malformed one | done - `include/crypto.inc`, `src/crypto/crypto_root.asm`, 39 checks |
-| what happens when unwrapping fails | a database that cannot be opened must say *this key does not open this file*, not *corrupt* - the same distinction `0.6` drew between a capability refusal and damage | next |
+| what happens when unwrapping fails | a database that cannot be opened must say *this key does not open this file*, not *corrupt* - the same distinction `0.6` drew between a capability refusal and damage | done - `CybouDB_E_KEY`, and a test that no structural refusal can reach it |
+
+## What the person holding the key is told
+
+Three codes, because three things can be true and only one of them is about
+the key:
+
+| | |
+| :--- | :--- |
+| `CybouDB_E_CRYPTO_ROOT` | the encryption metadata contradicts itself |
+| `CybouDB_E_CRYPTO_CRC` | the crypto root page is damaged |
+| `CybouDB_E_KEY` | this key does not open this file |
+
+`src/crypto/crypto_status.asm` is the only place the validator's structural
+codes become one of these, and it holds one rule in each direction. Nothing a
+reader can decide without a key is ever reported as a key problem - a test
+walks every code from 0 to 63, including ones no validator returns yet, and
+none of them maps to `CybouDB_E_KEY`. And a failed unwrap is always
+`CybouDB_E_KEY`, with no inspection of why: an AEAD tag that does not verify
+looks the same whether the key was wrong, a bit flipped, or someone edited the
+file, and of those three the only one an engine may assert is the one that
+does not accuse the storage of being broken.
+
+The cost of getting this wrong is not abstract. "Damaged" sends someone to
+their backups and their recovery tools for a file that is byte-perfect and
+simply locked with a different key than the one they typed.
+
+---
 
 Steps 5 and 6 then attach the two paths to the root: a post-quantum private key
 and twenty-four words. Neither changes anything above.
