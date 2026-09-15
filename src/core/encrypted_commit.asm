@@ -92,6 +92,12 @@ db_encrypted_commit:
     cmp     qword [rbx + DB_CACHE], 0
     je      .not_encrypted
 
+    ; The writer below rebuilds one parent over the leaf array. Refuse deeper
+    ; trees until commit can rebuild every dirty ancestor; otherwise it would
+    ; publish a root for the wrong physical layout and corrupt the next open.
+    cmp     qword [rbx + DB_SEAL_DEPTH], 1
+    ja      .not_encrypted              ; zero is the legacy unit-test context
+
     ; Record which leaf MACs the flush will change before it invalidates dirty
     ; frames. A depth-one tree has at most 251 leaves, so four qwords cover it.
     xor     eax, eax

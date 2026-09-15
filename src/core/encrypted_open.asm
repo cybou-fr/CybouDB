@@ -53,6 +53,9 @@ extern cyboudb_kmac256_init
 extern cyboudb_kmac256_update
 extern cyboudb_kmac256_final
 extern cyboudb_pcache_init
+extern cyboudb_seal_geometry
+extern cyboudb_seal_node_validate
+extern cyboudb_seal_node_verify
 
 ; The encryption bit is NOT in include/format.inc, and that is deliberate:
 ; docs/ENCRYPTED_ENGINE.md keeps it out of the normative header until the whole
@@ -91,7 +94,8 @@ section .text
 %define EA_COVER    448
 %define EA_KMAC     704
 %define EA_PAGE     4864
-%define EA_FRAME    4928
+%define EA_GEOM     4896
+%define EA_FRAME    4992
 
 ; =============================================================================
 ;  db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, frames) -> int
@@ -199,13 +203,26 @@ db_encrypted_attach:
     mov     [rbx + DB_SEAL_EPOCH], rax
     mov     rax, [rbp - EA_PAGE + CROOT_SEAL_DIR_FIRST]
     mov     rcx, [rbp - EA_PAGE + CROOT_SEAL_DIR_PAGES]
+    mov     [rbx + DB_SEAL_PAGES], rcx
     cmp     qword [rbx + DB_SB_PAGE], CybouDB_SB_PAGE_B
     jne     .seal_copy_selected
     add     rax, rcx                    ; superblock B owns copy B
 .seal_copy_selected:
     mov     [rbx + DB_SEAL_DIR], rax    ; active copy's first leaf
-    dec     rcx                         ; depth one: one root after the leaves
-    mov     [rbx + DB_SEAL_LEAVES], rcx
+    mov     rax, [rbp - EA_PAGE + CROOT_TOTAL_PAGES]
+    mov     [rbx + DB_PAGES], rax
+    lea     ARG1, [rbp - EA_GEOM]
+    mov     ARG2, rax
+    call    cyboudb_seal_geometry
+    mov     rbx, [rbp - 48]
+    mov     rax, [rbp - EA_GEOM]
+    mov     [rbx + DB_SEAL_LEAVES], rax
+    mov     rax, [rbp - EA_GEOM + 16]
+    mov     [rbx + DB_SEAL_DEPTH], rax
+    mov     rax, [rbp - EA_GEOM + 24]
+    shr     rax, 1
+    cmp     rax, [rbx + DB_SEAL_PAGES]
+    jne     .crypto_root_bad
     mov     r15, [rbp - EA_PAGE + CROOT_KEM_ROOT]
     test    r15, r15
     jz      .no_key_slots
@@ -332,6 +349,40 @@ db_encrypted_attach:
     mov     rdx, [rbp - EA_WANT + 8]
     xor     rdx, [rbp - EA_TAG + 8]
     or      rax, rdx
+    jnz     .superblock_forged
+
+    ; The authenticated superblock publishes the root MAC. Prove the root page
+    ; now; individual page resolves continue from it down to their leaf.
+    mov     rax, [rbp - EA_COVER + SB_SEAL_ROOT]
+    mov     [rbx + DB_SEAL_ROOT], rax
+    mov     rax, [rbp - EA_COVER + SB_SEAL_ROOT + 8]
+    mov     [rbx + DB_SEAL_ROOT + 8], rax
+    mov     rax, [rbx + DB_SEAL_DIR]
+    add     rax, [rbx + DB_SEAL_PAGES]
+    dec     rax
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     ARG1, [rbx + DB_HANDLE]
+    lea     ARG2, [rbp - EA_PAGE]
+    mov     ARG3, CybouDB_PAGE_SIZE
+    mov     ARG4, rax
+    call    vfs_read_at
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .damaged
+    lea     ARG1, [rbp - EA_PAGE]
+    call    cyboudb_seal_node_validate
+    test    eax, eax
+    jnz     .crypto_root_bad
+    mov     rbx, [rbp - 48]
+    mov     rax, [rbx + DB_SEAL_DEPTH]
+    cmp     [rbp - EA_PAGE + SNODE_LEVEL], rax
+    jne     .crypto_root_bad
+    cmp     qword [rbp - EA_PAGE + SNODE_INDEX], 0
+    jne     .crypto_root_bad
+    lea     ARG1, [rbx + DB_TREE_KEY]
+    lea     ARG2, [rbp - EA_PAGE]
+    lea     ARG3, [rbx + DB_SEAL_ROOT]
+    call    cyboudb_seal_node_verify
+    test    eax, eax
     jnz     .superblock_forged
 
     ; --- the cache, and the switch the page macro branches on ----------------

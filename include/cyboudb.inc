@@ -153,6 +153,9 @@
 ;  both die with the handle, and neither is the root.
 %define DB_META_KEY       (DB_ENC_ERROR + 8)
 %define DB_TREE_KEY       (DB_META_KEY + 32)   ; 32 bytes: the seal tree's key
+%define DB_SEAL_PAGES     (DB_TREE_KEY + 32)   ; pages in one tree copy
+%define DB_SEAL_DEPTH     (DB_SEAL_PAGES + 8)  ; root level, one or greater
+%define DB_SEAL_ROOT      (DB_SEAL_DEPTH + 8)  ; MAC published by superblock
 
 ;  Three keys stay resident while a database is open, and it is worth being
 ;  able to name all three rather than discovering a fourth later: the page seal
@@ -162,7 +165,7 @@
 ;  handle. The root key is not among them - it is wiped at the end of the open,
 ;  which is the whole reason these are derived rather than kept.
 
-%define CybouDB_DB_SIZE      (DB_TREE_KEY + 32)
+%define CybouDB_DB_SIZE      (DB_SEAL_ROOT + 16)
 
 ; Entries in the log: page id, then the two states packed into one qword so an
 ; entry is 16 bytes and the whole thing is a flat array with no allocator.

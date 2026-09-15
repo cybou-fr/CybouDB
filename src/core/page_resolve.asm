@@ -39,6 +39,11 @@ extern cyboudb_pcache_lookup
 extern cyboudb_pcache_admit
 extern cyboudb_pcache_invalidate
 extern cyboudb_page_open
+extern cyboudb_seal_level
+extern cyboudb_seal_leaf_validate
+extern cyboudb_seal_leaf_verify
+extern cyboudb_seal_node_validate
+extern cyboudb_seal_node_verify
 extern vfs_read_at
 extern vfs_write_at
 extern cyboudb_pcache_mark_dirty
@@ -56,14 +61,18 @@ extern crc32c
 ;   [rbp - 40] ctx    [rbp - 48] page    [rbp - 56] frame
 ;   [rbp - 64] the evicted page the cache reported
 ;   [rbp - 128] the page seal arguments, CybouDB_PSEAL_ARGS_SIZE
-;   [rbp - 4224] the seal directory leaf, read on every miss
+;   [rbp - 96] expected child MAC   [rbp - 104] tree level
+;   [rbp - 120] level divisor      [rbp - 144] level layout pair
+;   [rbp - 4288] the seal directory leaf, read on every miss
+;   [rbp - 8384] one internal seal node
 ; The arguments start at 192 and not at 128 because the flush below needs
 ; nine slots above them and the first draft had it needing ten - an array that
 ; ends where the slots begin is correct right until someone adds a slot, which
 ; is the same lesson the ML-KEM frames and the KMAC block taught.
 %define PR_ARGS   192                  ; [rbp-192, rbp-128)
 %define PR_LEAF   4288                 ; [rbp-4288, rbp-192)
-%define PR_FRAME  4352
+%define PR_NODE   8384                 ; [rbp-8384, rbp-4288)
+%define PR_FRAME  8448
 
 section .text
 
@@ -113,6 +122,7 @@ db_page_resolve:
     mov     rcx, CybouDB_SEAL_ENTRIES_PER_LEAF
     div     rcx                         ; rax = which leaf, rdx = which entry
     mov     r13, rdx                    ; the entry index, wanted later
+    mov     [rbp - 72], rax             ; requested leaf index
 
     add     rax, [rbx + DB_SEAL_DIR]
     shl     rax, CybouDB_PAGE_SHIFT     ; the leaf's byte offset in the file
@@ -124,6 +134,112 @@ db_page_resolve:
     call    vfs_read_at
     cmp     rax, CybouDB_PAGE_SIZE
     jne     .no_entry
+
+    ; Authenticate the complete path named by the superblock before trusting
+    ; an entry in the leaf. Depth zero exists only for the small standalone
+    ; resolver harness; every context produced by encrypted attach has a root.
+    mov     rbx, [rbp - 40]
+    mov     rax, [rbx + DB_SEAL_DEPTH]
+    test    rax, rax
+    jz      .tree_verified
+    mov     [rbp - 104], rax
+    mov     rax, [rbx + DB_SEAL_ROOT]
+    mov     [rbp - 96], rax
+    mov     rax, [rbx + DB_SEAL_ROOT + 8]
+    mov     [rbp - 88], rax
+
+.tree_level:
+    ; divisor = 251^level. It identifies both the node containing the wanted
+    ; leaf and the child slot inside that node.
+    mov     rcx, [rbp - 104]
+    mov     rax, 1
+.tree_power:
+    imul    rax, rax, CybouDB_SEAL_CHILDREN_PER_NODE
+    jo      .tree_bad
+    dec     rcx
+    jnz     .tree_power
+    mov     [rbp - 120], rax
+
+    lea     ARG1, [rbp - 144]
+    mov     ARG2, [rbx + DB_PAGES]
+    mov     ARG3, [rbp - 104]
+    call    cyboudb_seal_level
+    test    eax, eax
+    jnz     .tree_bad
+
+    mov     rax, [rbp - 72]
+    xor     rdx, rdx
+    div     qword [rbp - 120]            ; node index at this level
+    cmp     rax, [rbp - 136]             ; layout count
+    jae     .tree_bad
+    mov     [rbp - 112], rax
+    add     rax, [rbp - 144]             ; layout offset
+    add     rax, [rbx + DB_SEAL_DIR]
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     ARG1, [rbx + DB_HANDLE]
+    lea     ARG2, [rbp - PR_NODE]
+    mov     ARG3, CybouDB_PAGE_SIZE
+    mov     ARG4, rax
+    call    vfs_read_at
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .tree_bad
+
+    lea     ARG1, [rbp - PR_NODE]
+    call    cyboudb_seal_node_validate
+    test    eax, eax
+    jnz     .tree_bad
+    mov     rax, [rbp - 104]
+    cmp     [rbp - PR_NODE + SNODE_LEVEL], rax
+    jne     .tree_bad
+    mov     rax, [rbp - 112]
+    cmp     [rbp - PR_NODE + SNODE_INDEX], rax
+    jne     .tree_bad
+    mov     rbx, [rbp - 40]
+    lea     ARG1, [rbx + DB_TREE_KEY]
+    lea     ARG2, [rbp - PR_NODE]
+    lea     ARG3, [rbp - 96]
+    call    cyboudb_seal_node_verify
+    test    eax, eax
+    jnz     .tree_bad
+
+    mov     rax, [rbp - 120]
+    xor     rdx, rdx
+    mov     rcx, CybouDB_SEAL_CHILDREN_PER_NODE
+    div     rcx                         ; divisor for the child level
+    mov     rcx, rax
+    mov     rax, [rbp - 72]
+    xor     rdx, rdx
+    div     rcx
+    xor     rdx, rdx
+    mov     rcx, CybouDB_SEAL_CHILDREN_PER_NODE
+    div     rcx                         ; rdx = child slot
+    cmp     rdx, [rbp - PR_NODE + SNODE_CHILD_COUNT]
+    jae     .tree_bad
+    shl     rdx, 4
+    mov     rax, [rbp - PR_NODE + SNODE_CHILDREN + rdx]
+    mov     [rbp - 96], rax
+    mov     rax, [rbp - PR_NODE + SNODE_CHILDREN + rdx + 8]
+    mov     [rbp - 88], rax
+
+    dec     qword [rbp - 104]
+    jnz     .tree_level
+
+    lea     ARG1, [rbp - PR_LEAF]
+    call    cyboudb_seal_leaf_validate
+    test    eax, eax
+    jnz     .tree_bad
+    mov     rax, [rbp - 72]
+    cmp     [rbp - PR_LEAF + SLEAF_INDEX], rax
+    jne     .tree_bad
+    mov     rbx, [rbp - 40]
+    lea     ARG1, [rbx + DB_TREE_KEY]
+    lea     ARG2, [rbp - PR_LEAF]
+    lea     ARG3, [rbp - 96]
+    call    cyboudb_seal_leaf_verify
+    test    eax, eax
+    jnz     .tree_bad
+
+.tree_verified:
 
     ; --- a frame to read the page into ---------------------------------------
     mov     rbx, [rbp - 40]
@@ -199,6 +315,12 @@ db_page_resolve:
 
     mov     qword [rbx + DB_ENC_ERROR], 0
     mov     rax, [rbp - 56]
+    jmp     .done
+
+.tree_bad:
+    mov     rbx, [rbp - 40]
+    mov     qword [rbx + DB_ENC_ERROR], CybouDB_E_SEAL
+    xor     eax, eax
     jmp     .done
 
 .refused:

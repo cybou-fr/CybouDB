@@ -66,8 +66,9 @@
 #define P_SLOTS   4
 #define P_LEAF    5        /* where the directory starts: leaf 0 */
 #define P_LEAF1   6        /* leaf 1, which is the one covering page 100 */
+#define P_NODE    7
 #define P_PAYLOAD 100
-#define TOTAL     200
+#define TOTAL     160
 
 #define EK_BYTES 1184
 #define DK_BYTES 2400
@@ -82,6 +83,7 @@
 
 #define KDF_METADATA_KEK 1
 #define KDF_PAGE_SEAL    2
+#define KDF_SEAL_TREE    3
 
 #ifdef _WIN32
 typedef const wchar_t *vfs_path;
@@ -118,6 +120,14 @@ int cyboudb_kdf(uint8_t *out, uint64_t out_len, uint64_t purpose,
                 uint64_t context_len);
 void cyboudb_seal_leaf_init(uint8_t *page, uint64_t index, uint64_t generation,
                             uint64_t epoch);
+void cyboudb_seal_node_init(uint8_t *page, uint64_t index, uint64_t level,
+                            uint64_t generation, uint64_t epoch);
+void cyboudb_seal_leaf_mac(uint8_t *out, const uint8_t *key,
+                           const uint8_t *page);
+void cyboudb_seal_node_mac(uint8_t *out, const uint8_t *key,
+                           const uint8_t *page);
+int cyboudb_seal_node_set_child(uint8_t *page, uint64_t slot,
+                                const uint8_t *mac);
 uint8_t *cyboudb_seal_entry(uint8_t *leaf, uint64_t page_number);
 struct pseal_args {
     const uint8_t *key; uint8_t *page; uint8_t *entry; const uint8_t *uuid;
@@ -149,11 +159,13 @@ static uint64_t rd64(const uint8_t *p, int off) {
     uint64_t v; memcpy(&v, p + off, 8); return v;
 }
 
-static uint8_t header[PAGE], sb[PAGE], croot[PAGE], slots[PAGE], leaf[PAGE];
+static uint8_t header[PAGE], sb[PAGE], croot[PAGE], slots[PAGE];
+static uint8_t leaf0[PAGE], leaf[PAGE], node[PAGE];
 static uint8_t payload[PAGE], ctx[CTX_BYTES];
 static uint8_t ek[EK_BYTES], dk[DK_BYTES], ek2[EK_BYTES], dk2[DK_BYTES];
 static uint8_t slot[KSLOT_SIZE];
-static uint8_t root_key[32], metadata_key[32], page_key[32], uuid[16];
+static uint8_t root_key[32], metadata_key[32], page_key[32], tree_key[32];
+static uint8_t uuid[16];
 static const uint64_t GENERATION = 21, EPOCH = 4;
 static const char PAYLOAD_TEXT[] = "the engine opened this by itself";
 
@@ -166,7 +178,7 @@ static void superblock_tag(uint8_t *out, const uint8_t *key, const uint8_t *page
 }
 
 static void build_file(int64_t h) {
-    uint8_t seed[64], aad[24], ctx8[8];
+    uint8_t seed[64], aad[24], ctx8[8], mac[16];
     uint64_t key_id = 0;
     struct pseal_args a;
 
@@ -181,6 +193,7 @@ static void build_file(int64_t h) {
     memcpy(ctx8, &EPOCH, 8);
     cyboudb_kdf(metadata_key, 32, KDF_METADATA_KEK, root_key, NULL, 0);
     cyboudb_kdf(page_key, 32, KDF_PAGE_SEAL, root_key, ctx8, 8);
+    cyboudb_kdf(tree_key, 32, KDF_SEAL_TREE, root_key, ctx8, 8);
 
     memset(header, 0, PAGE);
     wr32(header, HDR_MAGIC, HDR_MAGIC_VALUE);
@@ -192,7 +205,7 @@ static void build_file(int64_t h) {
     memcpy(header + HDR_UUID, uuid, 16);
     wr32(header, HDR_CRC, crc32c(header, HDR_CRC));
 
-    cyboudb_crypto_root_init(croot, EPOCH, P_LEAF, 2, P_LEAF, TOTAL);
+    cyboudb_crypto_root_init(croot, EPOCH, P_LEAF, 3, P_NODE, TOTAL);
     wr64(croot, 4016, P_SLOTS);                  /* CROOT_KEM_ROOT */
     wr32(croot, 4092, crc32c(croot, 4092));
 
@@ -212,12 +225,21 @@ static void build_file(int64_t h) {
     cyboudb_page_seal(&a);
     wr32(leaf, 4092, crc32c(leaf, 4092));
 
+    cyboudb_seal_leaf_init(leaf0, 0, GENERATION, EPOCH);
+    cyboudb_seal_node_init(node, 0, 1, GENERATION, EPOCH);
+    cyboudb_seal_leaf_mac(mac, tree_key, leaf0);
+    cyboudb_seal_node_set_child(node, 0, mac);
+    cyboudb_seal_leaf_mac(mac, tree_key, leaf);
+    cyboudb_seal_node_set_child(node, 1, mac);
+    cyboudb_seal_node_mac(mac, tree_key, node);
+
     memset(sb, 0, PAGE);
     wr32(sb, SB_MAGIC, SB_MAGIC_VALUE);
     wr32(sb, SB_SIZE, 128);
     wr64(sb, SB_GENERATION, GENERATION);
     wr64(sb, SB_TOTAL_PAGES, TOTAL);
     wr64(sb, SB_FEATURE_ROOT, P_CROOT);
+    memcpy(sb + SB_SEAL_ROOT, mac, 16);
     superblock_tag(sb + SB_SEAL_TAG, metadata_key, sb);
     wr32(sb, SB_CRC, crc32c(sb, SB_CRC));
 
@@ -225,7 +247,12 @@ static void build_file(int64_t h) {
     vfs_write_at(h, sb, PAGE, (uint64_t)P_SB * PAGE);
     vfs_write_at(h, croot, PAGE, (uint64_t)P_CROOT * PAGE);
     vfs_write_at(h, slots, PAGE, (uint64_t)P_SLOTS * PAGE);
+    vfs_write_at(h, leaf0, PAGE, (uint64_t)P_LEAF * PAGE);
     vfs_write_at(h, leaf, PAGE, (uint64_t)P_LEAF1 * PAGE);
+    vfs_write_at(h, node, PAGE, (uint64_t)P_NODE * PAGE);
+    vfs_write_at(h, leaf0, PAGE, (uint64_t)(P_LEAF + 3) * PAGE);
+    vfs_write_at(h, leaf, PAGE, (uint64_t)(P_LEAF1 + 3) * PAGE);
+    vfs_write_at(h, node, PAGE, (uint64_t)(P_NODE + 3) * PAGE);
     vfs_write_at(h, payload, PAGE, (uint64_t)P_PAYLOAD * PAGE);
     vfs_sync_file(h);
 }
@@ -285,6 +312,33 @@ int main(void) {
               frame != NULL && strcmp((char *)frame, PAYLOAD_TEXT) == 0);
     }
     vfs_close(h);
+
+    /* --- authenticated directory path -------------------------------------- */
+    {
+        uint8_t broken[PAGE];
+        h = vfs_open_rw(path, 0);
+        memcpy(broken, node, PAGE);
+        broken[64] ^= 1;                         /* first authenticated child */
+        wr32(broken, 4092, crc32c(broken, 4092));
+        vfs_write_at(h, broken, PAGE, (uint64_t)P_NODE * PAGE);
+        fresh_context(h);
+        check("a root node rewritten with a repaired checksum is refused",
+              db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 16) == E_SEAL);
+        vfs_write_at(h, node, PAGE, (uint64_t)P_NODE * PAGE);
+
+        memcpy(broken, leaf, PAGE);
+        broken[64] ^= 1;                         /* entry nonce, CRC repaired */
+        wr32(broken, 4092, crc32c(broken, 4092));
+        vfs_write_at(h, broken, PAGE, (uint64_t)P_LEAF1 * PAGE);
+        fresh_context(h);
+        check("a valid root still permits attach before a leaf is requested",
+              db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 16) == 0);
+        check("but a leaf outside its authenticated path does not resolve",
+              db_page_resolve(ctx, P_PAYLOAD) == NULL &&
+              rd64(ctx, DB_ENC_ERROR) == E_SEAL);
+        vfs_write_at(h, leaf, PAGE, (uint64_t)P_LEAF1 * PAGE);
+        vfs_close(h);
+    }
 
     /* --- the other key pair ---------------------------------------------------- */
     h = vfs_open_rw(path, 0);

@@ -57,12 +57,15 @@
 #define DB_ENC_ERROR    (DB_SEAL_LEAVES + 8)
 #define DB_META_KEY     (DB_ENC_ERROR + 8)
 #define DB_TREE_KEY     (DB_META_KEY + 32)
+#define DB_SEAL_PAGES   (DB_TREE_KEY + 32)
+#define DB_SEAL_DEPTH   (DB_SEAL_PAGES + 8)
 #define CTX_BYTES       1024
 
 #define EK_BYTES 1184
 #define DK_BYTES 2400
 #define E_KEY 38
 #define E_COW_PAGES 25
+#define E_STATE 22
 
 #ifdef _WIN32
 typedef const wchar_t *vfs_path;
@@ -359,6 +362,17 @@ int main(void) {
               rd64(page, SNODE_LEVEL) == 2 &&
               rd64(page, SNODE_CHILD_COUNT) == 2 &&
               rd32(page, SNODE_CRC) == crc32c(page, SNODE_CRC));
+        memset(ctx, 0, sizeof ctx);
+        memcpy(ctx + DB_HANDLE, &big, 8);
+        {
+            uint64_t sb_page = 1;
+            memcpy(ctx + DB_SB_PAGE, &sb_page, 8);
+        }
+        check("the engine attaches through that level-two root",
+              db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 32) == 0 &&
+              rd64(ctx, DB_SEAL_DEPTH) == 2);
+        check("but refuses to commit it until every ancestor can be rebuilt",
+              db_encrypted_commit(ctx) == E_STATE);
         vfs_close(big);
 #ifdef _WIN32
         _wremove(VFS_PATH("build/too_big.cdb"));
