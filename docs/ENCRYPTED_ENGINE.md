@@ -80,12 +80,24 @@ forged newest superblock falls back to the generation before it, and an open
 asking about integrity is told what recovery papered over while an ordinary
 one is not.
 
-What it does not do yet: fall back **at the map**. Step 3 falls back from a
-superblock that does not authenticate, which is the recovery contract; if the
-generation it chose has a map that does not validate, this refuses rather than
-trying the one before it. The plain open does try, because it can validate a
-candidate before choosing it. Doing the same here means attach taking a "not
-this one" argument.
+Two steps choose, and they have to be able to disagree. Step 3 falls back from
+a superblock that does not *authenticate*. Step 6 can find that the generation
+step 3 picked has an allocation map that does not *validate* - and only then,
+because the map is read through the cache step 3 sets up, so it cannot be part
+of the choice made there.
+
+So the open runs twice when it has to. `db_encrypted_attach_avoiding` takes a
+superblock page the caller has ruled out, and the second pass picks the next
+copy that authenticates. That keeps one list of candidates in one place instead
+of two, and it means the recovery contract holds all the way down: the newest
+generation that authenticates *and whose allocation state is coherent* wins,
+and `DB_DAMAGED` records the one that did not.
+
+The two copies of the map are what make this reachable rather than theoretical.
+A commit moves the writer to the other half, so the newest generation and the
+one before it name different halves, and damaging the newest half leaves a
+whole database behind it. The test damages exactly that and watches the open
+land on the generation before.
 
 ### Reading a page and writing one are different requests
 

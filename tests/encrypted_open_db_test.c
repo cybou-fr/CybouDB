@@ -323,6 +323,55 @@ int main(void) {
         }
     }
 
+    /* --- the newest generation's map, damaged -------------------------------
+       Two copies of the map exist for the same reason two superblocks do, and
+       a commit moves the writer to the other one. So the newest generation and
+       the one before it name different halves, and damaging the newest half
+       leaves a whole database behind it.
+
+       This is the fallback the open could not make until attach learned to be
+       told "not that one": the superblock authenticates, and only then, with
+       the cache it set up, does the map turn out not to validate. */
+    {
+        uint64_t live_map, live_gen, other;
+
+        check("the database says which half of the map is live",
+              db_open_encrypted(&oargs) == 0);
+        live_map = rd64(ctx, DB_BITMAP);
+        live_gen = rd64(ctx, DB_GENERATION);
+        db_close(ctx);
+        check("and a commit has moved it off the half it was created on",
+              live_map == 3 + map_k);
+
+        h = vfs_open_rw(path, 0);
+        vfs_read_at(h, page_buf, PAGE, live_map * PAGE);
+        page_buf[120] ^= 0x01;
+        vfs_write_at(h, page_buf, PAGE, live_map * PAGE);
+        vfs_sync_file(h);
+        vfs_close(h);
+
+        check("a map the newest generation cannot stand behind falls back",
+              db_open_encrypted(&oargs) == CybouDB_OK &&
+              rd64(ctx, DB_GENERATION) < live_gen);
+        other = rd64(ctx, DB_BITMAP);
+        check("to the generation before it, on the other half of the map",
+              other != live_map);
+        check("and says which generation it could not open",
+              rd64(ctx, DB_DAMAGED) == live_gen);
+        db_close(ctx);
+
+        h = vfs_open_rw(path, 0);
+        page_buf[120] ^= 0x01;
+        vfs_write_at(h, page_buf, PAGE, live_map * PAGE);
+        vfs_sync_file(h);
+        vfs_close(h);
+        check("and putting it back opens the newest generation again",
+              db_open_encrypted(&oargs) == CybouDB_OK &&
+              rd64(ctx, DB_GENERATION) == live_gen);
+        db_close(ctx);
+    }
+
+
     /* --- a superblock somebody rewrote --------------------------------------
        The CRC is repaired, so nothing without a key can tell. The newest
        generation is forged and the one before it is whole behind it: the open

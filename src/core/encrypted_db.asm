@@ -34,13 +34,14 @@
 ;  instead, which is the same bargain the resolver makes when it returns zero
 ;  for a page that did not verify. docs/ENCRYPTED_ENGINE.md.
 ;
-;  What this does not do yet: fall back at the map. Step 3 falls back from a
-;  superblock that does not authenticate, which is the recovery contract; but
-;  if the generation it chose has a map that does not validate, this refuses
-;  rather than trying the one before it. The plain open does try, because it
-;  can validate a candidate before choosing it. Doing the same here means
-;  attach taking a "not this one" argument, and that is the next piece of work
-;  rather than a thing this file pretends to do.
+;  Steps 3 and 6 both choose, and they have to be able to disagree. Step 3
+;  falls back from a superblock that does not *authenticate*; step 6 can find
+;  that the generation it picked has an allocation map that does not
+;  *validate*, and only then, because the map is read through the cache step 3
+;  sets up. So the open runs twice when it has to: the second time it tells
+;  attach which copy it has already ruled out, and attach picks the next one
+;  that authenticates. That keeps one list of candidates in one place instead
+;  of two, and it is why db_encrypted_attach has an `avoid`.
 ; =============================================================================
 
 %include "cyboudb.inc"
@@ -57,7 +58,7 @@ extern vfs_lock_writer
 extern vfs_close
 extern vfs_size
 extern vfs_read_at
-extern db_encrypted_attach
+extern db_encrypted_attach_avoiding
 extern db_bitmap_validate
 extern db_bitmap_recount
 extern db_close
@@ -76,6 +77,7 @@ section .text
 ;  Frame:
 ;    [rbp - 8]  args      [rbp - 16] ctx      [rbp - 24] size
 ;    [rbp - 32] why the OS refused           [rbp - 40] a result being carried
+;    [rbp - 48] a superblock copy already ruled out, or zero
 ;    [rbp - 56] the header's capability bits
 ; =============================================================================
 db_open_encrypted:
@@ -151,6 +153,8 @@ db_open_encrypted:
     ;  hierarchy, the tag and the seal-tree root. And the choice between the
     ;  two generations, which is what needs the key and is why this is not a
     ;  branch inside db_open.
+    mov     qword [rbp - 48], 0         ; no copy ruled out yet
+.attach:
     mov     r11, [rbp - 8]
     mov     ARG1, [rbp - 16]
     mov     ARG2, [r11 + EOPEN_DK]
@@ -158,7 +162,9 @@ db_open_encrypted:
     mov     ARG4, [r11 + EOPEN_CACHE_BYTES]
     mov     rax, [r11 + EOPEN_FRAMES]
     PASS_ARG5 rax
-    call    db_encrypted_attach
+    mov     rax, [rbp - 48]
+    PASS_ARG6 rax
+    call    db_encrypted_attach_avoiding
     test    eax, eax
     jnz     .attach_failed
 
@@ -261,7 +267,22 @@ db_open_encrypted:
     mov     ARG2, [r10 + DB_SB_PTR]
     call    db_bitmap_validate
     test    eax, eax
-    jz      .e_superblock
+    jnz     .map_valid
+
+    ; This generation authenticated and its allocation map did not. That is
+    ; damage, and it is also a reason to ask for the copy before it - once.
+    mov     r10, [rbp - 16]
+    mov     rax, [r10 + DB_GENERATION]
+    cmp     rax, [r10 + DB_DAMAGED]
+    jbe     .damage_kept
+    mov     [r10 + DB_DAMAGED], rax
+.damage_kept:
+    cmp     qword [rbp - 48], 0
+    jne     .e_superblock               ; the fallback failed too
+    mov     rax, [r10 + DB_SB_PAGE]
+    mov     [rbp - 48], rax
+    jmp     .attach                     ; DB_DAMAGED survives: nothing wipes it
+.map_valid:
 
     mov     ARG1, [rbp - 16]
     call    db_bitmap_recount

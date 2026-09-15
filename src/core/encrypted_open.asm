@@ -55,6 +55,7 @@ BITS 64
 default rel
 
 global db_encrypted_attach
+global db_encrypted_attach_avoiding
 
 extern vfs_read_at
 extern crc32c
@@ -116,6 +117,7 @@ sb_checksummed:
 ;   [rbp - 72] cache bytes               [rbp - 80] frames
 ;   [rbp - 88] the key id this private key belongs to
 ;   [rbp - 96] candidate superblocks     [rbp - 104] the one being attempted
+;   [rbp - 112] a copy the caller has ruled out, or zero
 ;   [rbp - 128] the first attempt's refusal, which is what a caller is told
 ;               when no candidate works
 ;   [rbp - 160] the root key, 32 bytes, wiped before this returns
@@ -146,14 +148,33 @@ sb_checksummed:
 
 ; =============================================================================
 ;  db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, frames) -> int
+;  db_encrypted_attach_avoiding(..., avoid) -> int
 ;
 ;  ARG1  uint8_t *ctx          a context whose handle is already open
 ;  ARG2  const uint8_t *dk     2400 bytes of decapsulation key
 ;  ARG3  uint8_t *cache_mem    page-aligned, for the plaintext cache
 ;  ARG4  uint64_t cache_bytes
 ;  ARG5  uint64_t frames
+;  ARG6  uint64_t avoid        a superblock page not to choose, or zero
+;
+;  `avoid` is what lets a caller say "that generation authenticated and then
+;  turned out to be unusable for a reason I can see and you cannot". The only
+;  reason so far is an allocation map that does not validate, which an open
+;  discovers after this returns: the map is read through the cache this sets
+;  up, so it cannot be part of the choice made here. Saying "not that one" and
+;  asking again is how the fallback stays in one place instead of two.
 ; =============================================================================
 db_encrypted_attach:
+    FRAME_BEGIN 16, 2
+    mov     rax, IN_ARG5
+    PASS_ARG5 rax
+    xor     rax, rax
+    PASS_ARG6 rax
+    call    db_encrypted_attach_avoiding
+    FRAME_END
+    ret
+
+db_encrypted_attach_avoiding:
     FRAME_BEGIN EA_FRAME, 2
     mov     [rbp - 8], rbx
     mov     [rbp - 16], r12
@@ -167,6 +188,8 @@ db_encrypted_attach:
     mov     [rbp - 72], ARG4
     mov     rax, IN_ARG5
     mov     [rbp - 80], rax
+    mov     rax, IN_ARG6
+    mov     [rbp - 112], rax            ; the copy this caller has ruled out
 
     mov     rbx, [rbp - 48]
 
@@ -263,6 +286,8 @@ db_encrypted_attach:
     shl     rcx, 4
     lea     r14, [rbp - EA_CAND]
     mov     rax, [r14 + rcx + CAND_PAGE]
+    cmp     rax, [rbp - 112]
+    je      .ruled_out
     mov     [rbx + DB_SB_PAGE], rax
 
     shl     rax, CybouDB_PAGE_SHIFT
@@ -557,6 +582,21 @@ db_encrypted_attach:
     ; decapsulation to reach the same refusal.
     cmp     r10d, CybouDB_E_KEY
     je      .give_up
+    mov     rax, [rbp - 104]
+    inc     rax
+    cmp     rax, [rbp - 96]
+    jae     .give_up
+    mov     [rbp - 104], rax
+    jmp     .attempt
+
+.ruled_out:
+    ; Not an attempt and not a failure: the caller already knows about this
+    ; copy. Move on without calling it damage a second time.
+    mov     r10d, CybouDB_E_SEAL
+    cmp     qword [rbp - 128], 0
+    jne     .ruled_next
+    mov     [rbp - 128], r10
+.ruled_next:
     mov     rax, [rbp - 104]
     inc     rax
     cmp     rax, [rbp - 96]
