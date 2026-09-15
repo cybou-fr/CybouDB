@@ -194,7 +194,7 @@ until its page is reused.
 | Keccak-f[1600] and SHAKE256 in assembly | against the NIST SHA-3 and SHAKE known-answer vectors, both platforms | done |
 | the derivation function | one entry point, the closed label list, and a test that two purposes never produce the same key | done - `src/crypto/kdf.asm`, all ten pairs |
 | wrap and unwrap | over the existing AEAD, with a test that a DEK for one scope does not unwrap in another | done - a refused unwrap leaves zeroes, not a plausible key |
-| the crypto root's byte layout | a `%define` map like every other page in this format, and a validator that refuses a malformed one | next |
+| the crypto root's byte layout | a `%define` map like every other page in this format, and a validator that refuses a malformed one | done - `include/crypto.inc`, `src/crypto/crypto_root.asm`, 39 checks |
 | what happens when unwrapping fails | a database that cannot be opened must say *this key does not open this file*, not *corrupt* - the same distinction `0.6` drew between a capability refusal and damage | next |
 
 Steps 5 and 6 then attach the two paths to the root: a post-quantum private key

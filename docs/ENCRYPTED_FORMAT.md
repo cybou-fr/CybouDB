@@ -391,6 +391,17 @@ Consequences worth stating now:
 * **`feature_root` non-zero without the encryption bit stays refused**, which is
   what v1 already says. The bit is what makes the pointer legal.
 
+The byte map is now written down - `include/crypto.inc`, the `CROOT_*` block -
+and `src/crypto/crypto_root.asm` is the only thing that writes it and the only
+thing that judges it. Its validator is deliberately key-free: magic, version,
+CRC, the algorithm ids, the reserved fields and the seal-directory geometry are
+all decidable before anything is unwrapped, and each has its own refusal code.
+That separation is what lets the engine tell a user three different things
+truthfully - *this is not a CybouDB crypto root*, *this page is damaged*, and
+*this key does not open this file* - where a single "bad file" would have
+collapsed the third into the second and sent someone looking for a backup they
+did not need.
+
 ---
 
 ## Decision 7 — encrypted mode does not use the shared mapping

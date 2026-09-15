@@ -182,6 +182,7 @@ jobs:
           ./build/keccak_test
           ./build/page_seal_test
           ./build/kdf_test
+          ./build/crypto_root_test
 
       - name: Interactive REPL and pipe tests
         run: python3 tests/repl_tests.py ./cyboudb
@@ -409,6 +410,7 @@ jobs:
           build\keccak_test.exe
           build\page_seal_test.exe
           build\kdf_test.exe
+          build\crypto_root_test.exe
           if errorlevel 1 exit /b 1
 
       # Split the way the other two-binary steps are: the build under cmd, the
