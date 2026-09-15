@@ -462,6 +462,65 @@ of the rollback the threat model already refuses to claim it can prevent.
 
 ---
 
+## Decision 5b - how a reader learns a page's type before it can verify it
+
+Decision 5 binds five fields into the associated data, and one of them turned
+out to be unavailable at the moment it is needed.
+
+The engine computes a page address in 128 places
+([ENCRYPTED_ENGINE.md](ENCRYPTED_ENGINE.md)), and in encrypted mode each of
+those has to become a read, a decrypt and a tag check. The tag covers the
+associated data, so the associated data has to be built **before** the page can
+be verified - and four of its five fields are available at that moment: the
+file's uuid, the page number being asked for, the generation the superblock
+publishes, and the seal epoch the crypto root records. The fifth is not. The
+page's type is known to the module that asked for the page and not to the
+resolver that fetches it, and threading it through 128 call sites means 128
+sites each carrying a fact about pages they only borrow.
+
+Three ways out, and what each costs:
+
+| | |
+| :--- | :--- |
+| thread the type through every access | 128 sites gain an argument, several of them read pages of more than one kind, and the mistake is silent |
+| widen the seal entry to carry a type byte | 40 bytes becomes 48, a leaf holds 83 entries instead of 100, and the file's overhead goes from 1.97% to 2.4% |
+| **put the type in the nonce** | eight bits of the nonce stop being random |
+
+**The nonce carries it.** The last byte of a page's 24-byte nonce is its page
+type; the other 23 bytes are drawn from the operating system's CSPRNG as
+before:
+
+```text
+nonce = 184 bits of randomness | one byte of page type
+```
+
+The reader takes the type out of the nonce it already has to read, builds the
+associated data with it, and verifies. Nothing else changes.
+
+**Why this is not a weakening.** The nonce is an input to the AEAD, so a byte
+changed there changes the keystream and fails the tag - the type is
+authenticated exactly as strongly as the ciphertext is. And the entry that
+holds the nonce is covered by its leaf's MAC, the leaf by its node, the node by
+the superblock: an attacker cannot change the claimed type without breaking the
+chain of Decision 3b first. A page sealed as one kind and offered as another
+still fails, which is what Decision 5 asked for.
+
+**What it does cost**, stated rather than waved past: the nonce is 184 random
+bits instead of 192. Against the table in Decision 4, the collision bound at a
+million seals a second for a century moves from about 2^-90 to about 2^-82.
+Still far below every other failure this system has, and a hundred and eighty
+four bits of randomness per seal remains an enormous margin - but it is a real
+number that moved, and it moved because of an engineering constraint rather
+than a cryptographic argument.
+
+**What the seal and open calls do with it.** `cyboudb_page_seal` takes the page
+type and puts it where it belongs. `cyboudb_page_open` reads it from the nonce
+rather than being told, because the caller that needs to open a page is
+precisely the one that does not know - and a caller who does know gains
+nothing by repeating it, since the tag is what decides either way.
+
+---
+
 ## Decision 6 — where the keys live, and what the superblock points at
 
 `SB_FEATURE_ROOT` at +56 has been reserved since v1 was frozen, refused when

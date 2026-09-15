@@ -328,10 +328,17 @@ int main(void) {
             check("nor replayed into an earlier generation",
                   cyboudb_page_open(&b) == E_SEAL);
 
+            /* The page type no longer travels in the arguments on the way
+               back in: Decision 5b puts it in the last byte of the nonce,
+               because the reader that needs it is the one that cannot know
+               it. So open ignores what the caller says the type is - and the
+               type is protected by the tag instead, which the next two checks
+               are about. */
             memcpy(page, copy, PAGE_SIZE);
             b = a; b.page_type = 4;
-            check("nor read as another kind of page",
-                  cyboudb_page_open(&b) == E_SEAL);
+            check("the type a caller claims on the way in is ignored",
+                  cyboudb_page_open(&b) == 0);
+            memcpy(page, copy, PAGE_SIZE);
 
             memcpy(page, copy, PAGE_SIZE);
             b = a; b.epoch = 6;
@@ -344,7 +351,47 @@ int main(void) {
                   cyboudb_page_open(&b) == E_SEAL);
         }
 
-        /* --- and what the tag is for --------------------------------------- */
+        /* --- the page type, which now lives in the nonce ---------------------- */
+    {
+        struct pseal_args b = a;
+        uint8_t entry_type[SENTRY_SIZE];
+
+        memcpy(page, plain, PAGE_SIZE);
+        b.entry = entry_type;
+        b.page_type = 9;
+        check("sealing writes the page type into the last byte of the nonce",
+              cyboudb_page_seal(&b) == 0 &&
+              entry_type[SENTRY_NONCE + 23] == 9);
+
+        {
+            uint8_t again[SENTRY_SIZE];
+            struct pseal_args c = a;
+            memcpy(page, plain, PAGE_SIZE);
+            c.entry = again;
+            c.page_type = 9;
+            cyboudb_page_seal(&c);
+            check("and the other twenty-three bytes are still drawn fresh",
+                  memcmp(entry_type, again, 23) != 0);
+        }
+
+        /* A page whose entry claims a different type fails, which is the
+           protection the type had before and still has: the nonce is an AEAD
+           input, so changing it changes the keystream as well as the
+           associated data. */
+        {
+            uint8_t lying[SENTRY_SIZE];
+            struct pseal_args c = a;
+            memcpy(page, plain, PAGE_SIZE);
+            c.entry = lying;
+            c.page_type = 3;
+            cyboudb_page_seal(&c);
+            lying[SENTRY_NONCE + 23] = 4;
+            check("a page whose entry claims another type is refused",
+                  cyboudb_page_open(&c) == E_SEAL);
+        }
+    }
+
+    /* --- and what the tag is for --------------------------------------- */
         {
             uint8_t torn[SENTRY_SIZE];
             memcpy(page, copy, PAGE_SIZE);

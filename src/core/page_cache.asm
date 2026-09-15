@@ -263,7 +263,13 @@ cyboudb_pcache_lookup:
 ;                                evicted.
 ;
 ;  All ones and not zero, because page zero is the file header and a cache may
-;  legitimately hold it. A sentinel that collides with a real value is a bug
+;  legitimately hold it.
+;
+;  A caller must test for all ones BEFORE testing bit 63, because all ones has
+;  bit 63 set: "nothing was evicted" and "what was evicted was dirty" are not
+;  distinguishable by that bit alone. The first caller written against this got
+;  it the other way round and saw a dirty eviction on every admission into an
+;  empty set. A sentinel that collides with a real value is a bug
 ;  waiting for the one caller who evicts page zero, and this one was found by
 ;  a test that filled a set starting at page zero.
 ;

@@ -119,12 +119,13 @@ cyboudb_page_aad:
 ;  area, which is addressed from rsp, and a call moves rsp.
 ; -----------------------------------------------------------------------------
 %macro BUILD_PAGE_AAD 0
+    mov     [rbp - 40], r10             ; the page type, from wherever it came
     mov     ARG1, rbp
     sub     ARG1, PS_AAD
     mov     ARG2, [rbx + PSEAL_UUID]
     mov     ARG3, [rbx + PSEAL_PAGE_NO]
     mov     ARG4, [rbx + PSEAL_GENERATION]
-    mov     rax, [rbx + PSEAL_PAGE_TYPE]
+    mov     rax, [rbp - 40]
     PASS_ARG5 rax
     mov     rax, [rbx + PSEAL_EPOCH]
     PASS_ARG6 rax
@@ -167,13 +168,23 @@ cyboudb_page_seal:
     mov     rbx, ARG1
     mov     [rbp - 32], rbx
 
-    ; A fresh nonce, into the entry where it will be stored.
+    ; A fresh nonce, into the entry where it will be stored - and its last
+    ; byte is the page's type, which is Decision 5b: a reader has to build the
+    ; associated data before it can verify anything, and the type is the one
+    ; field it cannot know. Twenty-three bytes of randomness and one of type.
     mov     ARG1, [rbx + PSEAL_ENTRY]
     add     ARG1, SENTRY_NONCE
-    mov     ARG2, CybouDB_XAEAD_NONCE_SIZE
+    mov     ARG2, CybouDB_XAEAD_NONCE_SIZE - 1
     call    os_random
     test    eax, eax
     jnz     .no_randomness
+
+    mov     rbx, [rbp - 32]
+    mov     r10, [rbx + PSEAL_PAGE_TYPE]
+    mov     r11, [rbx + PSEAL_ENTRY]
+    mov     [r11 + SENTRY_NONCE + CybouDB_XAEAD_NONCE_SIZE - 1], r10b
+    ; r10 now carries the type into the associated data as well, so the byte
+    ; in the nonce and the byte in the AAD are one value and not two.
 
     BUILD_PAGE_AAD
 
@@ -203,6 +214,13 @@ cyboudb_page_open:
 
     mov     rbx, ARG1
     mov     [rbp - 32], rbx
+
+    ; The type comes out of the nonce, not out of the arguments. The caller
+    ; that needs to open a page is exactly the one that does not know what kind
+    ; of page it is - and a caller that does know gains nothing by saying so,
+    ; because the tag is what decides either way. Decision 5b.
+    mov     r11, [rbx + PSEAL_ENTRY]
+    movzx   r10d, byte [r11 + SENTRY_NONCE + CybouDB_XAEAD_NONCE_SIZE - 1]
 
     BUILD_PAGE_AAD
 

@@ -124,7 +124,27 @@
 %define RUN_COUNT         8
 %define RUN_SIZE          16
 %define CybouDB_DIRTY_RUNS_MAX 32
-%define CybouDB_DB_SIZE      (DB_RUNS + CybouDB_DIRTY_RUNS_MAX * RUN_SIZE)
+
+; --- what an encrypted database carries, and a plain one does not ------------
+;  docs/ENCRYPTED_ENGINE.md. DB_CACHE is the switch the page-address macro
+;  branches on: zero for every database that is not encrypted, which is every
+;  database that exists today, so the branch predicts perfectly and a plain
+;  page address stays a shift and an add.
+;
+;  The rest is what the resolver needs to build the associated data for a page
+;  it has been asked for: the file's identity, the generation the live
+;  superblock publishes, the seal epoch the crypto root records, the page seal
+;  key of that epoch, and where the seal directory begins. The page's type is
+;  not here - it comes out of the nonce, which is Decision 5b.
+%define DB_CACHE          (DB_RUNS + CybouDB_DIRTY_RUNS_MAX * RUN_SIZE)
+%define DB_SEAL_KEY       (DB_CACHE + 8)      ; 32 bytes
+%define DB_UUID           (DB_SEAL_KEY + 32)  ; 16 bytes
+%define DB_SEAL_EPOCH     (DB_UUID + 16)
+%define DB_SEAL_DIR       (DB_SEAL_EPOCH + 8) ; first leaf page
+%define DB_SEAL_LEAVES    (DB_SEAL_DIR + 8)
+%define DB_ENC_ERROR      (DB_SEAL_LEAVES + 8); the last seal failure, or zero
+
+%define CybouDB_DB_SIZE      (DB_ENC_ERROR + 8)
 
 ; Entries in the log: page id, then the two states packed into one qword so an
 ; entry is 16 bytes and the whole thing is a flat array with no allocator.

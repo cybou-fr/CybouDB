@@ -83,8 +83,69 @@
 ;  register it wants the address in - which is most of them.
 ; -----------------------------------------------------------------------------
 %macro DB_PAGE_HERE 2
+%ifdef CybouDB_ENCRYPTED_PAGES
+    ; docs/ENCRYPTED_ENGINE.md, step 3. A plain database has DB_CACHE zero and
+    ; pays one compare and one perfectly predicted branch; an encrypted one
+    ; goes through the resolver, which reads the page, opens it and hands back
+    ; the address of the plaintext in the cache.
+    cmp     qword [%2 + DB_CACHE], 0
+    jne     %%encrypted
     shl     %1, CybouDB_PAGE_SHIFT
     add     %1, [%2 + DB_BASE]
+    jmp     %%done
+%%encrypted:
+    DB_PAGE_RESOLVE %1, %2
+%%done:
+%else
+    shl     %1, CybouDB_PAGE_SHIFT
+    add     %1, [%2 + DB_BASE]
+%endif
+%endmacro
+
+; -----------------------------------------------------------------------------
+;  DB_PAGE_RESOLVE <register>, <context>
+;
+;  The call the encrypted branch makes. It is a macro of its own so that the
+;  register shuffling and the saving of whatever the caller had live happens in
+;  one place rather than 81, and so that the branch above reads as a branch.
+;
+;  Returns the address in the register it was given, or zero - and zero is a
+;  page that did not verify. Every site that will use this has to learn to see
+;  that, which is the work step 3 of the port is made of.
+; -----------------------------------------------------------------------------
+%macro DB_PAGE_RESOLVE 2
+    ; Every volatile register on either convention, saved in a frame rather
+    ; than on the stack one push at a time - nine pushes would leave RSP eight
+    ; bytes out of alignment for the call, and the result has to be written
+    ; into %1 after the restores rather than before, because %1 may be one of
+    ; the registers being restored.
+    sub     rsp, 96
+    mov     [rsp + 0], rax
+    mov     [rsp + 8], rcx
+    mov     [rsp + 16], rdx
+    mov     [rsp + 24], r8
+    mov     [rsp + 32], r9
+    mov     [rsp + 40], r10
+    mov     [rsp + 48], r11
+    mov     [rsp + 56], rdi
+    mov     [rsp + 64], rsi
+
+    mov     ARG2, %1
+    mov     ARG1, %2
+    CALL_ABI db_page_resolve
+    mov     [rsp + 72], rax             ; the address, or zero
+
+    mov     rax, [rsp + 0]
+    mov     rcx, [rsp + 8]
+    mov     rdx, [rsp + 16]
+    mov     r8,  [rsp + 24]
+    mov     r9,  [rsp + 32]
+    mov     r10, [rsp + 40]
+    mov     r11, [rsp + 48]
+    mov     rdi, [rsp + 56]
+    mov     rsi, [rsp + 64]
+    mov     %1,  [rsp + 72]
+    add     rsp, 96
 %endmacro
 
 %endif ; CybouDB_PAGE_INC
