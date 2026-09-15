@@ -87,11 +87,51 @@ trying the one before it. The plain open does try, because it can validate a
 candidate before choosing it. Doing the same here means attach taking a "not
 this one" argument.
 
+### Reading a page and writing one are different requests
+
+Porting the catalog turned up the part of this the macro cannot express. A
+plain database has no difference between the two: the mapping *is* the file, so
+a store through a resolved address lands on disk. An encrypted database does:
+the address is a cache frame, and a frame nobody marked dirty is a change the
+commit will never find. `db_page_for_write` exists for exactly that, and
+`DB_PAGE_HERE` cannot tell which request a caller is making.
+
+So the allocator now has two accessors for a map leaf - `leaf_addr` and
+`leaf_for_write`, `map_locate` and `map_locate_for_write` - and the writing
+half is used wherever the allocator changes the map: staging a copy, marking a
+page, stamping the high-water, resealing a leaf. Every other module still to be
+ported has the same split waiting in it.
+
+Two more things came out of the same work:
+
+- **A page just allocated has nothing sealed at it.** Resolving it fails a tag
+  check against bytes nobody wrote. `db_page_blank` is the answer: the mapping
+  cleared, or a fresh frame from `db_page_new`. This is the one place where "a
+  page" and "a page that exists" come apart, and it only happens under
+  encryption.
+- **A catalog page carries its own page number**, and a frame address says
+  nothing about which page it is. `db_page_number` asks the cache, which is the
+  only thing that knows; `cyboudb_pcache_page_of` answers it exactly, because
+  the frames are one contiguous array.
+
+And the encrypted commit had been publishing the seal tree without the
+engine's own superblock fields. A generation whose pages are all present and
+whose catalog root still points at the one before it is not a torn write - it
+is a complete, authenticated, wrong database. It now carries `DB_ALLOC`,
+`DB_FREELIST`, `DB_ROOT` and `DB_BITMAP` forward, and reseals the staged
+allocation map before the flush, exactly as `db_commit` does.
+
+`tests/encrypted_open_db_test.c` now runs the whole chain: create, open with
+the private key, write a page, commit, reopen, read it back, put a schema into
+the catalog, commit, reopen, find the table with its name and its stamped page
+id intact, and recover from a forged newest superblock.
+
 The remaining boundary is the public C API, which still has no key-bearing
-entry point, and the other modules - catalog, PAX, index, the SQL cursors -
-which are ported the way the allocator was: every page address through
-`DB_PAGE_HERE`, every site reading a null as a refusal, each one exercised by
-a suite run against a sealed database rather than imagined by a reviewer.
+entry point, and PAX, the index, the queue, the stream and the SQL cursors -
+ported the way the allocator and the catalog were: every page address through
+`DB_PAGE_HERE`, writes through a write-intent accessor, every site reading a
+null as a refusal, each one exercised by a suite run against a sealed database
+rather than imagined by a reviewer.
 
 ### The layout an encrypted database has
 

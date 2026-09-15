@@ -37,6 +37,7 @@ default rel
 global db_encrypted_commit
 
 extern db_pages_flush
+extern db_bitmap_seal
 extern cyboudb_pcache_frames
 extern cyboudb_pcache_dirty_at
 extern vfs_read_at
@@ -226,6 +227,12 @@ db_encrypted_commit:
 .copy_done:
 
     ; --- 1 and 2: the pages and the leaves that describe them ----------------
+    ;  The staged allocation map first. It is a page like any other from here
+    ;  on - the flush will seal it and the tree will cover it - but its own
+    ;  checksum is the allocator's, and only the allocator knows it is stale.
+    mov     rbx, [rbp - 40]
+    mov     ARG1, rbx
+    call    db_bitmap_seal
     mov     rbx, [rbp - 40]
     mov     ARG1, rbx
     call    db_pages_flush
@@ -354,6 +361,21 @@ db_encrypted_commit:
     lea     r10, [rbp - CM_PAGE]
     mov     rax, [rbp - 56]
     mov     [r10 + SB_GENERATION], rax
+
+    ; What the engine above changed. Starting from the live copy carries every
+    ; field this code does not know about; these are the ones it does, and
+    ; leaving them behind would publish a generation whose pages are all there
+    ; and whose catalog root still points at the one before it. That is not a
+    ; torn write - it is a complete, authenticated, wrong database.
+    mov     rax, [rbx + DB_ALLOC]
+    mov     [r10 + SB_ALLOC_PAGES], rax
+    mov     rax, [rbx + DB_FREELIST]
+    mov     [r10 + SB_FREELIST_ROOT], rax
+    mov     rax, [rbx + DB_ROOT]
+    mov     [r10 + SB_ROOT_PAGE], rax
+    mov     rax, [rbx + DB_BITMAP]
+    mov     [r10 + SB_BITMAP_ROOT], rax
+
     mov     rax, [rbp - CM_MAC]
     mov     [r10 + SB_SEAL_ROOT], rax
     mov     rax, [rbp - CM_MAC + 8]
@@ -648,6 +670,10 @@ db_encrypted_commit:
     mov     rbx, [rbp - 40]
     jmp     .multi_copy
 .multi_copy_done:
+    mov     rbx, [rbp - 40]
+    mov     ARG1, rbx
+    call    db_bitmap_seal
+    mov     rbx, [rbp - 40]
     mov     ARG1, rbx
     call    db_pages_flush
     test    eax, eax

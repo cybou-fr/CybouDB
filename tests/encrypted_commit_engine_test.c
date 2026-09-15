@@ -45,6 +45,8 @@ static void check(const char *what, int ok) {
 int db_encrypted_commit(uint8_t *ctx);
 
 int db_pages_flush(uint8_t *ctx) { (void)ctx; return 0; }
+/* The staged allocation map's own checksum. Nothing in this test has a map. */
+void db_bitmap_seal(uint8_t *ctx) { (void)ctx; }
 uint64_t cyboudb_pcache_frames(const uint8_t *cache) {
     (void)cache; return (uint64_t)dirty_frames;
 }

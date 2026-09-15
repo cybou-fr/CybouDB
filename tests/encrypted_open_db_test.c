@@ -40,6 +40,15 @@
 #define DB_UUID         (DB_SEAL_KEY + 32)
 #define DB_SEAL_EPOCH   (DB_UUID + 16)
 
+#define CAT_TYPE        32
+#define CAT_COUNT       36
+#define CAT_PAGE_ID     8
+#define CAT_TABLE_NAME  64
+#define CAT_COLUMNS     96
+#define CAT_SCHEMA      2
+#define CAT_COL_SIZE    32
+#define CAT_INT64       2
+
 #define FEATURE_ENCRYPTION 131072u
 #define MAP_LEAF_PAGES     ((4092 - 64) * 4)
 #define EK_BYTES 1184
@@ -78,6 +87,10 @@ uint64_t db_context_bytes(void);
 uint8_t *db_page_resolve(uint8_t *ctx, uint64_t page);
 uint8_t *db_page_new(uint8_t *ctx, uint64_t page, uint64_t page_type);
 int db_encrypted_commit(uint8_t *ctx);
+int db_catalog_put(uint8_t *ctx, uint64_t id, const void *image);
+int db_catalog_get(uint8_t *ctx, uint64_t id, uint64_t *page);
+uint8_t *db_catalog_page(uint8_t *ctx, uint64_t id);
+int db_catalog_validate(uint8_t *ctx, const uint8_t *superblock);
 void db_close(uint8_t *ctx);
 int db_open(vfs_path path, uint8_t *ctx, uint64_t writable, uint64_t verify);
 
@@ -99,10 +112,11 @@ struct ecreate_args {
 int cyboudb_encrypted_create(const struct ecreate_args *args);
 
 static int checks, failures;
-static void check(const char *what, int ok) {
+static int check(const char *what, int ok) {
     checks++;
     if (ok) printf("ok   %s\n", what);
     else { failures++; printf("FAIL %s\n", what); }
+    return ok;
 }
 static uint64_t rd64(const uint8_t *p, int off) {
     uint64_t v; memcpy(&v, p + off, 8); return v;
@@ -122,6 +136,7 @@ int main(void) {
     struct eopen_args oargs;
     int64_t h;
     uint64_t pages = 30000, map_k, first_usable;
+    int rc_probe;
 
     setvbuf(stdout, NULL, _IONBF, 0);
     printf("CybouDB encrypted open test\n\n");
@@ -257,24 +272,83 @@ int main(void) {
         db_close(ctx);
     }
 
-    /* --- a superblock somebody rewrote --------------------------------------
-       The CRC is repaired, so nothing without a key can tell. Generation two
-       is forged and generation one is whole behind it: the open succeeds, from
-       the copy that still authenticates, and records what it could not stand
-       behind. */
+    /* --- a table in the catalog of a sealed database -------------------------
+       The catalog allocates a page, copies the directory, stamps the new page
+       with the page number it is at and publishes a new root - all of it
+       through the resolver, none of it through a mapping that is not there.
+       Stamping is the interesting part: a catalog page carries its own id,
+       and an address in a cache says nothing about which page it is. */
     {
+        static uint8_t image[PAGE];
+        uint64_t table_page = 0;
+        uint8_t *cat;
+
+        check("the database opens again", db_open_encrypted(&oargs) == 0);
+        memset(image, 0, PAGE);
+        {
+            uint32_t columns = 2, type = CAT_INT64;
+            memcpy(image + CAT_COUNT, &columns, 4);
+            memcpy(image + CAT_COLUMNS, &type, 4);
+            memcpy(image + CAT_COLUMNS + CAT_COL_SIZE, &type, 4);
+            strcpy((char *)image + CAT_COLUMNS + 8, "a");
+            strcpy((char *)image + CAT_COLUMNS + CAT_COL_SIZE + 8, "b");
+        }
+        strcpy((char *)image + CAT_TABLE_NAME, "sealed_table");
+        check("a schema goes into the catalog of an encrypted database",
+              db_catalog_put(ctx, 4242, image) == 0);
+        check("and is found there",
+              db_catalog_get(ctx, 4242, &table_page) == 0 && table_page != 0);
+        cat = db_catalog_page(ctx, 4242);
+        check("as a schema page carrying the name it was given",
+              cat != NULL &&
+              strcmp((char *)cat + CAT_TABLE_NAME, "sealed_table") == 0);
+        check("and stamped with the page it is actually at, not an address",
+              cat != NULL && rd64(cat, CAT_PAGE_ID) == table_page);
+        check("the map still validates with a page handed out of it",
+              db_bitmap_validate(ctx, (const uint8_t *)(uintptr_t)
+                                 rd64(ctx, DB_SB_PTR)) == 1);
+        check("and the generation publishes",
+              db_encrypted_commit(ctx) == 0);
+        db_close(ctx);
+
+        rc_probe = db_open_encrypted(&oargs);
+        if (rc_probe) printf("     [probe] reopen rc=%d\n", rc_probe);
+        if (check("a reopen finds the table through the seal tree",
+                  rc_probe == 0)) {
+            cat = db_catalog_page(ctx, 4242);
+            check("with its name intact",
+                  cat != NULL &&
+                  strcmp((char *)cat + CAT_TABLE_NAME, "sealed_table") == 0);
+            db_close(ctx);
+        }
+    }
+
+    /* --- a superblock somebody rewrote --------------------------------------
+       The CRC is repaired, so nothing without a key can tell. The newest
+       generation is forged and the one before it is whole behind it: the open
+       succeeds, from the copy that still authenticates, and records what it
+       could not stand behind. */
+    {
+        uint64_t live, live_gen;
+        check("the database is open to be asked which copy is live",
+              db_open_encrypted(&oargs) == 0);
+        live = rd64(ctx, DB_SB_PAGE);
+        live_gen = rd64(ctx, DB_GENERATION);
+        db_close(ctx);
+
         h = vfs_open_rw(path, 0);
-        vfs_read_at(h, page_buf, PAGE, 2 * PAGE);
+        vfs_read_at(h, page_buf, PAGE, live * PAGE);
         page_buf[SB_SEAL_TAG] ^= 0x40;
         wr32(page_buf, SB_CRC, crc32c(page_buf, SB_CRC));
-        vfs_write_at(h, page_buf, PAGE, 2 * PAGE);
+        vfs_write_at(h, page_buf, PAGE, live * PAGE);
         vfs_sync_file(h);
         vfs_close(h);
         check("a forged newest generation falls back to the one before it",
               db_open_encrypted(&oargs) == CybouDB_OK &&
-              rd64(ctx, DB_SB_PAGE) == 1 && rd64(ctx, DB_GENERATION) == 1);
+              rd64(ctx, DB_SB_PAGE) != live &&
+              rd64(ctx, DB_GENERATION) < live_gen);
         check("and the fallback is recorded as damage",
-              rd64(ctx, DB_DAMAGED) == 2);
+              rd64(ctx, DB_DAMAGED) == live_gen);
         db_close(ctx);
 
         /* Recovering is success; being asked about integrity is a different

@@ -634,13 +634,14 @@ the release, not after it.
                                      encrypted branch is compiled in, the
                                      resolver is linked into the engine with no
                                      measurable cost to the plain path, the
-                                     allocator is ported, and db_open_encrypted
-                                     builds the same context db_open builds -
-                                     so create, open, write, commit, reopen and
-                                     read back is a chain that runs. What
-                                     remains is the catalog, PAX, index and SQL
-                                     cursors ported the same way the allocator
-                                     was, and then the public C API
+                                     allocator and the catalog are ported, and
+                                     db_open_encrypted builds the same context
+                                     db_open builds - so create, open, write,
+                                     commit, reopen, CREATE TABLE, commit and
+                                     find the table again is a chain that runs.
+                                     What remains is PAX, the index, the queue,
+                                     the stream and the SQL cursors ported the
+                                     same way, and then the public C API
  8. Crash-safe encrypted transactions publication is implemented at every
                                      depth: paired seal-tree copies, two
                                      barriers, inactive-superblock update, and

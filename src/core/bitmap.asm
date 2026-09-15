@@ -36,10 +36,13 @@
 ;          as soon as a writer allocates, not at commit - the same trade every
 ;          shadow-paging engine makes to stop leaking.
 %include "cyboudb.inc"
+%include "crypto.inc"
 BITS 64
 default rel
 extern vfs_reclaim_safe
 extern db_bitmap_leaf_build
+extern db_page_blank
+extern db_page_for_write
 extern db_bitmap_leaves
 extern crc32c
 extern db_catalog_validate
@@ -191,6 +194,46 @@ db_dirty_reset:
 ; can answer. Every caller has to see that: a map leaf nothing vouched for is
 ; not a map leaf, and reading a page state out of one would be reading an
 ; allocator's mind rather than its map.
+map_locate_for_write:
+    FRAME_BEGIN 32, 0
+    mov     [rbp - 8], ARG1
+    mov     [rbp - 16], ARG2
+    mov     [rbp - 24], ARG3
+    test    ARG4, ARG4
+    jz      .flat_w
+    mov     rax, ARG3
+    xor     edx, edx
+    mov     r10, CybouDB_MAP_LEAF_PAGES
+    div     r10
+    mov     [rbp - 32], rdx
+    add     rax, [rbp - 16]
+    jmp     .fetch_w
+.flat_w:
+    mov     rax, [rbp - 16]
+    mov     rdx, [rbp - 24]
+    mov     [rbp - 32], rdx
+.fetch_w:
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, rax
+    xor     ARG3, ARG3
+    call    leaf_page_for_write
+    mov     rdx, [rbp - 32]
+    FRAME_END
+    ret
+
+; leaf_page_for_write(ctx, page) -> that page, writable, or zero
+leaf_page_for_write:
+    mov     r10, ARG1
+    cmp     qword [r10 + DB_CACHE], 0
+    je      .plain
+    mov     ARG3, CybouDB_PTYPE_MAP
+    jmp     db_page_for_write
+.plain:
+    mov     rax, ARG2
+    shl     rax, CybouDB_PAGE_SHIFT
+    add     rax, [r10 + DB_BASE]
+    ret
+
 map_locate:
     FRAME_BEGIN 32, 0
     mov     [rbp - 8], ARG1
@@ -225,6 +268,40 @@ leaf_addr:
     mov     rax, ARG3
     add     rax, ARG2
     DB_PAGE_HERE rax, r10
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  leaf_for_write(ARG1 = context, ARG2 = first map page, ARG3 = leaf index)
+;    -> RAX = address of that leaf, writable, or zero
+;
+;  The same leaf, for a caller that is about to change it. In a plain database
+;  there is no difference: the mapping is the file and a store lands in it. In
+;  an encrypted one there is all the difference, because the address is a cache
+;  frame and a frame nobody marked dirty is a change the commit will not find.
+;
+;  This is the shape the whole port needs and the one place it exists so far:
+;  reading and writing a page are different requests, and DB_PAGE_HERE cannot
+;  tell which one a caller is making.
+; -----------------------------------------------------------------------------
+leaf_for_write:
+    FRAME_BEGIN 32, 0
+    mov     r10, ARG1
+    cmp     qword [r10 + DB_CACHE], 0
+    je      leaf_addr_plain
+    mov     rax, ARG3
+    add     rax, ARG2
+    mov     ARG1, r10
+    mov     ARG2, rax
+    mov     ARG3, CybouDB_PTYPE_MAP
+    call    db_page_for_write
+    FRAME_END
+    ret
+leaf_addr_plain:
+    mov     rax, ARG3
+    add     rax, ARG2
+    shl     rax, CybouDB_PAGE_SHIFT
+    add     rax, [r10 + DB_BASE]
     FRAME_END
     ret
 
@@ -540,6 +617,8 @@ flat_valid:
     cmp     rax, [rbp - 24]
     jae     .bad
     DB_PAGE_HERE rax, r10
+    test    rax, rax
+    jz      .bad
     mov     [rbp - 32], rax
     mov     r10, rax
     cmp     dword [r10 + MAP_MAGIC], CybouDB_MAP_MAGIC
@@ -855,7 +934,7 @@ span_stage:
     mov     ARG1, r10
     mov     ARG2, [rbp - 32]
     mov     ARG3, [rbp - 40]
-    call    leaf_addr
+    call    leaf_for_write
     test    rax, rax
     jz      .unreadable
     mov     [rbp - 56], rax
@@ -1180,6 +1259,8 @@ cs_retires_are_unreachable:
     jae     .next
     mov     rdx, rax                    ; the page id, to check it owns itself
     DB_PAGE_HERE rax, r10
+    test    rax, rax
+    jz      .bad
     ; Only a page carrying the shared header can say who owns it. Every page
     ; shape in the format opens with a magic whose low three bytes are 'ASQ' -
     ; ASQP, ASQD, ASQC, ASQV, ASQI, ASQZ, ASQQ - and writes its own id at
@@ -1366,7 +1447,7 @@ span_mark:
     mov     ARG3, ARG2
     mov     ARG2, [r10 + DB_BITMAP]
     mov     ARG1, r10
-    call    map_locate
+    call    map_locate_for_write
     test    rax, rax
     jz      .unreadable
     mov     r10, rax
@@ -1508,11 +1589,11 @@ db_bitmap_alloc_run:
     mov     r10, [rbp - 8]
     mov     rax, [rbp - 48]
     call    mark_dirty
-    mov     r10, [rbp - 8]
-    mov     rax, [rbp - 48]
-    DB_PAGE_HERE rax, r10
-    mov     ARG1, rax
-    call    zero_page
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [rbp - 48]
+    call    db_page_blank
+    test    rax, rax
+    jz      .unreadable
     inc     qword [rbp - 32]
     mov     rax, [rbp - 32]
     cmp     rax, [rbp - 16]
@@ -1525,6 +1606,12 @@ db_bitmap_alloc_run:
     ret
 .run_full:
     mov     eax, CybouDB_E_FULL
+    FRAME_END
+    ret
+.unreadable:
+    mov     r10, [rbp - 8]
+    call    map_unreadable
+    mov     eax, CybouDB_E_SEAL
     FRAME_END
     ret
 
@@ -1554,9 +1641,13 @@ db_bitmap_alloc:
     cmp     r11, [r10 + DB_COW_FLOOR]
     jae     .map_ready
     DB_PAGE_HERE r11, r10               ; old map
+    test    r11, r11
+    jz      .unreadable
     mov     rax, [rbp - 24]
     mov     [r10 + DB_BITMAP], rax
     DB_PAGE_HERE rax, r10               ; new map
+    test    rax, rax
+    jz      .unreadable
     mov     ecx, CybouDB_PAGE_SIZE / 8
 .copy:
     mov     rdx, [r11]
@@ -1565,9 +1656,16 @@ db_bitmap_alloc:
     add     rax, 8
     dec     ecx
     jnz     .copy
+    ; The page this loop starts from comes out of the context after the call,
+    ; not before it: r8 is volatile and leaf_for_write is a call now.
+    mov     ARG1, r10
+    mov     ARG2, [r10 + DB_BITMAP]
+    xor     ARG3, ARG3
+    call    leaf_for_write
+    test    rax, rax
+    jz      .unreadable
+    mov     r10, [rbp - 8]
     mov     r8, [r10 + DB_ALLOC]
-    mov     rax, [r10 + DB_BITMAP]
-    DB_PAGE_HERE rax, r10
     mov     r10, rax
     mov     r9d, MAP_METADATA
 .reserve:
@@ -1578,8 +1676,12 @@ db_bitmap_alloc:
     jb      .reserve
 .map_ready:
     mov     r10, [rbp - 8]
-    mov     rax, [r10 + DB_BITMAP]
-    DB_PAGE_HERE rax, r10
+    mov     ARG1, r10
+    mov     ARG2, [r10 + DB_BITMAP]
+    xor     ARG3, ARG3
+    call    leaf_for_write
+    test    rax, rax
+    jz      .unreadable
     mov     [rbp - 40], rax
     mov     r10, rax
     mov     r8, [rbp - 32]
@@ -1658,7 +1760,7 @@ db_bitmap_alloc:
     mov     ARG1, r10
     mov     ARG2, [r10 + DB_BITMAP]
     xor     ARG3, ARG3
-    call    leaf_addr
+    call    leaf_for_write
     test    rax, rax
     jz      .unreadable
     mov     r10, [rbp - 8]
@@ -1678,11 +1780,11 @@ db_bitmap_alloc:
     mov     r10, [rbp - 8]
     mov     rax, [rbp - 32]
     call    mark_dirty
-    mov     r11, [rbp - 8]
-    mov     rax, [rbp - 32]
-    DB_PAGE_HERE rax, r11
-    mov     ARG1, rax
-    call    zero_page
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [rbp - 32]
+    call    db_page_blank
+    test    rax, rax
+    jz      .unreadable
     mov     r11, [rbp - 16]
     mov     rax, [rbp - 32]
     mov     [r11], rax
@@ -1718,7 +1820,12 @@ db_bitmap_seal:
     mov     rax, [r10 + DB_BITMAP]
     cmp     rax, [r10 + DB_COW_FLOOR]
     jb      .done
-    DB_PAGE_HERE rax, r10
+    mov     ARG1, r10
+    mov     ARG2, rax
+    xor     ARG3, ARG3
+    call    leaf_for_write
+    test    rax, rax
+    jz      .unreadable
     mov     ARG1, rax
     call    seal_leaf
     jmp     .done
@@ -1732,7 +1839,7 @@ db_bitmap_seal:
     mov     ARG1, r10
     mov     ARG2, [r10 + DB_BITMAP]
     mov     ARG3, [rbp - 24]
-    call    leaf_addr
+    call    leaf_for_write
     test    rax, rax
     jz      .unreadable
     mov     [rbp - 32], rax

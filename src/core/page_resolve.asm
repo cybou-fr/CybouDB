@@ -33,6 +33,8 @@ global db_page_resolve
 global db_page_for_write
 global db_page_new
 global db_context_bytes
+global db_page_number
+global db_page_blank
 global db_pages_flush
 
 extern cyboudb_pcache_lookup
@@ -53,6 +55,7 @@ extern cyboudb_pcache_clean_at
 extern cyboudb_page_seal
 extern cyboudb_pcache_frame
 extern cyboudb_pcache_type_at
+extern cyboudb_pcache_page_of
 extern cyboudb_pcache_set_type
 extern crc32c
 
@@ -437,6 +440,78 @@ db_page_for_write:
 ; =============================================================================
 db_context_bytes:
     mov     eax, CybouDB_DB_SIZE
+    ret
+
+; =============================================================================
+;  db_page_blank(ctx, page) -> a zeroed, writable address for a page that has
+;  just been allocated, or zero
+;
+;  The allocator hands out a page and the caller expects to find zeroes at it.
+;  In a plain database that is the mapping, cleared. In an encrypted one it
+;  cannot be a resolve: nobody has sealed that page, so there is nothing at it
+;  to open and asking would fail a tag check against bytes nobody wrote. It is
+;  a fresh frame instead, which is what db_page_new is for.
+;
+;  This is the one place in the engine where "a page" and "a page that exists"
+;  come apart, and it comes apart only under encryption, which is why the two
+;  answers live behind one name rather than behind a branch at every allocator.
+; =============================================================================
+db_page_blank:
+    FRAME_BEGIN 32, 0
+    mov     [rbp - 8], ARG1
+    mov     [rbp - 16], ARG2
+    mov     r10, ARG1
+    cmp     qword [r10 + DB_CACHE], 0
+    jne     .fresh_frame
+    mov     rax, ARG2
+    shl     rax, CybouDB_PAGE_SHIFT
+    add     rax, [r10 + DB_BASE]
+    mov     [rbp - 24], rax
+    mov     r10, rax
+    xor     rax, rax
+    xor     rcx, rcx
+.zero:
+    mov     [r10 + rcx], rax
+    add     rcx, 8
+    cmp     rcx, CybouDB_PAGE_SIZE
+    jb      .zero
+    mov     rax, [rbp - 24]
+    FRAME_END
+    ret
+.fresh_frame:
+    mov     ARG1, [rbp - 8]
+    mov     ARG2, [rbp - 16]
+    mov     ARG3, CybouDB_PTYPE_DATA
+    call    db_page_new
+    FRAME_END
+    ret
+
+; =============================================================================
+;  db_page_number(ctx, addr) -> the page that address belongs to, or -1
+;
+;  The inverse of a page address, which the engine asks for in a few places:
+;  a page that carries its own id has to be stamped with one, and the code
+;  holding the address is not always the code that knew the number.
+;
+;  A plain database subtracts the mapping base and shifts, which is exact
+;  because the mapping is the file. An encrypted one cannot: a frame is
+;  wherever there was room, and the relation between an address and a page is
+;  something only the cache knows. So it is asked.
+; =============================================================================
+db_page_number:
+    FRAME_BEGIN 16, 0
+    mov     r10, ARG1
+    cmp     qword [r10 + DB_CACHE], 0
+    jne     .cached
+    mov     rax, ARG2
+    sub     rax, [r10 + DB_BASE]
+    shr     rax, CybouDB_PAGE_SHIFT
+    FRAME_END
+    ret
+.cached:
+    mov     ARG1, [r10 + DB_CACHE]
+    call    cyboudb_pcache_page_of
+    FRAME_END
     ret
 
 ; =============================================================================

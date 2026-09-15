@@ -106,6 +106,9 @@ uint8_t *db_page_resolve(uint8_t *ctx, uint64_t page);
 uint8_t *db_page_for_write(uint8_t *ctx, uint64_t page, uint64_t page_type);
 uint8_t *db_page_new(uint8_t *ctx, uint64_t page, uint64_t page_type);
 int db_pages_flush(uint8_t *ctx);
+/* The staged allocation map's own checksum, which a commit refreshes before
+   the flush seals it. This test builds files without an allocator. */
+void db_bitmap_seal(uint8_t *ctx) { (void)ctx; }
 uint64_t db_context_bytes(void);
 int db_encrypted_commit(uint8_t *ctx);
 int db_encrypted_attach(uint8_t *ctx, const uint8_t *dk, uint8_t *cache_mem,

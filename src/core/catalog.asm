@@ -14,6 +14,7 @@ extern index_page_valid
 extern queue_page_valid
 extern stream_page_valid
 extern db_zone_validate
+extern db_page_number
 global db_catalog_validate, db_catalog_put, db_catalog_get, db_catalog_drop
 global db_catalog_put_index, db_catalog_set_index_root, db_catalog_page
 global db_catalog_put_queue, db_catalog_put_stream
@@ -222,6 +223,8 @@ page_valid:
     mov r11, [rbp - 16]
     mov r8, [rbp - 24]
     DB_PAGE_HERE r8, r10
+    test r8, r8
+    jz .bad
     mov [rbp - 32], r8
     cmp dword [r8 + CAT_MAGIC], CAT_MAGIC_VALUE
     jne .bad
@@ -450,10 +453,11 @@ db_catalog_validate:
     shl r10, 4
     add r10, [rbp - 24]
     mov rax, [r10 + CAT_DATA + 8]
-    shl rax, CybouDB_PAGE_SHIFT
     mov r10, [rbp - 8]
-    add rax, [r10 + DB_BASE]
-    lea ARG2, [rax + CAT_TABLE_NAME]
+    DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .bad                             ; a page that did not verify names
+    lea ARG2, [rax + CAT_TABLE_NAME]    ; nothing
     mov rax, [rbp - 56]
     lea ARG1, [rax + CAT_TABLE_NAME]
     mov ARG3, 32
@@ -525,15 +529,20 @@ current_valid:
     FRAME_END
     ret
 
-; stamp(page, ctx): id is derived from its mapping address; body is preserved.
+; stamp(page, ctx): the id is the page the address belongs to, which only the
+; context can say once an encrypted database keeps its pages in a cache. The
+; body is preserved.
 stamp:
-    mov r10, ARG1
-    mov r11, ARG2
+    FRAME_BEGIN 32, 0
+    mov [rbp - 8], ARG1                 ; the page's address
+    mov [rbp - 16], ARG2                ; the context
+    mov ARG1, ARG2
+    mov ARG2, [rbp - 8]
+    call db_page_number
+    mov r10, [rbp - 8]
+    mov r11, [rbp - 16]
     mov dword [r10 + CAT_MAGIC], CAT_MAGIC_VALUE
     mov dword [r10 + CAT_VERSION], CAT_VERSION_VALUE
-    mov rax, r10
-    sub rax, [r11 + DB_BASE]
-    shr rax, CybouDB_PAGE_SHIFT
     mov [r10 + CAT_PAGE_ID], rax
     mov rax, [r11 + DB_GENERATION]
     inc rax
@@ -541,6 +550,7 @@ stamp:
     mov qword [r10 + CAT_RESERVED], 0
     mov qword [r10 + CAT_RESERVED + 8], 0
     mov qword [r10 + CAT_RESERVED + 16], 0
+    FRAME_END
     ret
 
 seal_page:
@@ -579,9 +589,12 @@ catalog_entry_in:
     jb .none                            ; 0, and the header, are not directories
     cmp rax, [r10 + DB_PAGES]
     jae .none                           ; past the end of the file
-    cmp qword [r10 + DB_BASE], 0
-    je .none
+    mov rcx, [r10 + DB_BASE]
+    or rcx, [r10 + DB_CACHE]
+    jz .none                            ; nothing is open, either way
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .none
     cmp dword [rax + CAT_TYPE], CAT_DIRECTORY
     jne .none
     mov ecx, [rax + CAT_COUNT]
@@ -609,6 +622,8 @@ catalog_entry_in:
     cmp rax, [r10 + DB_PAGES]
     jae .none
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .none
     ; It has to be the object that was asked about, of the type that was
     ; asked about, or the answer is not usable.
     mov ecx, [rbp - 24]
@@ -631,8 +646,9 @@ db_catalog_get:
     mov [rbp - 16], ARG2
     mov [rbp - 24], ARG3
     mov r10, ARG1
-    cmp qword [r10 + DB_BASE], 0
-    je .state
+    mov rcx, [r10 + DB_BASE]
+    or rcx, [r10 + DB_CACHE]
+    jz .state                           ; nothing is open, either way
     cmp qword [r10 + DB_MODE], -1
     je .state
     test qword [r10 + DB_FEATURES], CybouDB_FEATURE_CATALOG
@@ -645,6 +661,8 @@ db_catalog_get:
     test rax, rax
     jz .missing
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .corrupt
     mov ecx, [rax + CAT_COUNT]
     lea r10, [rax + CAT_DATA]
     mov r11, [rbp - 16]
@@ -794,6 +812,8 @@ catalog_put_common:
     test rax, rax
     jz .capacity
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .corrupt
     mov [rbp - 32], rax
     mov eax, [rax + CAT_COUNT]
     mov [rbp - 40], rax
@@ -815,9 +835,10 @@ catalog_put_common:
     cmp rax, [rbp - 16]
     jne .name
     mov rax, [r10 + CAT_DATA + 8]
-    shl rax, CybouDB_PAGE_SHIFT
     mov r11, [rbp - 8]
-    add rax, [r11 + DB_BASE]
+    DB_PAGE_HERE rax, r11
+    test rax, rax
+    jz .state
     cmp qword [rbp - 96], CAT_SCHEMA
     jne .state                      ; an index is never replaced in place
     cmp qword [rax + CAT_DATA_ROOT], 0
@@ -826,9 +847,10 @@ catalog_put_common:
     jmp .next
 .name:
     mov rax, [r10 + CAT_DATA + 8]
-    shl rax, CybouDB_PAGE_SHIFT
     mov r11, [rbp - 8]
-    add rax, [r11 + DB_BASE]
+    DB_PAGE_HERE rax, r11
+    test rax, rax
+    jz .state
     lea ARG2, [rax + CAT_TABLE_NAME]
     mov rax, [rbp - 24]
     lea ARG1, [rax + CAT_TABLE_NAME]
@@ -860,6 +882,8 @@ catalog_put_common:
     mov r10, [rbp - 8]
     mov rax, [rbp - 72]
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .corrupt
     mov [rbp - 88], rax
     mov r11, [rbp - 24]
     mov ecx, CybouDB_PAGE_SIZE / 8
@@ -907,6 +931,8 @@ catalog_put_common:
     mov r10, [rbp - 8]
     mov rax, [rbp - 80]
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .corrupt
     mov [rbp - 88], rax
     mov ARG1, rax
     mov ARG2, r10
@@ -999,6 +1025,8 @@ db_catalog_drop:
     test rax, rax
     jz .notfound
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .corrupt
     mov [rbp - 24], rax
     mov eax, [rax + CAT_COUNT]
     test eax, eax
@@ -1044,6 +1072,8 @@ db_catalog_drop:
     mov r10, [rbp - 8]
     mov rax, [rbp - 48]
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .corrupt
     mov [rbp - 56], rax
 
     mov ARG1, rax
@@ -1237,6 +1267,8 @@ catalog_publish_data:
     mov r10, [rbp - 8]
     mov rax, [rbp - 32]
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .state
     mov [rbp - 72], rax
     cmp qword [rbp - 88], 2
     je .truncate_rows
@@ -1278,6 +1310,8 @@ catalog_publish_data:
     mov r10, [rbp - 8]
     mov rax, [rbp - 56]
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .state
     mov [rbp - 72], rax
     mov ARG1, rax
     mov ARG2, r10
@@ -1303,6 +1337,8 @@ catalog_publish_data:
     mov r10, [rbp - 8]
     mov rax, [rbp - 64]
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .state
     mov [rbp - 72], rax
     mov ARG1, rax
     mov ARG2, r10
@@ -1403,11 +1439,13 @@ db_catalog_edit:
     call db_catalog_page
     test rax, rax
     jz .e_state
+    mov ARG1, [rbp - 8]
+    mov ARG2, rax
+    call db_page_number
+    cmp rax, -1
+    je .e_state
     mov r10, [rbp - 8]
-    mov rcx, rax
-    sub rcx, [r10 + DB_BASE]
-    shr rcx, CybouDB_PAGE_SHIFT
-    mov [rbp - 32], rcx
+    mov [rbp - 32], rax
     mov rax, [r10 + DB_ROOT]
     mov [rbp - 40], rax
     mov ARG1, [rbp - 8]
@@ -1424,6 +1462,8 @@ db_catalog_edit:
     mov r10, [rbp - 8]
     mov rax, [rbp - 48]
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .e_state
     mov [rbp - 64], rax
     mov ARG1, rax
     mov ARG2, r10
@@ -1438,6 +1478,8 @@ db_catalog_edit:
     mov r10, [rbp - 8]
     mov rax, [rbp - 56]
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .e_state
     mov [rbp - 72], rax
     mov ARG1, rax
     mov ARG2, r10
@@ -1517,11 +1559,15 @@ db_catalog_set_index_root:
     call db_catalog_page
     test rax, rax
     jz .state
+    mov [rbp - 48], rax              ; the entry's page, kept across the call
+    mov ARG1, [rbp - 8]
+    mov ARG2, rax
+    call db_page_number
+    cmp rax, -1
+    je .state
     mov r10, [rbp - 8]
-    mov rcx, rax
-    sub rcx, [r10 + DB_BASE]
-    shr rcx, CybouDB_PAGE_SHIFT
-    mov [rbp - 40], rcx
+    mov [rbp - 40], rax
+    mov rax, [rbp - 48]
     cmp dword [rax + CAT_TYPE], CAT_INDEX
     jne .state
     ; stamp clears the reserved span on the copy, and the column and the
@@ -1546,6 +1592,8 @@ db_catalog_set_index_root:
     mov r10, [rbp - 8]
     mov rax, [rbp - 56]
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .state
     mov [rbp - 72], rax
     mov ARG1, rax
     mov ARG2, r10
@@ -1571,6 +1619,8 @@ db_catalog_set_index_root:
     mov r10, [rbp - 8]
     mov rax, [rbp - 64]
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .state
     mov [rbp - 72], rax
     mov ARG1, rax
     mov ARG2, r10
@@ -1631,6 +1681,8 @@ db_catalog_page:
     test rax, rax
     jz .none
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .none
     mov ecx, [rax + CAT_COUNT]
     test ecx, ecx
     jz .none
@@ -1651,6 +1703,8 @@ db_catalog_page:
 .found:
     mov rax, [r8 + 8]
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .none
     ret
 
 %ifdef CybouDB_LINUX

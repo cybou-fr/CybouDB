@@ -45,6 +45,7 @@ global cyboudb_pcache_invalidate
 global cyboudb_pcache_stats
 global cyboudb_pcache_frames
 global cyboudb_pcache_dirty_at
+global cyboudb_pcache_page_of
 global cyboudb_pcache_clean_at
 global cyboudb_pcache_set_type
 global cyboudb_pcache_type_at
@@ -530,6 +531,41 @@ cyboudb_pcache_stats:
 cyboudb_pcache_frames:
     mov     r10, ARG1
     mov     rax, [r10 + PC_FRAMES]
+    ret
+
+; =============================================================================
+;  cyboudb_pcache_page_of(cache, frame) -> the page in that frame, or -1
+;
+;  The reverse of a lookup, and the only way an encrypted database can answer
+;  "which page is this?" about an address. A plain database subtracts the
+;  mapping base and shifts; a frame address has no such relation to a page
+;  number, because the whole point of the cache is that a page is wherever
+;  there was room for it.
+;
+;  Exact rather than approximate: the frames are one contiguous array, so the
+;  address gives the slot and the slot carries the page.
+; =============================================================================
+cyboudb_pcache_page_of:
+    mov     r10, ARG1
+    mov     r11, ARG2
+    sub     r11, r10
+    sub     r11, [r10 + PC_FRAME_BASE]
+    jb      .none                       ; below the first frame
+    test    r11, CybouDB_PAGE_SIZE - 1
+    jnz     .none                       ; not the start of a frame
+    shr     r11, CybouDB_PAGE_SHIFT
+    cmp     r11, [r10 + PC_FRAMES]
+    jae     .none
+    mov     rax, r11
+    imul    rax, rax, SLOT_SIZE
+    add     rax, [r10 + PC_SLOTS]
+    add     rax, r10
+    test    dword [rax + SLOT_FLAGS], SLOT_VALID
+    jz      .none
+    mov     rax, [rax + SLOT_PAGE]
+    ret
+.none:
+    mov     rax, -1
     ret
 
 cyboudb_pcache_dirty_at:

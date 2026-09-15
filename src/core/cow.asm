@@ -110,8 +110,12 @@ db_cow_copy_page:
     mov     r10, [rbp - 8]
     mov     r11, [rbp - 16]
     DB_PAGE_HERE r11, r10
+    test    r11, r11
+    jz      .page
     mov     rax, [rbp - 32]
     DB_PAGE_HERE rax, r10
+    test    rax, rax
+    jz      .page
     mov     ecx, CybouDB_PAGE_SIZE / 8
 .copy:
     mov     rdx, [r11]
@@ -200,8 +204,12 @@ db_cow_copy_run:
     mov     r10, [rbp - 8]
     mov     r11, [rbp - 16]
     DB_PAGE_HERE r11, r10
+    test    r11, r11
+    jz      .page
     mov     rax, [rbp - 40]
     DB_PAGE_HERE rax, r10
+    test    rax, rax
+    jz      .page
     mov     rcx, [rbp - 24]
     shl     rcx, CybouDB_PAGE_SHIFT - 3    ; qwords in the whole run
 .copy_run:
@@ -263,6 +271,8 @@ db_cow_write_page:
     mov     r10, [rbp - 24]
     mov     rax, [rbp - 8]
     DB_PAGE_HERE rax, r10
+    test    rax, rax
+    jz      .page
     mov     r11, [rbp - 16]
     mov     ecx, CybouDB_PAGE_SIZE / 8
 .copy:
