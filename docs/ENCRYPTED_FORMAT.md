@@ -204,6 +204,30 @@ bounded, and independent of how large the database is.
 > crashed generation-7 attempt from being spliced into the published
 > generation 7.
 
+### What the MAC actually is
+
+`src/crypto/seal_dir.asm`, and the byte map in `include/crypto.inc`. The MAC is
+SHAKE256 absorbed by prefix - the key first, at its fixed 32 bytes, then a
+label with its terminator, then the page's own bytes:
+
+```text
+leaf MAC = SHAKE256( key | "CybouDB/0.7/seal-leaf\0" | leaf[8 .. 4064) )[0..16)
+node MAC = SHAKE256( key | "CybouDB/0.7/seal-node\0" | node[8 .. 4080) )[0..16)
+```
+
+A sponge absorbing a fixed-length secret prefix is a MAC - KMAC's construction
+without its encodings - and the key is the one `KDF_SEAL_TREE` derives, not the
+one that seals pages. The covered range starts at byte 8 and so takes in the
+index, the generation and the seal epoch along with the array; it stops before
+the CRC, which is a disk check that anyone who writes the page recomputes.
+
+**Neither a leaf nor a node holds a MAC of itself.** Its parent holds it, and
+the root's is in the superblock. That is the structure rather than a saving: a
+page carrying the MAC of itself would be attesting to its own honesty, which is
+exactly what Decision 3b says an external tag cannot do. It is also what makes
+the arithmetic above come out - 100 entries and 251 children are what fits once
+nothing is reserved for a self-MAC.
+
 This is also why `generation` alone was never going to be the anti-replay
 identity. It is one field in the associated data, and it is not a claim that
 *this* is the live version of the page; the seal root is that claim, and it is

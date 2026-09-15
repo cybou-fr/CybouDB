@@ -27,6 +27,10 @@
 void cyboudb_keccak_f1600(uint8_t *state);
 void cyboudb_shake256(uint8_t *out, uint64_t out_len,
                       const uint8_t *in, uint64_t in_len);
+#define SHCTX_SIZE 208
+void cyboudb_shake256_init(uint8_t *ctx);
+void cyboudb_shake256_update(uint8_t *ctx, const uint8_t *in, uint64_t len);
+void cyboudb_shake256_final(uint8_t *ctx, uint8_t *out, uint64_t out_len);
 
 static int checks, failures;
 
@@ -211,6 +215,46 @@ int main(void) {
         for (i = 0; i < 25; i++) memcpy(copy + i * 8, &a[i % 5][i / 5], 8);
         check("Keccak-f[1600] alone matches the reference",
               memcmp(state, copy, 200) == 0);
+    }
+
+    /* The seal tree absorbs a page in pieces - a few header fields, then the
+       entry array where it already lies - so absorbing in pieces has to give
+       what absorbing the whole thing at once gives. Every split from 0 to the
+       far side of two sponge blocks, because the boundary at the rate is
+       exactly where a streaming sponge goes wrong. */
+    {
+        static uint8_t msg[300], whole[64], piece[64], ctx[SHCTX_SIZE];
+        unsigned k, ok = 1, boundary_ok = 1;
+        for (k = 0; k < sizeof msg; k++) msg[k] = (uint8_t)(k * 31 + 7);
+        cyboudb_shake256(whole, sizeof whole, msg, sizeof msg);
+        for (k = 0; k <= sizeof msg; k++) {
+            cyboudb_shake256_init(ctx);
+            cyboudb_shake256_update(ctx, msg, k);
+            cyboudb_shake256_update(ctx, msg + k, sizeof msg - k);
+            cyboudb_shake256_final(ctx, piece, sizeof piece);
+            if (memcmp(whole, piece, sizeof piece) != 0) {
+                ok = 0;
+                if (k == 136 || k == 272) boundary_ok = 0;
+            }
+        }
+        check("absorbing in two pieces is absorbing once, at every split", ok);
+        check("including the two splits that land on a sponge block", boundary_ok);
+
+        /* Three pieces, and an empty one in the middle: a caller that passes a
+           zero-length field must not shift the absorb by a byte. */
+        cyboudb_shake256_init(ctx);
+        cyboudb_shake256_update(ctx, msg, 100);
+        cyboudb_shake256_update(ctx, msg + 100, 0);
+        cyboudb_shake256_update(ctx, msg + 100, sizeof msg - 100);
+        cyboudb_shake256_final(ctx, piece, sizeof piece);
+        check("and an empty piece changes nothing",
+              memcmp(whole, piece, sizeof piece) == 0);
+
+        cyboudb_shake256_init(ctx);
+        cyboudb_shake256_final(ctx, piece, 32);
+        cyboudb_shake256(whole, 32, msg, 0);
+        check("the streaming sponge of nothing is the sponge of nothing",
+              memcmp(whole, piece, 32) == 0);
     }
 
     printf("\nKeccak suite: %d checks, %d failed\n", checks, failures);

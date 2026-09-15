@@ -59,6 +59,13 @@
 %define CybouDB_AEAD_NONCE_SIZE   12    ; ChaCha20-Poly1305
 %define CybouDB_XAEAD_NONCE_SIZE  24    ; XChaCha20-Poly1305, what the format uses
 
+; --- the streaming sponge ---------------------------------------------------
+;  SHAKE256 absorbed in pieces: the state, and how many bytes of the current
+;  block have been absorbed into it.
+%define SHCTX_STATE   0                 ; 200 bytes, twenty-five lanes
+%define SHCTX_BUFLEN  200
+%define CybouDB_SHCTX_SIZE 208
+
 ; --- key derivation ---------------------------------------------------------
 ;  docs/KEY_HIERARCHY.md, Decision 2. A purpose is a number in a closed list,
 ;  not a string a caller supplies: a KDF whose label comes from outside is an
@@ -200,5 +207,109 @@
 %define CROOT_E_GEOMETRY     6          ; the seal directory cannot be where it says
 %define CROOT_E_SLOTS        7          ; the slot table contradicts itself
 %define CROOT_E_RESERVED     8          ; a reserved field is not zero
+
+; =============================================================================
+;  THE SEAL DIRECTORY - where a sealed page's nonce and tag live
+; =============================================================================
+;  docs/ENCRYPTED_FORMAT.md, Decisions 3 and 3b. A page's tag cannot live in
+;  the page: 4096 bytes in, 4096 bytes out, and no room for 40 more. So the
+;  seals live in pages of their own, one entry per page of the file, indexed
+;  by page number - and because an entry that anybody can rewrite is not an
+;  authenticator, the entries are covered by a keyed tree whose root the
+;  superblock publishes.
+;
+;  Neither a leaf nor a node carries its own MAC. Its parent does, and the
+;  root's is in the superblock. That is not a saving, it is the structure: a
+;  page that carried the MAC of itself would be attesting to its own honesty,
+;  which is exactly the thing Decision 3b says an external tag cannot do.
+;
+;  A seal leaf page:
+;
+;  Offset  Size  Field         Description
+;  ------  ----  ------------  --------------------------------------------
+;    +0      4   magic         'ASQL'
+;    +4      4   version       1
+;    +8      8   leaf_index    which leaf of the directory this is
+;   +16      8   first_page    the page number entry 0 covers
+;   +24      8   generation    the generation that published these entries
+;   +32      8   seal_epoch    which page-seal key they were made under
+;   +40     24   reserved      zero
+;   +64   4000   entries       100 x 40: a 24-byte nonce and a 16-byte tag
+; +4064     28   reserved_tail zero
+; +4092      4   crc32c        over [0, 4092)
+;
+;  A seal node page:
+;
+;    +0      4   magic         'ASQN'
+;    +4      4   version       1
+;    +8      8   node_index    which node of its level this is
+;   +16      8   level         1 is the parent of leaves
+;   +24      8   generation
+;   +32      8   seal_epoch
+;   +40      8   child_count   how many of the 251 slots are in use
+;   +48     16   reserved      zero
+;   +64   4016   children      251 x 16: the MAC of each child
+; +4080     12   reserved_tail zero
+; +4092      4   crc32c
+;
+;  The MAC covers bytes [8, 4064) of a leaf and [8, 4080) of a node - every
+;  field that says what the page is and what it holds, and not the CRC, which
+;  is a disk check and is recomputed by anyone who writes the page.
+; =============================================================================
+
+%define CybouDB_SEAL_LEAF_MAGIC  0x4C515341    ; 'A','S','Q','L'
+%define CybouDB_SEAL_NODE_MAGIC  0x4E515341    ; 'A','S','Q','N'
+%define CybouDB_SEAL_VERSION     1
+
+%define SLEAF_MAGIC        0
+%define SLEAF_VERSION      4
+%define SLEAF_INDEX        8
+%define SLEAF_FIRST_PAGE   16
+%define SLEAF_GENERATION   24
+%define SLEAF_SEAL_EPOCH   32
+%define SLEAF_RESERVED     40
+%define SLEAF_ENTRIES      64
+%define SLEAF_MAC_FROM     8
+%define SLEAF_MAC_TO       4064
+%define SLEAF_RESERVED_TAIL 4064
+%define SLEAF_CRC          4092
+
+%define SNODE_MAGIC        0
+%define SNODE_VERSION      4
+%define SNODE_INDEX        8
+%define SNODE_LEVEL        16
+%define SNODE_GENERATION   24
+%define SNODE_SEAL_EPOCH   32
+%define SNODE_CHILD_COUNT  40
+%define SNODE_RESERVED     48
+%define SNODE_CHILDREN     64
+%define SNODE_MAC_FROM     8
+%define SNODE_MAC_TO       4080
+%define SNODE_RESERVED_TAIL 4080
+%define SNODE_CRC          4092
+
+%define SENTRY_NONCE   0                ; 24
+%define SENTRY_TAG     24               ; 16
+%define SENTRY_SIZE    40
+
+%define CybouDB_SEAL_ENTRIES_PER_LEAF  100   ; (4064 - 64) / 40
+%define CybouDB_SEAL_CHILDREN_PER_NODE 251   ; (4080 - 64) / 16
+%define CybouDB_SEAL_MAC_SIZE          16
+
+; What cyboudb_seal_geometry fills in.
+%define SGEO_LEAVES    0
+%define SGEO_NODES     8
+%define SGEO_DEPTH     16
+%define SGEO_PAGES     24               ; both copies, which is what a file pays
+%define CybouDB_SGEO_SIZE 32
+
+; --- what a malformed seal page is refused with ------------------------------
+%define SEAL_OK          0
+%define SEAL_E_MAGIC     1
+%define SEAL_E_VERSION   2
+%define SEAL_E_CRC       3
+%define SEAL_E_RESERVED  4
+%define SEAL_E_FIELDS    5              ; a count or a level that cannot be
+%define SEAL_E_MAC       6              ; the parent does not vouch for this page
 
 %endif ; CybouDB_CRYPTO_INC
