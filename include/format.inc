@@ -307,6 +307,27 @@
 %define SB_FEATURE_ROOT     56
 %define SB_RESERVED_TAIL    64
 %define SB_RESERVED_TAIL_SIZE 56
+
+; --- what an encrypted database puts in the first sixteen of those bytes -----
+;  docs/ENCRYPTED_FORMAT.md, Decisions 3b and 6b. The superblock stays
+;  plaintext: recovery reads both copies, compares generations and picks the
+;  newer valid one, and it has to do that before it knows which key anything is
+;  under. What it gains when the encryption bit is set is a tag - over the
+;  fields, not over the page - which is what makes the seal tree root it
+;  carries worth anything.
+;
+;  The tag covers [0, SB_SEAL_TAG), which is every field a reader uses: a field
+;  living past the tagged range would be one a torn write could change
+;  invisibly, and Decision 6b makes that a requirement rather than an
+;  observation. The bytes after the tag stay reserved and are checked as zero,
+;  and the CRC still covers the whole page - it tells a torn write from an
+;  attack, cheaply, before any key is in hand.
+;
+;  Zero in a database that is not encrypted, like the rest of the reserved
+;  tail, so nothing about this changes what an existing file looks like.
+%define SB_SEAL_TAG         64
+%define SB_SEAL_TAG_SIZE    16
+%define SB_SEAL_TAG_COVERS  SB_SEAL_TAG
 ; Only ever set in the in-memory candidate a writer builds to check its own
 ; half-finished graph, never on disk: an on-disk superblock with this field
 ; set is rejected. A staged graph is rebuilt one page at a time, so between

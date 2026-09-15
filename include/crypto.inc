@@ -447,6 +447,10 @@
 %define CybouDB_KEYPAGE_SLOTS   3
 %define CybouDB_MLKEM_EK_BYTES  1184
 %define CybouDB_MLKEM_DK_BYTES  2400
+; FIPS 203 puts the encapsulation key inside the decapsulation key, right
+; after the secret vector - which is how a holder of a private key can work
+; out which slot of a file is theirs without being told.
+%define CybouDB_MLKEM_DK_EK_OFFSET 1152
 %define CybouDB_MLKEM_CT_BYTES  1088
 %define CybouDB_MLKEM_SS_BYTES  32
 
