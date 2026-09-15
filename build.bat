@@ -472,6 +472,11 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     cl.exe /O2 /W3 /nologo tests\page_cache_test.c build\page_cache.obj /Febuild\page_cache_test.exe /Fobuild\page_cache_test.obj
     if errorlevel 1 goto :fail
     echo Build OK -^> build\page_cache_test.exe
+    "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\platform\windows\os_win.asm -o build\os_efile.obj
+    if errorlevel 1 goto :fail
+    cl.exe /O2 /W3 /nologo tests\encrypted_file_test.c build\key_slots.obj build\kmac.obj build\kdf.obj build\recovery.obj build\seal_dir.obj build\page_seal.obj build\crypto_root.obj build\aead.obj build\chacha20.obj build\poly1305.obj build\keccak.obj build\mlkem.obj build\mlkem_poly.obj build\mlkem_encode.obj build\mlkem_sample.obj build\checksum_crypto.obj build\os_efile.obj /Febuild\encrypted_file_test.exe /Fobuild\encrypted_file_test.obj /link kernel32.lib
+    if errorlevel 1 goto :fail
+    echo Build OK -^> build\encrypted_file_test.exe
     goto :eof
 )
 echo error: the crypto tests need NASM and the MSVC C compiler.

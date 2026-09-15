@@ -622,10 +622,15 @@ the release, not after it.
                                      second door are done; the English
                                      wordlist is not, and
                                      docs/RECOVERY_PHRASE.md says why
- 7. Authenticated page encryption     the seal directory and its keyed
-                                     tree are built and tested ahead of this
-                                     step, because the format needed them
-                                     frozen: src/crypto/seal_dir.asm
+ 7. Authenticated page encryption     the primitives are done - seal
+                                     directory, keyed tree, page seal. The
+                                     chain is proved to compose by
+                                     tests/encrypted_file_test.c, which
+                                     writes a real file and reopens it with a
+                                     private key. What remains is the engine:
+                                     cyboudb_open, the real superblock and
+                                     allocation map, and page access through
+                                     the cache
  8. Crash-safe encrypted transactions
  9. Scoped DEKs
 10. The signed access manifest
