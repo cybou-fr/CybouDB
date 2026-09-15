@@ -38,6 +38,24 @@ The ceiling becomes `CybouDB_MAP_MAX_LEAVES * 16112` = 16498688 pages, or 63 GiB
 with a map pair of at most 2048 pages. Everything else keeps its existing
 limits: 251 tables, 1..64 columns, 251 data pages per table.
 
+## The same map in an encrypted database
+
+An encrypted database has the identical map at the identical pages. What
+changes is that both copies are sealed: encrypted under the page seal key,
+with the nonce and tag in the seal-tree leaf that covers them, so a map page
+that was rewritten, replayed from an older generation, or spliced in from
+another file does not open at all. `cyboudb_encrypted_create` builds the leaves
+with the same `db_bitmap_leaf_build` the plain creator uses - the layout has
+one source, in `src/core/bitmap_leaf.asm`, because a map laid out in two places
+would eventually be laid out two ways and the second way would be found by an
+allocator handing out a page twice.
+
+The crypto root, the key slots and the seal-tree copies go *after* the map,
+at `3 + 2K` onwards, rather than before it. `span_valid` accepts the map only
+at 3 or 3+K, so that position is not free to move; everything crypto is
+reached through a pointer, so it is. See
+[docs/ENCRYPTED_ENGINE.md](ENCRYPTED_ENGINE.md).
+
 ## Creation and compatibility
 
 ```sh

@@ -9,12 +9,48 @@ generation. Seal trees of more than one internal level are created, traversed
 and committed as well. Attaching chooses between the two superblock copies
 itself, with the key rather than with a checksum.
 
+`cyboudb_encrypted_create` now writes a canonical CybouDB database rather than
+a container: the full feature profile in the header, the paired `MAP_SPAN`
+allocation map where every CybouDB file keeps it, and both map copies sealed
+under the same seal tree as everything else.
+
 Two boundaries remain, and they are both integration rather than cryptography.
 The first is the ordinary `db_open` and public C API path: they still have no
 credential-bearing entry point and therefore return `CybouDB_E_NEEDS_KEY` for
-an encrypted header. The second is that `cyboudb_encrypted_create` writes a
-container, not a canonical CybouDB database: no `MAP_SPAN` allocation map, no
-catalog, and therefore no ordinary allocator above it.
+an encrypted header. The second is the allocator itself: it reaches the map
+through `DB_PAGE_HERE`, whose encrypted branch is compiled out because no build
+defines `CybouDB_ENCRYPTED_PAGES`, and each of those sites still has to learn
+to see the null the resolver returns for a page that did not verify.
+
+### The layout an encrypted database has
+
+With `K = ceil(pages / 16112)` map pages per copy and `S` pages in one
+seal-tree copy:
+
+```text
+page 0              the header, plaintext: identity and the feature bits
+pages 1, 2          superblock A and B, plaintext, each with a tag
+pages 3 .. 3+K      allocation map copy A        sealed
+pages 3+K .. 3+2K   allocation map copy B        sealed
+page 3+2K           the crypto root
+page 3+2K+1         the key slots
+pages 3+2K+2 ..     seal-tree copy A, S pages, then copy B
+then                everything the database holds
+```
+
+The map keeps the position the plain format gives it and the crypto pages move
+to make room, which is the only way round that works: the map is at 3 and 3+K
+in every CybouDB file and `span_valid` refuses any other position in as many
+words, while the crypto root is reached through `SB_FEATURE_ROOT` and the key
+slots and the directory through pointers inside it. Moving what is pointed at
+costs nothing.
+
+The map pages are sealed like any other page - AEAD under the page seal key,
+nonce and tag in the seal leaf that covers them, that leaf under the tree the
+superblock's tag publishes. So a map an attacker rewrites does not open, a map
+from an earlier generation does not replay, and a map from another database of
+the same shape does not splice in. They are also the only pages the creator
+seals: a fresh database has nothing else in it.
 
 ---
 

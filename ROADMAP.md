@@ -625,9 +625,16 @@ the release, not after it.
  7. Authenticated page encryption     internal engine path done: encrypted
                                      create, private-key attach, page cache,
                                      sealed reads/writes, commit and reopen.
-                                     What remains is integration into normal
-                                     cyboudb_open and the allocator/catalog
-                                     path rather than the internal test API
+                                     The creator now writes the canonical
+                                     layout - full feature profile, the paired
+                                     MAP_SPAN allocation map in its usual
+                                     place, both copies sealed under the seal
+                                     tree. What remains is the allocator and
+                                     catalog reaching it: DB_PAGE_HERE's
+                                     encrypted branch is compiled out in every
+                                     build, and its call sites do not yet read
+                                     a null as a refusal. Then normal
+                                     cyboudb_open rather than the internal API
  8. Crash-safe encrypted transactions publication is implemented at every
                                      depth: paired seal-tree copies, two
                                      barriers, inactive-superblock update, and
