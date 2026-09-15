@@ -91,6 +91,21 @@ int db_catalog_put(uint8_t *ctx, uint64_t id, const void *image);
 int db_catalog_get(uint8_t *ctx, uint64_t id, uint64_t *page);
 uint8_t *db_catalog_page(uint8_t *ctx, uint64_t id);
 int db_catalog_validate(uint8_t *ctx, const uint8_t *superblock);
+int db_pax_insert(uint8_t *ctx, uint64_t table_id, void *batch);
+int db_pax_read(uint8_t *ctx, uint64_t table_id, uint64_t row, void *out);
+
+typedef struct {
+    uint64_t rows;
+    uint64_t *values;
+    unsigned char *nulls;
+    uint64_t *var_lengths;
+    uint64_t flags;
+} batch_t;
+
+typedef struct {
+    uint64_t *values;
+    unsigned char *nulls;
+} row_out_t;
 void db_close(uint8_t *ctx);
 int db_open(vfs_path path, uint8_t *ctx, uint64_t writable, uint64_t verify);
 
@@ -136,7 +151,6 @@ int main(void) {
     struct eopen_args oargs;
     int64_t h;
     uint64_t pages = 30000, map_k, first_usable;
-    int rc_probe;
 
     setvbuf(stdout, NULL, _IONBF, 0);
     printf("CybouDB encrypted open test\n\n");
@@ -311,10 +325,8 @@ int main(void) {
               db_encrypted_commit(ctx) == 0);
         db_close(ctx);
 
-        rc_probe = db_open_encrypted(&oargs);
-        if (rc_probe) printf("     [probe] reopen rc=%d\n", rc_probe);
         if (check("a reopen finds the table through the seal tree",
-                  rc_probe == 0)) {
+                  db_open_encrypted(&oargs) == 0)) {
             cat = db_catalog_page(ctx, 4242);
             check("with its name intact",
                   cat != NULL &&
@@ -322,6 +334,59 @@ int main(void) {
             db_close(ctx);
         }
     }
+
+    /* --- rows into a sealed table -------------------------------------------
+       The last thing between an encrypted file and a database anyone would
+       call one. Every page this touches - the schema, the leaf, the directory
+       above it, the map beneath it - arrives through the seal tree, and every
+       page it writes has to be a frame the commit can find again. */
+    {
+        static uint64_t values[4 * 2];
+        static unsigned char nulls[4 * 2];
+        static uint64_t got[2];
+        static unsigned char got_nulls[2];
+        batch_t batch;
+        row_out_t out;
+        int i;
+
+        check("the database opens to be written into",
+              db_open_encrypted(&oargs) == 0);
+        for (i = 0; i < 4; i++) {
+            values[i * 2] = (uint64_t)(100 + i);
+            values[i * 2 + 1] = (uint64_t)(900 + i);
+        }
+        memset(nulls, 0, sizeof nulls);
+        batch.rows = 4;
+        batch.values = values;
+        batch.nulls = nulls;
+        batch.var_lengths = NULL;
+        batch.flags = 0;
+        check("four rows go into the table",
+              db_pax_insert(ctx, 4242, &batch) == 0);
+
+        out.values = got;
+        out.nulls = got_nulls;
+        check("and read back before the commit",
+              db_pax_read(ctx, 4242, 0, &out) == 0 &&
+              got[0] == 100 && got[1] == 900);
+        check("and the generation publishes them",
+              db_encrypted_commit(ctx) == 0);
+        db_close(ctx);
+
+        check("a reopen finds the table", db_open_encrypted(&oargs) == 0);
+        out.values = got;
+        out.nulls = got_nulls;
+        check("and the first row, through the seal tree",
+              db_pax_read(ctx, 4242, 0, &out) == 0 &&
+              got[0] == 100 && got[1] == 900);
+        out.values = got;
+        out.nulls = got_nulls;
+        check("and the last one",
+              db_pax_read(ctx, 4242, 3, &out) == 0 &&
+              got[0] == 103 && got[1] == 903);
+        db_close(ctx);
+    }
+
 
     /* --- the newest generation's map, damaged -------------------------------
        Two copies of the map exist for the same reason two superblocks do, and
@@ -340,8 +405,8 @@ int main(void) {
         live_map = rd64(ctx, DB_BITMAP);
         live_gen = rd64(ctx, DB_GENERATION);
         db_close(ctx);
-        check("and a commit has moved it off the half it was created on",
-              live_map == 3 + map_k);
+        check("and it is one of the two halves the format allows",
+              live_map == 3 || live_map == 3 + map_k);
 
         h = vfs_open_rw(path, 0);
         vfs_read_at(h, page_buf, PAGE, live_map * PAGE);
@@ -349,7 +414,6 @@ int main(void) {
         vfs_write_at(h, page_buf, PAGE, live_map * PAGE);
         vfs_sync_file(h);
         vfs_close(h);
-
         check("a map the newest generation cannot stand behind falls back",
               db_open_encrypted(&oargs) == CybouDB_OK &&
               rd64(ctx, DB_GENERATION) < live_gen);

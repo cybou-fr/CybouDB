@@ -108,11 +108,18 @@ the address is a cache frame, and a frame nobody marked dirty is a change the
 commit will never find. `db_page_for_write` exists for exactly that, and
 `DB_PAGE_HERE` cannot tell which request a caller is making.
 
-So the allocator now has two accessors for a map leaf - `leaf_addr` and
-`leaf_for_write`, `map_locate` and `map_locate_for_write` - and the writing
-half is used wherever the allocator changes the map: staging a copy, marking a
-page, stamping the high-water, resealing a leaf. Every other module still to be
-ported has the same split waiting in it.
+So there are two macros. `DB_PAGE_HERE` is a read and `DB_PAGE_WRITE` is a
+write, they compile to the same shift and add in a plain build, and every
+module ported to the resolver says at each site which one it meant. The
+allocator has the same split in function form, because its two accessors take
+a base and an index rather than a page: `leaf_addr` and `leaf_for_write`,
+`map_locate` and `map_locate_for_write`.
+
+Getting this wrong in the safe-looking direction - writing through a read -
+loses the write silently, so it is the part of the port that needs a test
+rather than a review. It was found exactly that way: `span_stage` copied a map
+leaf into the other half through a read resolve, the copy never reached the
+disk, and a reopen could not find the table that had just been committed.
 
 Two more things came out of the same work:
 
@@ -138,12 +145,28 @@ the private key, write a page, commit, reopen, read it back, put a schema into
 the catalog, commit, reopen, find the table with its name and its stamped page
 id intact, and recover from a forged newest superblock.
 
+PAX is ported too, which is what makes an encrypted file a database rather
+than a container with a catalog in it. Its twenty-nine page addresses are
+split into the twenty-one that read and the eight that write, every one reads
+a null as a refusal, and `db_pax_insert` and `db_pax_read` now run against a
+sealed table: four rows in, committed, reopened, and read back through the
+seal tree.
+
+The port also found the sharpest bug of the whole exercise, and it was in the
+macro rather than in any module. `DB_PAGE_RESOLVE` loaded the page type into
+`ARG3` before reading the page number out of the caller's register - and `r8`
+is `ARG3` under Win64 and a scratch register under System V, so at every site
+that happened to hold its page in `r8` the page number became zero on exactly
+one of the two platforms. Both arguments now go through the frame the macro
+already allocates. A hundred and thirty SQL tests found it; a reviewer would
+not have.
+
 The remaining boundary is the public C API, which still has no key-bearing
-entry point, and PAX, the index, the queue, the stream and the SQL cursors -
-ported the way the allocator and the catalog were: every page address through
-`DB_PAGE_HERE`, writes through a write-intent accessor, every site reading a
-null as a refusal, each one exercised by a suite run against a sealed database
-rather than imagined by a reviewer.
+entry point, and the index, the queue, the stream and the SQL cursors - ported
+the way the allocator, the catalog and PAX were: every page address through
+`DB_PAGE_HERE` or `DB_PAGE_WRITE`, every site reading a null as a refusal,
+each one exercised by a suite run against a sealed database rather than
+imagined by a reviewer.
 
 ### The layout an encrypted database has
 

@@ -2,6 +2,7 @@
 ; SPDX-License-Identifier: Apache-2.0
 ; Fixed-width PAX storage, optional data directories and COW batch appends.
 %include "cyboudb.inc"
+%include "crypto.inc"
 BITS 64
 default rel
 extern crc32c, db_catalog_get, db_catalog_set_data, db_catalog_set_data_stats
@@ -55,6 +56,8 @@ db_pax_dead_total:
     test rcx, rcx
     jz .done
     DB_PAGE_HERE rcx, r10
+    test rcx, rcx
+    jz .unreadable
     test qword [r10 + DB_FEATURES], CybouDB_FEATURE_PAX_MULTI
     jz .single
     cmp dword [rcx + PAX_DIR_LEVEL], PAX_DIR_ROOT
@@ -77,6 +80,8 @@ db_pax_dead_total:
     shl rax, 4
     mov r8, [rcx + PAX_DIRECTORY + rax]
     DB_PAGE_HERE r8, r10
+    test r8, r8
+    jz .unreadable
     mov [rbp - 32], rcx             ; the loop below reuses rcx and r10
     call pax_dead_flat
     add [rbp - 16], rax
@@ -87,6 +92,12 @@ db_pax_dead_total:
 
 .done:
     mov rax, [rbp - 16]
+    FRAME_END
+    ret
+; A dead-row count nobody can compute is zero. The refusal belongs to the
+; reader that needs the page, not to a statistic about it.
+.unreadable:
+    xor eax, eax
     FRAME_END
     ret
 
@@ -104,6 +115,8 @@ pax_dead_flat:
     shl r11, 4
     mov r11, [r8 + PAX_DIRECTORY + r11]
     DB_PAGE_HERE r11, r10
+    test r11, r11
+    jz .done
     mov edx, [r11 + PAX_DEAD]
     add rax, rdx
     inc r9
@@ -342,6 +355,8 @@ dir_header_valid:
     mov r11, [rbp - 16]
     mov r8, [rbp - 32]
     DB_PAGE_HERE r8, r10
+    test r8, r8
+    jz .bad
     mov [rbp - 40], r8
     cmp dword [r8], PAX_DIR_MAGIC
     jne .bad
@@ -669,8 +684,10 @@ tree_leaves_unique:
     mov r10, ARG1
     mov r11, ARG2
     mov [rbp - 8], ARG3
-    mov rax, [r10 + DB_BASE]
-    mov [rbp - 16], rax
+    ; The bitset occupies [rbp-2112, rbp-64); -40 and -48 are above it and
+    ; below the named slots, which is where the context and one saved counter
+    ; go now that reaching a directory page is a call.
+    mov [rbp - 40], r10
     mov rax, [r11 + SB_ALLOC_PAGES]
     mov [rbp - 24], rax
     mov qword [rbp - 32], 0
@@ -687,8 +704,13 @@ tree_leaves_unique:
     mov rax, rcx
     shl rax, 4
     mov r11, [r10 + PAX_DIRECTORY + rax]
-    shl r11, CybouDB_PAGE_SHIFT
-    add r11, [rbp - 16]
+    mov [rbp - 48], rcx
+    mov r10, [rbp - 40]
+    DB_PAGE_HERE r11, r10
+    test r11, r11
+    jz .bad
+    mov rcx, [rbp - 48]
+    mov r10, [rbp - 8]
     xor edx, edx
 .leaf:
     mov rax, rdx
@@ -848,6 +870,8 @@ pax_tree_insert:
     mov r10, [rbp - 8]
     mov rax, [rbp - 88]
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .pax_unreadable
     mov [rbp - 216], rax
     mov eax, [rax + PAX_DIR_LEVEL]
     mov [rbp - 224], rax
@@ -872,7 +896,9 @@ pax_tree_insert:
     jnz .done
     mov r10, [rbp - 8]
     mov rax, [rbp - 72]
-    DB_PAGE_HERE rax, r10
+    DB_PAGE_WRITE rax, r10, CybouDB_PTYPE_DATA
+    test rax, rax
+    jz .pax_unreadable
     mov [rbp - 80], rax
     mov dword [rax], PAX_DIR_MAGIC
     mov dword [rax + 4], 1
@@ -965,7 +991,9 @@ pax_tree_insert:
     jnz .done
     mov r10, [rbp - 8]
     mov rax, [rbp - 200]
-    DB_PAGE_HERE rax, r10
+    DB_PAGE_WRITE rax, r10, CybouDB_PTYPE_DATA
+    test rax, rax
+    jz .pax_unreadable
     mov [rbp - 208], rax
     mov dword [rax], PAX_DIR_MAGIC
     mov dword [rax + 4], 1
@@ -1125,6 +1153,12 @@ pax_tree_insert:
 .done:
     FRAME_END
     ret
+; A page of this table did not verify: the resolver refused to hand out bytes
+; nothing vouched for. A plain database never reaches here.
+.pax_unreadable:
+    mov eax, CybouDB_E_PAX
+    FRAME_END
+    ret
 
 ; Called only after complete batch/schema validation by db_pax_insert.
 ; pax_multi_insert(ctx, schema, batch): preflight and copy the whole changed path.
@@ -1239,7 +1273,9 @@ pax_multi_insert:
     jnz .done
     mov r10, [rbp - 8]
     mov rax, [rbp - 72]
-    DB_PAGE_HERE rax, r10
+    DB_PAGE_WRITE rax, r10, CybouDB_PTYPE_DATA
+    test rax, rax
+    jz .pax_unreadable
     mov [rbp - 80], rax
     mov dword [rax], PAX_DIR_MAGIC
     mov dword [rax + 4], 1
@@ -1336,6 +1372,12 @@ pax_multi_insert:
 .full:
     mov eax, CybouDB_E_FULL
 .done:
+    FRAME_END
+    ret
+; A page of this table did not verify: the resolver refused to hand out bytes
+; nothing vouched for. A plain database never reaches here.
+.pax_unreadable:
+    mov eax, CybouDB_E_PAX
     FRAME_END
     ret
 
@@ -1733,6 +1775,8 @@ page_valid:
     mov r11, [rbp - 16]
     mov r8, [rbp - 32]
     DB_PAGE_HERE r8, r10
+    test r8, r8
+    jz .bad
     mov [rbp - 40], r8
     cmp dword [r8], PAX_MAGIC_VALUE
     jne .bad
@@ -2297,6 +2341,8 @@ db_pax_check_new:
     cmp rax, [r10 + DB_ALLOC]
     jae .shallow_bad
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .shallow_bad
     mov r11d, [rax]
     cmp r11d, PAX_MAGIC_VALUE
     je .shallow_header
@@ -2363,6 +2409,8 @@ db_pax_insert:
     mov r10, [rbp - 8]
     mov rax, [rbp - 32]
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .state
     mov [rbp - 40], rax
     mov rcx, [rax + CAT_TABLE_ROWS]
     mov [rbp - 56], rcx
@@ -2558,9 +2606,10 @@ pax_append_page:
     mov rax, [rbp - 32]
     test rax, rax
     jz .old_ready
-    shl rax, CybouDB_PAGE_SHIFT
     mov r10, [rbp - 8]
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .append_unreadable
     mov eax, [rax + PAX_ROWS]
     mov [rbp - 56], rax
 .old_ready:
@@ -2583,7 +2632,9 @@ pax_append_page:
     jnz .done
     mov r10, [rbp - 8]
     mov rax, [rbp - 88]
-    DB_PAGE_HERE rax, r10
+    DB_PAGE_WRITE rax, r10, CybouDB_PTYPE_DATA
+    test rax, rax
+    jz .append_unreadable
     mov [rbp - 96], rax
     cmp qword [rbp - 56], 0
     jne .initialized
@@ -2684,6 +2735,12 @@ pax_append_page:
 .done:
     FRAME_END
     ret
+; A page of this table did not verify: the resolver refused to hand out bytes
+; nothing vouched for. A plain database never reaches here.
+.append_unreadable:
+    mov eax, CybouDB_E_PAX
+    FRAME_END
+    ret
 
 ; db_pax_update_one(ctx, table_id, col_idx, value, is_null, update_group)
 ; rewrites all predicate spans in one fixed-width leaf with one COW copy.
@@ -2763,6 +2820,8 @@ db_pax_update_one:
     mov r10, [rbp - 8]
     mov rax, [rbp - 56]
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .upd_unreadable
     mov [rbp - 64], rax             ; current schema
     mov ecx, [rax + CAT_COUNT]
     cmp [rbp - 24], rcx
@@ -2879,6 +2938,8 @@ db_pax_update_one:
     mov [rbp - 72], rax             ; old data root
     mov r11, [rbp - 8]
     DB_PAGE_HERE rax, r11
+    test rax, rax
+    jz .upd_unreadable
     mov [rbp - 80], rax             ; old root address
     mov qword [rbp - 88], 0         ; old directory id (zero = direct leaf)
     cmp dword [rax], PAX_DIR_MAGIC
@@ -2908,6 +2969,8 @@ db_pax_update_one:
     mov [rbp - 264], rax            ; old child dir id
     mov r11, [rbp - 8]              ; ctx
     DB_PAGE_HERE rax, r11
+    test rax, rax
+    jz .upd_unreadable
     mov [rbp - 288], rax            ; old child dir addr
     cmp dword [rax], PAX_DIR_MAGIC
     jne .upd_rows
@@ -3001,7 +3064,9 @@ db_pax_update_one:
     jnz .upd_done
     mov r10, [rbp - 8]
     mov rax, [rbp - 120]
-    DB_PAGE_HERE rax, r10
+    DB_PAGE_WRITE rax, r10, CybouDB_PTYPE_DATA
+    test rax, rax
+    jz .upd_unreadable
     mov [rbp - 128], rax            ; writable leaf copy
     mov ARG1, rax
     mov ARG2, [rbp - 64]
@@ -3212,7 +3277,9 @@ db_pax_update_one:
     jnz .upd_done
     mov r10, [rbp - 8]
     mov rax, [rbp - 160]
-    DB_PAGE_HERE rax, r10
+    DB_PAGE_WRITE rax, r10, CybouDB_PTYPE_DATA
+    test rax, rax
+    jz .upd_unreadable
     mov [rbp - 168], rax
     mov rdx, [rbp - 160]
     mov [rax + PAX_PAGE_ID], rdx
@@ -3242,7 +3309,9 @@ db_pax_update_one:
     jnz .upd_done
     mov r10, [rbp - 8]
     mov rax, [rbp - 160]
-    DB_PAGE_HERE rax, r10
+    DB_PAGE_WRITE rax, r10, CybouDB_PTYPE_DATA
+    test rax, rax
+    jz .upd_unreadable
     mov [rbp - 168], rax            ; new child dir addr
     mov rdx, [rbp - 160]
     mov [rax + PAX_PAGE_ID], rdx
@@ -3268,7 +3337,9 @@ db_pax_update_one:
     jnz .upd_done
     mov r10, [rbp - 8]
     mov rax, [rbp - 304]
-    DB_PAGE_HERE rax, r10
+    DB_PAGE_WRITE rax, r10, CybouDB_PTYPE_DATA
+    test rax, rax
+    jz .upd_unreadable
     mov [rbp - 312], rax            ; new root addr
     mov rdx, [rbp - 304]
     mov [rax + PAX_PAGE_ID], rdx
@@ -3313,6 +3384,12 @@ db_pax_update_one:
 .upd_done:
     FRAME_END
     ret
+; A page of this table did not verify: the resolver refused to hand out bytes
+; nothing vouched for. A plain database never reaches here.
+.upd_unreadable:
+    mov eax, CybouDB_E_PAX
+    FRAME_END
+    ret
 
 ; db_pax_read(ctx, table_id, row_index, output): scalar row materialization.
 ; Output arrays must be caller-owned, outside the file mapping.
@@ -3331,11 +3408,15 @@ db_pax_read:
     mov r10, [rbp - 8]
     mov rax, [rbp - 32]
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .state
     mov rcx, [rbp - 16]
     cmp rcx, [rax + CAT_TABLE_ROWS]
     jae .rows
     mov rax, [rax + CAT_DATA_ROOT]
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .state
     test qword [r10 + DB_FEATURES], CybouDB_FEATURE_PAX_MULTI
     jz .leaf_ready
     mov r11, rax
@@ -3354,12 +3435,16 @@ db_pax_read:
     shl rax, 4
     mov rax, [r11 + PAX_DIRECTORY + rax]
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .state
     mov r11, rax
     mov rax, rcx
 .leaf_slot:
     shl rax, 4
     mov rax, [r11 + PAX_DIRECTORY + rax]
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .state
 .leaf_ready:
     mov [rbp - 40], rax
     mov r10, [rbp - 24]
@@ -3532,6 +3617,8 @@ db_pax_scan_open_bound:
     test    rax, rax
     jz      .bound_root_ready
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .bound_state
 .bound_root_ready:
     mov     [r8 + SCAN_ROOT], rax
     xor     eax, eax
@@ -3573,6 +3660,8 @@ db_pax_scan_open:
     mov     r10, [rbp - 8]
     mov     rax, [rbp - 24]
     DB_PAGE_HERE rax, r10
+    test rax, rax
+    jz .state
     mov     ARG2, rax                   ; schema_ptr
     mov     ARG1, r10                   ; ctx
     mov     ARG3, [rbp - 16]            ; cursor
@@ -3615,8 +3704,9 @@ db_pax_scan_next:
     mov r11, [r10 + SCAN_CTX]
     test r11, r11
     jz .state
-    cmp qword [r11 + DB_BASE], 0
-    je .state
+    mov rax, [r11 + DB_BASE]
+    or rax, [r11 + DB_CACHE]
+    jz .state                        ; nothing is open, either way
     cmp qword [r11 + DB_MODE], -1
     je .state
     mov rax, [r11 + DB_GENERATION]
@@ -3666,10 +3756,14 @@ db_pax_scan_next:
     shl rax, 4
     mov r8, [r8 + PAX_DIRECTORY + rax]
     DB_PAGE_HERE r8, r11
+    test r8, r8
+    jz .state
 .leaf_slot:
     shl rcx, 4
     mov r8, [r8 + PAX_DIRECTORY + rcx]
     DB_PAGE_HERE r8, r11
+    test r8, r8
+    jz .state
 .leaf_known:
     mov [r10 + SCAN_LEAF], r8
     mov rcx, [rbp - 48]
@@ -3853,8 +3947,9 @@ pax_scan_batch_body:
     mov r11, [r10 + SCAN_CTX]
     test r11, r11
     jz .state
-    cmp qword [r11 + DB_BASE], 0
-    je .state
+    mov rax, [r11 + DB_BASE]
+    or rax, [r11 + DB_CACHE]
+    jz .state                        ; nothing is open, either way
     cmp qword [r11 + DB_MODE], -1
     je .state
     mov rax, [r11 + DB_GENERATION]
@@ -3902,10 +3997,14 @@ pax_scan_batch_body:
     shl rax, 4
     mov r8, [r8 + PAX_DIRECTORY + rax]
     DB_PAGE_HERE r8, r11
+    test r8, r8
+    jz .state
 .leaf_slot:
     shl rcx, 4
     mov r8, [r8 + PAX_DIRECTORY + rcx]
     DB_PAGE_HERE r8, r11
+    test r8, r8
+    jz .state
 
 .leaf_known:
     mov [r10 + SCAN_LEAF], r8

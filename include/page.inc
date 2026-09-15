@@ -82,6 +82,7 @@
 ; belongs. An object that never expands the macro carries an unused extern,
 ; which costs a symbol-table entry and nothing else.
 extern db_page_resolve
+extern db_page_for_write
 %endif
 
 ; -----------------------------------------------------------------------------
@@ -111,6 +112,41 @@ extern db_page_resolve
 %endmacro
 
 ; -----------------------------------------------------------------------------
+;  DB_PAGE_WRITE <register>, <context>, <page type>
+;
+;  The address of a page the caller is about to change, rather than one it is
+;  about to read. In a plain database there is no difference and this compiles
+;  to the same shift and add: the mapping is the file, so a store lands on the
+;  disk. In an encrypted one there is all the difference, because the address
+;  is a cache frame and a frame nobody marked dirty is a change the commit will
+;  never find.
+;
+;  DB_PAGE_HERE cannot tell which request a caller is making, which is why this
+;  is a second macro rather than a flag. Every module ported to the resolver
+;  has to say, at each site, which of the two it meant - and getting it wrong
+;  in the safe direction (writing through DB_PAGE_HERE) loses the write
+;  silently, so the split is the part of the port that needs a test rather than
+;  a review.
+;
+;  Returns zero for a page that did not verify, exactly as DB_PAGE_HERE does.
+; -----------------------------------------------------------------------------
+%macro DB_PAGE_WRITE 3
+%ifdef CybouDB_ENCRYPTED_PAGES
+    cmp     qword [%2 + DB_CACHE], 0
+    jne     %%encrypted
+    shl     %1, CybouDB_PAGE_SHIFT
+    add     %1, [%2 + DB_BASE]
+    jmp     %%done
+%%encrypted:
+    DB_PAGE_RESOLVE_AS %1, %2, db_page_for_write, %3
+%%done:
+%else
+    shl     %1, CybouDB_PAGE_SHIFT
+    add     %1, [%2 + DB_BASE]
+%endif
+%endmacro
+
+; -----------------------------------------------------------------------------
 ;  DB_PAGE_RESOLVE <register>, <context>
 ;
 ;  The call the encrypted branch makes. It is a macro of its own so that the
@@ -122,12 +158,16 @@ extern db_page_resolve
 ;  that, which is the work step 3 of the port is made of.
 ; -----------------------------------------------------------------------------
 %macro DB_PAGE_RESOLVE 2
+    DB_PAGE_RESOLVE_AS %1, %2, db_page_resolve, 0
+%endmacro
+
+%macro DB_PAGE_RESOLVE_AS 4
     ; Every volatile register on either convention, saved in a frame rather
     ; than on the stack one push at a time - nine pushes would leave RSP eight
     ; bytes out of alignment for the call, and the result has to be written
     ; into %1 after the restores rather than before, because %1 may be one of
     ; the registers being restored.
-    sub     rsp, 96
+    sub     rsp, 112
     mov     [rsp + 0], rax
     mov     [rsp + 8], rcx
     mov     [rsp + 16], rdx
@@ -138,9 +178,17 @@ extern db_page_resolve
     mov     [rsp + 56], rdi
     mov     [rsp + 64], rsi
 
-    mov     ARG2, %1
-    mov     ARG1, %2
-    CALL_ABI db_page_resolve
+    ; Through the frame, not register to register. The page and the context
+    ; arrive in whatever registers the call site had them in, and one of those
+    ; is an argument register on one convention and not the other - r8 is ARG3
+    ; under Win64 and a scratch register under System V, so loading the page
+    ; type first threw the page number away on exactly one platform.
+    mov     [rsp + 80], %1
+    mov     [rsp + 88], %2
+    mov     ARG1, [rsp + 88]
+    mov     ARG2, [rsp + 80]
+    mov     ARG3, %4
+    CALL_ABI %3
     mov     [rsp + 72], rax             ; the address, or zero
 
     mov     rax, [rsp + 0]
@@ -153,7 +201,7 @@ extern db_page_resolve
     mov     rdi, [rsp + 56]
     mov     rsi, [rsp + 64]
     mov     %1,  [rsp + 72]
-    add     rsp, 96
+    add     rsp, 112
 %endmacro
 
 %endif ; CybouDB_PAGE_INC
