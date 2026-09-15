@@ -541,6 +541,7 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     cl.exe /O2 /W3 /nologo tests\compress_harness.c /Febuild\compress_harness.exe /Fobuild\compress_harness.obj /link build\cyboudb.lib kernel32.lib
     if errorlevel 1 goto :fail
     cl.exe /O2 /W3 /nologo /Iinclude tests\commit_guard_test.c /Febuild\commit_guard_test.exe /Fobuild\commit_guard_test.obj /link build\cyboudb.lib kernel32.lib
+    cl.exe /O2 /W3 /nologo /Iinclude tests\positioned_io_test.c /Febuild\positioned_io_test.exe /Fobuild\positioned_io_test.obj /link build\cyboudb.lib kernel32.lib
     if errorlevel 1 goto :fail
     cl.exe /O2 /W3 /nologo /Iinclude tests\tombstone_layout_test.c /Febuild\tombstone_layout_test.exe /Fobuild\tombstone_layout_test.obj /link build\cyboudb.lib kernel32.lib
     if errorlevel 1 goto :fail

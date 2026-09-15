@@ -26,6 +26,7 @@ extern LoadLibraryA
 extern GetProcAddress
 extern GetSystemTimeAsFileTime
 extern WriteFile
+extern ReadFile
 extern ExitProcess
 extern GetCommandLineW
 extern CreateFileW
@@ -64,6 +65,7 @@ global os_random
 global os_stdin_isatty, os_read_stdin, os_read_console
 global vfs_create_new, vfs_create_truncate, vfs_open_rw, vfs_open_ro
 global vfs_size, vfs_resize, vfs_map_rw, vfs_map_ro, vfs_unmap
+global vfs_read_at, vfs_write_at, vfs_sync_file
 global vfs_sync, vfs_close, vfs_flush_range
 global vfs_lock_writer, vfs_lock_reader, vfs_reclaim_safe
 global os_mem_alloc, os_mem_free, os_utf8_to_wide
@@ -1072,6 +1074,138 @@ vfs_resize:
     jz      .fail
     mov     ARG1, [rbp - 8]
     call    SetEndOfFile
+    test    eax, eax
+    jz      .fail
+    xor     eax, eax
+    FRAME_END
+    ret
+.fail:
+    mov     rax, -1
+    FRAME_END
+    ret
+
+
+; -----------------------------------------------------------------------------
+;  vfs_read_at(ARG1 = handle, ARG2 = buffer, ARG3 = bytes, ARG4 = offset)
+;  vfs_write_at(ARG1 = handle, ARG2 = buffer, ARG3 = bytes, ARG4 = offset)
+;      -> RAX: bytes transferred, or -1
+;
+;  Positioned I/O, for the reason in docs/ENCRYPTED_FORMAT.md Decision 7: an
+;  encrypted database cannot use a shared mapping, because plaintext in a
+;  shared mapping is plaintext on the disk.
+;
+;  Windows carries the offset in an OVERLAPPED rather than in an argument, and
+;  a file opened without FILE_FLAG_OVERLAPPED still accepts one - the call is
+;  synchronous and the structure is read for its offset only. It must live
+;  somewhere the call can write to, so it is in this frame and zeroed before
+;  every call: the kernel writes Internal and InternalHigh, and reusing a
+;  structure without clearing it is how a second call inherits the first one's
+;  state.
+;
+;  Frame:
+;    [rbp - 8..32]   saved rbx, r12, r13, r14
+;    [rbp - 40]      transferred so far
+;    [rbp - 48]      how many bytes this call moved (the kernel writes here)
+;    [rbp - 80]      OVERLAPPED, 32 bytes
+; -----------------------------------------------------------------------------
+%define ERROR_HANDLE_EOF 38
+
+%define IO_OVERLAPPED 80
+%define IO_MOVED      48
+%define IO_TOTAL      40
+
+%macro VFS_POSITIONED 1
+    FRAME_BEGIN 128, 1
+    mov     [rbp - 8], rbx
+    mov     [rbp - 16], r12
+    mov     [rbp - 24], r13
+    mov     [rbp - 32], r14
+
+    mov     rbx, ARG1                   ; handle
+    mov     r12, ARG2                   ; buffer
+    mov     r13, ARG3                   ; bytes left
+    mov     r14, ARG4                   ; offset
+    xor     rax, rax
+    mov     [rbp - IO_TOTAL], rax
+
+%%again:
+    test    r13, r13
+    jz      %%done
+
+    ; a fresh OVERLAPPED every time, carrying only the offset
+    xor     rax, rax
+    mov     [rbp - IO_OVERLAPPED], rax
+    mov     [rbp - IO_OVERLAPPED + 8], rax
+    mov     [rbp - IO_OVERLAPPED + 16], r14
+    mov     [rbp - IO_OVERLAPPED + 24], rax
+    mov     [rbp - IO_MOVED], rax
+
+    mov     ARG1, rbx
+    mov     ARG2, r12
+    mov     rax, r13
+    cmp     rax, 0x40000000
+    jbe     %%size_ok
+    mov     rax, 0x40000000             ; the count is a DWORD
+%%size_ok:
+    mov     ARG3, rax
+    lea     ARG4, [rbp - IO_MOVED]
+    lea     rax, [rbp - IO_OVERLAPPED]
+    PASS_ARG5 rax
+    call    %1
+    test    eax, eax
+    jz      %%maybe_eof
+
+    mov     eax, [rbp - IO_MOVED]       ; a DWORD, and the load zero-extends
+    test    rax, rax
+    jz      %%done                      ; end of file for a read; a write that
+                                        ; moves nothing ends the loop too, and
+                                        ; the short count tells the caller
+    add     [rbp - IO_TOTAL], rax
+    add     r12, rax
+    add     r14, rax
+    sub     r13, rax
+    jmp     %%again
+
+%%done:
+    mov     rax, [rbp - IO_TOTAL]
+    jmp     %%out
+
+%%maybe_eof:
+    ; A read that starts at or past the end of the file does not return zero
+    ; bytes here the way pread does - it fails, with ERROR_HANDLE_EOF. That is
+    ; the end of the data and not a fault, and a caller asking for the page
+    ; after the last one has to be able to tell those apart.
+    call    GetLastError
+    cmp     eax, ERROR_HANDLE_EOF
+    je      %%done
+    mov     rax, -1
+    jmp     %%out
+%%out:
+    mov     rbx, [rbp - 8]
+    mov     r12, [rbp - 16]
+    mov     r13, [rbp - 24]
+    mov     r14, [rbp - 32]
+    FRAME_END
+    ret
+%endmacro
+
+vfs_read_at:
+    VFS_POSITIONED ReadFile
+
+vfs_write_at:
+    VFS_POSITIONED WriteFile
+
+; -----------------------------------------------------------------------------
+;  vfs_sync_file(ARG1 = handle) -> RAX: 0 on success, -1 on failure
+;
+;  The durability barrier for a database that has no mapping to flush. vfs_sync
+;  above msyncs a mapping and then flushes the file; with explicit I/O there is
+;  no mapping, and asking msync to flush one anyway is how a sync that does
+;  nothing gets written. Encrypted mode uses this one.
+; -----------------------------------------------------------------------------
+vfs_sync_file:
+    FRAME_BEGIN 32, 0
+    call    FlushFileBuffers
     test    eax, eax
     jz      .fail
     xor     eax, eax

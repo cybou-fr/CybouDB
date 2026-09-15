@@ -32,6 +32,7 @@ global os_monotonic_ns
 global os_stdin_isatty, os_read_stdin
 global vfs_create_new, vfs_create_truncate, vfs_open_rw, vfs_open_ro
 global vfs_size, vfs_resize, vfs_map_rw, vfs_map_ro, vfs_unmap
+global vfs_read_at, vfs_write_at, vfs_sync_file
 global vfs_sync, vfs_close, vfs_flush_range
 global vfs_lock_writer, vfs_lock_reader, vfs_reclaim_safe
 global os_wall_ms
@@ -44,6 +45,8 @@ global os_mem_alloc, os_mem_free
 %define SYS_open        2
 %define SYS_close       3
 %define SYS_fstat       5
+%define SYS_pread       17
+%define SYS_pwrite      18
 %define SYS_mmap        9
 %define SYS_munmap      11
 %define SYS_ioctl       16
@@ -665,6 +668,134 @@ vfs_resize:
     mov     rdi, ARG1
     mov     rsi, ARG2
     mov     eax, SYS_ftruncate
+    syscall
+    cmp     rax, -4096
+    jae     .fail
+    xor     eax, eax
+    ret
+.fail:
+    mov     rax, -1
+    ret
+
+
+; -----------------------------------------------------------------------------
+;  vfs_read_at(ARG1 = fd, ARG2 = buffer, ARG3 = bytes, ARG4 = offset)
+;  vfs_write_at(ARG1 = fd, ARG2 = buffer, ARG3 = bytes, ARG4 = offset)
+;      -> RAX: bytes transferred, or -1
+;
+;  Positioned I/O, which an encrypted database needs and the mapping never
+;  provided: docs/ENCRYPTED_FORMAT.md Decision 7 rules out a shared mapping,
+;  because plaintext in a shared mapping is plaintext on the disk.
+;
+;  Both loop. A short read or write is not an error and not rare - a signal
+;  during the call is enough to produce one - and a caller that treated the
+;  return as "all of it" would corrupt a page on a day nobody could reproduce.
+;  The loop ends at end of file for a read, which is reported as the count so
+;  far rather than as a failure.
+; -----------------------------------------------------------------------------
+vfs_read_at:
+    FRAME_BEGIN 64, 0
+    mov     [rbp - 8], rbx
+    mov     [rbp - 16], r12
+    mov     [rbp - 24], r13
+    mov     [rbp - 32], r14
+
+    mov     rbx, ARG1                   ; fd
+    mov     r12, ARG2                   ; buffer
+    mov     r13, ARG3                   ; bytes left
+    mov     r14, ARG4                   ; offset
+    xor     rax, rax
+    mov     [rbp - 40], rax             ; transferred so far
+
+.again:
+    test    r13, r13
+    jz      .done
+    mov     rdi, rbx
+    mov     rsi, r12
+    mov     rdx, r13
+    mov     r10, r14
+    mov     eax, SYS_pread
+    syscall
+    cmp     rax, -4096
+    jae     .fail
+    test    rax, rax
+    jz      .done                       ; end of file, and not an error
+    add     [rbp - 40], rax
+    add     r12, rax
+    add     r14, rax
+    sub     r13, rax
+    jmp     .again
+
+.done:
+    mov     rax, [rbp - 40]
+    jmp     .out
+.fail:
+    mov     rax, -1
+.out:
+    mov     rbx, [rbp - 8]
+    mov     r12, [rbp - 16]
+    mov     r13, [rbp - 24]
+    mov     r14, [rbp - 32]
+    FRAME_END
+    ret
+
+vfs_write_at:
+    FRAME_BEGIN 64, 0
+    mov     [rbp - 8], rbx
+    mov     [rbp - 16], r12
+    mov     [rbp - 24], r13
+    mov     [rbp - 32], r14
+
+    mov     rbx, ARG1
+    mov     r12, ARG2
+    mov     r13, ARG3
+    mov     r14, ARG4
+    xor     rax, rax
+    mov     [rbp - 40], rax
+
+.again:
+    test    r13, r13
+    jz      .done
+    mov     rdi, rbx
+    mov     rsi, r12
+    mov     rdx, r13
+    mov     r10, r14
+    mov     eax, SYS_pwrite
+    syscall
+    cmp     rax, -4096
+    jae     .fail
+    test    rax, rax
+    jz      .fail                       ; no progress: refuse rather than spin
+    add     [rbp - 40], rax
+    add     r12, rax
+    add     r14, rax
+    sub     r13, rax
+    jmp     .again
+
+.done:
+    mov     rax, [rbp - 40]
+    jmp     .out
+.fail:
+    mov     rax, -1
+.out:
+    mov     rbx, [rbp - 8]
+    mov     r12, [rbp - 16]
+    mov     r13, [rbp - 24]
+    mov     r14, [rbp - 32]
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  vfs_sync_file(ARG1 = fd) -> RAX: 0 on success, -1 on failure
+;
+;  The durability barrier for a database that has no mapping to flush. vfs_sync
+;  above msyncs a mapping and then flushes the file; with explicit I/O there is
+;  no mapping, and asking msync to flush one anyway is how a sync that does
+;  nothing gets written. Encrypted mode uses this one.
+; -----------------------------------------------------------------------------
+vfs_sync_file:
+    mov     rdi, ARG1
+    mov     eax, SYS_fsync
     syscall
     cmp     rax, -4096
     jae     .fail

@@ -135,6 +135,7 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         echo "Build OK -> build/c_api_test"
         "$CC" -O2 -no-pie -Wall tests/compress_harness.c build/libcyboudb.a -o build/compress_harness
         "$CC" -O2 -no-pie -Wall -Iinclude tests/commit_guard_test.c build/libcyboudb.a -o build/commit_guard_test
+        "$CC" -O2 -no-pie -Wall -Iinclude tests/positioned_io_test.c build/libcyboudb.a -o build/positioned_io_test
         "$CC" -O2 -no-pie -Wall -Iinclude tests/tombstone_layout_test.c build/libcyboudb.a -o build/tombstone_layout_test
         "$CC" -O2 -no-pie -Wall -Iinclude tests/vector_topk_test.c build/libcyboudb.a -o build/vector_topk_test
         "$CC" -O2 -no-pie -Wall -Iinclude tests/index_tree_test.c build/libcyboudb.a -o build/index_tree_test
