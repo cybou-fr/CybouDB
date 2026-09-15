@@ -36,14 +36,62 @@ the way an uncertain durability barrier poisons it. `db_commit`,
 `db_alloc_page` and `db_rollback` already refuse a poisoned handle, so the
 refusal does not depend on anyone reading `DB_MODE` promptly.
 
-The boundary that remains is the ordinary `db_open` and the public C API:
-they still have no credential-bearing entry point and therefore return
-`CybouDB_E_NEEDS_KEY` for an encrypted header. Until one exists, only a test
-can assemble the context an encrypted database needs - the map test does it in
-a dozen lines, and those lines are the specification of what that open will
-have to do. The other modules (catalog, PAX, index, the SQL cursors) are
-ported the same way the allocator was, and in the same order: the open first,
-so that a suite exercises each null rather than a reviewer imagining it.
+### Opening one
+
+`db_open_encrypted` is that open, in `core/encrypted_db.asm`. It produces the
+same context `db_open` produces - page counts, allocation state, map root,
+catalog root, capability bits, a superblock pointer - for a sealed file:
+
+```text
+1. open and lock the file            as db_open does
+2. its size                          the geometry is checked against it
+3. attach with the private key       header, both superblocks, crypto root,
+                                     key slot, key hierarchy, tag, tree root,
+                                     and the choice between the two copies
+4. the superblock, copied            authenticated by then, and there is no
+                                     mapping to leave it in
+5. the geometry it claims            the same checks db_open makes
+6. the allocation map                through the resolver, page by page
+```
+
+It is a second entry point rather than a branch inside `db_open` because the
+two differ in the one place that cannot be a branch: *when* the superblock is
+chosen. A plain open picks the newest copy whose checksum verifies and then
+validates its map; an encrypted open cannot, because a checksum cannot tell a
+torn commit from a forgery.
+
+Its arguments arrive as a struct (`EOPEN_*`) for the reason create's do: the
+public open this will sit under has to grow a recovery credential, a keystore
+handle and a cache budget without changing shape.
+
+**`DB_BASE` is left null, deliberately.** An encrypted database has no useful
+mapping - the bytes in the file are ciphertext - and a module not yet reading
+through `DB_PAGE_HERE` would read them and find a page that looks like
+nothing. A null base makes that a fault at the point of use instead, the same
+bargain the resolver makes when it returns zero. The authenticated superblock
+therefore lives in the context, at `DB_SB_COPY`, rather than in a mapping.
+
+`tests/encrypted_open_db_test.c` links the whole engine and walks the chain
+end to end: `db_open` refuses the file by name for want of a key,
+`db_open_encrypted` opens it, the map resolves, a page is written, the
+generation commits into the copy that was not live, a reopen finds it and
+reads the page back as plaintext, a rewritten map leaf makes the open fail, a
+forged newest superblock falls back to the generation before it, and an open
+asking about integrity is told what recovery papered over while an ordinary
+one is not.
+
+What it does not do yet: fall back **at the map**. Step 3 falls back from a
+superblock that does not authenticate, which is the recovery contract; if the
+generation it chose has a map that does not validate, this refuses rather than
+trying the one before it. The plain open does try, because it can validate a
+candidate before choosing it. Doing the same here means attach taking a "not
+this one" argument.
+
+The remaining boundary is the public C API, which still has no key-bearing
+entry point, and the other modules - catalog, PAX, index, the SQL cursors -
+which are ported the way the allocator was: every page address through
+`DB_PAGE_HERE`, every site reading a null as a refusal, each one exercised by
+a suite run against a sealed database rather than imagined by a reviewer.
 
 ### The layout an encrypted database has
 

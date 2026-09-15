@@ -182,7 +182,30 @@
 ;  handle. The root key is not among them - it is wiped at the end of the open,
 ;  which is the whole reason these are derived rather than kept.
 
-%define CybouDB_DB_SIZE      (DB_DIRTY_LEAVES + CybouDB_DIRTY_LEAF_MAX * 8)
+; The live superblock, copied. A plain database points DB_SB_PTR into the
+; mapping, which is where the superblock already is; an encrypted one has no
+; mapping to point into, because DB_BASE is deliberately left null so that a
+; module not yet reading through the resolver faults at the point of use
+; instead of quietly reading ciphertext. So the authenticated copy lives here,
+; for as long as the handle does.
+%define DB_SB_COPY        (DB_DIRTY_LEAVES + CybouDB_DIRTY_LEAF_MAX * 8)
+%define CybouDB_DB_SIZE      (DB_SB_COPY + CybouDB_SB_SIZE)
+
+; --- what opening an encrypted database takes --------------------------------
+;  A struct rather than seven arguments, and a struct rather than four, because
+;  the public open this sits under has to be able to grow a recovery
+;  credential, an OS keystore handle and a cache budget without changing shape.
+;  The same reasoning that gave create an options struct; see
+;  docs/ENCRYPTED_ENGINE.md.
+%define EOPEN_PATH        0             ; const char * or const wchar_t *
+%define EOPEN_CTX         8             ; uint8_t *, CybouDB_DB_SIZE bytes
+%define EOPEN_DK          16            ; const uint8_t *, 2400
+%define EOPEN_CACHE       24            ; uint8_t *, page-aligned
+%define EOPEN_CACHE_BYTES 32
+%define EOPEN_FRAMES      40
+%define EOPEN_WRITABLE    48
+%define EOPEN_VERIFY      56
+%define CybouDB_EOPEN_SIZE   64
 
 ; Entries in the log: page id, then the two states packed into one qword so an
 ; entry is 16 bytes and the whole thing is a flat array with no allocator.

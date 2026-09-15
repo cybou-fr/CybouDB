@@ -58,6 +58,7 @@ extern db_bitmap_leaves, db_bitmap_recount
 
 global db_create, db_open, db_alloc_page, db_free_page, db_commit, db_rollback, db_close
 global db_create_tombstones
+global oserr_to_code
 global db_create_leases
 global db_create_default
 global db_create_cow
@@ -1632,7 +1633,23 @@ db_close:
     mov     r10, [rbp - 8]
     mov     qword [r10 + DB_HANDLE], -1
 .no_file:
+    ; The three keys an encrypted database holds for as long as it is open, and
+    ; the cache of plaintext they were opening. A closed handle keeping either
+    ; would be a handle that still could read the file, which is the one thing
+    ; closing is supposed to end. The cache memory belongs to the caller; what
+    ; ends here is this context's claim on it.
     mov     r10, [rbp - 8]
+    xor     rcx, rcx
+    xor     r11, r11
+.wipe_keys:
+    mov     [r10 + DB_META_KEY + rcx], r11
+    mov     [r10 + DB_TREE_KEY + rcx], r11
+    mov     [r10 + DB_SEAL_KEY + rcx], r11
+    add     rcx, 8
+    cmp     rcx, 32
+    jb      .wipe_keys
+    mov     qword [r10 + DB_CACHE], 0
+
     mov     qword [r10 + DB_WRITABLE], 0
     FRAME_END
     ret
