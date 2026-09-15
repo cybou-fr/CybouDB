@@ -65,7 +65,7 @@
 #define DK_BYTES 2400
 #define E_KEY 38
 #define E_COW_PAGES 25
-#define E_STATE 22
+#define E_SEAL 42
 
 #ifdef _WIN32
 typedef const wchar_t *vfs_path;
@@ -132,7 +132,7 @@ int main(void) {
 
     vfs_path path = VFS_PATH("build/encrypted_create_test.cdb");
     struct ecreate_args args;
-    uint8_t *cache_mem, *cache_raw;
+    uint8_t *cache_mem, *cache_raw, *frame;
     uint64_t cache_bytes, geo[4];
     int64_t h;
 
@@ -371,8 +371,45 @@ int main(void) {
         check("the engine attaches through that level-two root",
               db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 32) == 0 &&
               rd64(ctx, DB_SEAL_DEPTH) == 2);
-        check("but refuses to commit it until every ancestor can be rebuilt",
-              db_encrypted_commit(ctx) == E_STATE);
+        vfs_read_at(big, page, PAGE, PAGE);       /* live superblock */
+        {
+            uint64_t usable = rd64(page, SB_ALLOC_PAGES);
+            vfs_read_at(big, page, PAGE, 5 * PAGE); /* unrelated active leaf */
+            {
+                uint64_t forged_generation = 99;
+                memcpy(page + 24, &forged_generation, 8);
+            }
+            {
+                uint32_t repaired_crc = crc32c(page, 4092);
+                memcpy(page + 4092, &repaired_crc, 4);
+            }
+            vfs_write_at(big, page, PAGE, 5 * PAGE);
+            frame = db_page_new(ctx, usable, 1);
+            check("a page opens for writing beneath the level-two tree",
+                  frame != NULL);
+            if (frame) strcpy((char *)frame, "written beneath a deep seal root");
+            check("and a multi-level commit publishes every ancestor",
+                  db_encrypted_commit(ctx) == 0 &&
+                  rd64(ctx, DB_GENERATION) == 2);
+            vfs_close(big);
+            big = vfs_open_rw(VFS_PATH("build/too_big.cdb"), 0);
+            memset(ctx, 0, sizeof ctx);
+            memcpy(ctx + DB_HANDLE, &big, 8);
+            {
+                uint64_t sb_page = 2;
+                memcpy(ctx + DB_SB_PAGE, &sb_page, 8);
+            }
+            check("the committed level-two generation reattaches",
+                  db_encrypted_attach(ctx, dk, cache_mem, cache_bytes, 32) == 0 &&
+                  rd64(ctx, DB_GENERATION) == 2);
+            frame = db_page_resolve(ctx, usable);
+            check("and authenticates the page through both node levels",
+                  frame != NULL &&
+                  strcmp((char *)frame, "written beneath a deep seal root") == 0);
+            check("without blessing a pre-existing change in another leaf",
+                  db_page_resolve(ctx, 0) == NULL &&
+                  rd64(ctx, DB_ENC_ERROR) == E_SEAL);
+        }
         vfs_close(big);
 #ifdef _WIN32
         _wremove(VFS_PATH("build/too_big.cdb"));

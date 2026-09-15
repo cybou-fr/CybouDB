@@ -578,8 +578,12 @@ db_pages_flush:
     ; Dirty entries go to the copy the inactive superblock owns. The active
     ; directory must remain byte-for-byte available until publication.
     mov     r10, [rbx + DB_SEAL_DIR]
+    mov     rcx, [rbx + DB_SEAL_PAGES]
+    test    rcx, rcx
+    jnz     .flush_have_stride
     mov     rcx, [rbx + DB_SEAL_LEAVES]
-    inc     rcx                         ; leaves plus the depth-one root
+    inc     rcx                         ; legacy standalone depth-one harness
+.flush_have_stride:
     cmp     qword [rbx + DB_SB_PAGE], CybouDB_SB_PAGE_A
     je      .flush_to_b
     cmp     qword [rbx + DB_SB_PAGE], CybouDB_SB_PAGE_B
