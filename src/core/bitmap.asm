@@ -183,9 +183,14 @@ db_dirty_reset:
     mov     qword [r10 + DB_RUN_OVF], 0
     ret
 
-; map_locate(ARG1 = mapping base, ARG2 = first map page, ARG3 = page id,
+; map_locate(ARG1 = context, ARG2 = first map page, ARG3 = page id,
 ;            ARG4 = nonzero in the span layout)
 ;   -> RAX = address of the leaf holding that page, RDX = index inside it
+;
+; RAX is zero when the page did not verify, which only an encrypted database
+; can answer. Every caller has to see that: a map leaf nothing vouched for is
+; not a map leaf, and reading a page state out of one would be reading an
+; allocator's mind rather than its map.
 map_locate:
     FRAME_BEGIN 32, 0
     mov     [rbp - 8], ARG1
@@ -199,26 +204,46 @@ map_locate:
     div     r10
     mov     [rbp - 32], rdx
     add     rax, [rbp - 16]
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [rbp - 8]
+    mov     r10, [rbp - 8]
+    DB_PAGE_HERE rax, r10
     mov     rdx, [rbp - 32]
     FRAME_END
     ret
 .flat:
     mov     rax, [rbp - 16]
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [rbp - 8]
+    mov     r10, [rbp - 8]
+    DB_PAGE_HERE rax, r10
     mov     rdx, [rbp - 24]
     FRAME_END
     ret
 
-; leaf_addr(ARG1 = mapping base, ARG2 = first map page, ARG3 = leaf index)
-;   -> RAX = address of that leaf
+; leaf_addr(ARG1 = context, ARG2 = first map page, ARG3 = leaf index)
+;   -> RAX = address of that leaf, or zero when it did not verify
 leaf_addr:
+    FRAME_BEGIN 16, 0
+    mov     r10, ARG1
     mov     rax, ARG3
     add     rax, ARG2
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, ARG1
+    DB_PAGE_HERE rax, r10
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  map_unreadable(r10 = ctx) - a map leaf that did not authenticate.
+;
+;  Only an encrypted database can produce this, and there is no honest way to
+;  carry on from it: the allocator's next answer would be a guess about which
+;  pages are free, and a guess that says "free" hands out a page that is not.
+;  So the handle is poisoned exactly the way an uncertain durability barrier
+;  poisons it - every mutation refuses from here and a reopen is the only way
+;  forward - and the caller still returns its own "nothing" so that the
+;  refusal does not depend on anyone reading DB_MODE promptly.
+;
+;  Clobbers nothing a caller has not already given up.
+; -----------------------------------------------------------------------------
+map_unreadable:
+    mov     qword [r10 + DB_MODE], -1
+    mov     qword [r10 + DB_ENC_ERROR], CybouDB_E_SEAL
     ret
 
 ; zero_page(ARG1 = address)
@@ -245,7 +270,7 @@ seal_leaf:
     ret
 
 ; -----------------------------------------------------------------------------
-;  db_bitmap_init(ARG1 = mapping base, ARG2 = total pages, ARG3 = features)
+;  db_bitmap_init(ARG1 = context, ARG2 = total pages, ARG3 = features)
 ;  -> RAX = first page left for payload
 ;
 ;  Lays out the allocation map of a brand new file. In the span layout both
@@ -265,7 +290,9 @@ db_bitmap_init:
     jnz     .span
 
     mov     r10, [rbp - 8]
-    add     r10, CybouDB_MIN_PAGES * CybouDB_PAGE_SIZE
+    mov     rax, CybouDB_MIN_PAGES
+    DB_PAGE_HERE rax, r10
+    mov     r10, rax
     mov     [rbp - 32], r10
     mov     ARG1, r10
     call    zero_page
@@ -301,6 +328,8 @@ db_bitmap_init:
     mov     ARG2, CybouDB_MIN_PAGES
     mov     ARG3, [rbp - 56]
     call    leaf_addr
+    test    rax, rax
+    jz      .unbuilt                    ; no cache exists during a create
     mov     ARG1, rax
     mov     ARG2, [rbp - 64]
     mov     ARG3, [rbp - 16]
@@ -312,6 +341,10 @@ db_bitmap_init:
     cmp     [rbp - 56], rax
     jb      .span_leaf
     mov     rax, [rbp - 48]
+    FRAME_END
+    ret
+.unbuilt:
+    xor     eax, eax
     FRAME_END
     ret
 
@@ -352,10 +385,12 @@ span_valid:
     inc     qword [rel bitmap_leaves_validated]
     mov     ARG1, [rbp - 8]
     mov     r10, ARG1
-    mov     ARG1, [r10 + DB_BASE]
+    mov     ARG1, r10
     mov     ARG2, [rbp - 40]
     mov     ARG3, [rbp - 48]
     call    leaf_addr
+    test    rax, rax
+    jz      .bad
     mov     [rbp - 56], rax
     mov     r10, rax
     cmp     dword [r10 + MAP_MAGIC], CybouDB_MAP_MAGIC
@@ -419,8 +454,10 @@ span_valid:
     je      .leaf_explained             ; one copy, so nothing to compare
     mov     ARG2, rax
     mov     ARG3, [rbp - 48]
-    mov     ARG1, [r10 + DB_BASE]
+    mov     ARG1, r10
     call    leaf_addr
+    test    rax, rax
+    jz      .bad
     mov     ARG2, rax
     mov     ARG3, [rbp - 56]
     mov     ARG4, [rbp - 72]
@@ -591,8 +628,16 @@ db_bitmap_validate:
     je      .bad
     cmp     qword [r11 + SB_FREELIST_ROOT], 0
     jne     .bad
+    ; A feature root is a page this build must understand before it will stand
+    ; behind the superblock naming it. There is exactly one it understands: an
+    ; encrypted database's crypto root, and the encryption bit is what says
+    ; the file is that. Anything else is a candidate written by something this
+    ; build is not.
     cmp     qword [r11 + SB_FEATURE_ROOT], 0
-    jne     .bad
+    je      .feature_root_ok
+    test    qword [r10 + DB_FEATURES], CybouDB_FEATURE_ENCRYPTION
+    jz      .bad
+.feature_root_ok:
     mov     rax, [r11 + SB_TOTAL_PAGES]
     cmp     rax, CybouDB_COW_MIN_PAGES
     jb      .bad
@@ -682,9 +727,11 @@ db_bitmap_candidate_payload:
     mov     ARG4, [r10 + DB_FEATURES]
     and     ARG4, CybouDB_FEATURE_MAP_SPAN
     mov     ARG2, [r11 + SB_BITMAP_ROOT]
-    mov     ARG1, [r10 + DB_BASE]
+    mov     ARG1, r10
     mov     ARG3, r8
     call    map_locate
+    test    rax, rax
+    jz      .bad
     mov     r10, rax
     mov     r8, rdx
     call    map_get
@@ -743,9 +790,11 @@ db_bitmap_is_payload:
     mov     ARG4, [r10 + DB_FEATURES]
     and     ARG4, CybouDB_FEATURE_MAP_SPAN
     mov     ARG2, [r10 + DB_BITMAP]
-    mov     ARG1, [r10 + DB_BASE]
+    mov     ARG1, r10
     mov     ARG3, r8
     call    map_locate
+    test    rax, rax
+    jz      .bad
     mov     r10, rax
     mov     r8, rdx
     call    map_get
@@ -795,16 +844,20 @@ span_stage:
     mov     qword [rbp - 40], 0
 .leaf:
     mov     r10, [rbp - 8]
-    mov     ARG1, [r10 + DB_BASE]
+    mov     ARG1, r10
     mov     ARG2, [rbp - 24]
     mov     ARG3, [rbp - 40]
     call    leaf_addr
+    test    rax, rax
+    jz      .unreadable
     mov     [rbp - 48], rax
     mov     r10, [rbp - 8]
-    mov     ARG1, [r10 + DB_BASE]
+    mov     ARG1, r10
     mov     ARG2, [rbp - 32]
     mov     ARG3, [rbp - 40]
     call    leaf_addr
+    test    rax, rax
+    jz      .unreadable
     mov     [rbp - 56], rax
     mov     r10, [rbp - 48]
     mov     r11, rax
@@ -828,6 +881,11 @@ span_stage:
     mov     rax, [rbp - 32]
     mov     [r10 + DB_BITMAP], rax
 .done:
+    FRAME_END
+    ret
+.unreadable:
+    mov     r10, [rbp - 8]
+    call    map_unreadable
     FRAME_END
     ret
 
@@ -1238,8 +1296,10 @@ cs_audit:
     mov     ARG4, 1
     mov     ARG3, rax
     mov     ARG2, [rbp - 16]
-    mov     ARG1, [r10 + DB_BASE]
+    mov     ARG1, r10
     call    map_locate
+    test    rax, rax
+    jz      .bad
     mov     r10, rax
     mov     r8, rdx
     call    map_get
@@ -1248,8 +1308,10 @@ cs_audit:
     mov     ARG4, 1
     mov     ARG3, [rbp - 32]
     mov     ARG2, [rbp - 24]
-    mov     ARG1, [r10 + DB_BASE]
+    mov     ARG1, r10
     call    map_locate
+    test    rax, rax
+    jz      .bad
     mov     r10, rax
     mov     r8, rdx
     call    map_get
@@ -1303,8 +1365,10 @@ span_mark:
     mov     ARG4, 1
     mov     ARG3, ARG2
     mov     ARG2, [r10 + DB_BITMAP]
-    mov     ARG1, [r10 + DB_BASE]
+    mov     ARG1, r10
     call    map_locate
+    test    rax, rax
+    jz      .unreadable
     mov     r10, rax
     mov     r8, rdx
     call    map_get                     ; the state it is leaving
@@ -1322,6 +1386,11 @@ span_mark:
     mov     ARG3, [rbp - 32]
     mov     ARG4, [rbp - 24]
     call    cs_record
+    FRAME_END
+    ret
+.unreadable:
+    mov     r10, [rbp - 8]
+    call    map_unreadable
     FRAME_END
     ret
 
@@ -1586,10 +1655,12 @@ db_bitmap_alloc:
     mov     rax, [rbp - 32]
     inc     rax
     mov     [r10 + DB_ALLOC], rax
-    mov     ARG1, [r10 + DB_BASE]
+    mov     ARG1, r10
     mov     ARG2, [r10 + DB_BITMAP]
     xor     ARG3, ARG3
     call    leaf_addr
+    test    rax, rax
+    jz      .unreadable
     mov     r10, [rbp - 8]
     mov     rdx, [rbp - 32]
     inc     rdx
@@ -1622,6 +1693,12 @@ db_bitmap_alloc:
     mov     eax, CybouDB_E_FULL
     FRAME_END
     ret
+.unreadable:
+    mov     r10, [rbp - 8]
+    call    map_unreadable
+    mov     eax, CybouDB_E_SEAL
+    FRAME_END
+    ret
 
 ; -----------------------------------------------------------------------------
 ;  db_bitmap_seal(ctx). Seals only an unpublished map: a root-only commit can
@@ -1652,10 +1729,12 @@ db_bitmap_seal:
     mov     qword [rbp - 24], 0
 .leaf:
     mov     r10, [rbp - 8]
-    mov     ARG1, [r10 + DB_BASE]
+    mov     ARG1, r10
     mov     ARG2, [r10 + DB_BITMAP]
     mov     ARG3, [rbp - 24]
     call    leaf_addr
+    test    rax, rax
+    jz      .unreadable
     mov     [rbp - 32], rax
     mov     r10, [rbp - 8]
     mov     r11, [r10 + DB_GENERATION]
@@ -1671,6 +1750,11 @@ db_bitmap_seal:
     cmp     rax, [rbp - 16]
     jb      .leaf
 .done:
+    FRAME_END
+    ret
+.unreadable:
+    mov     r10, [rbp - 8]
+    call    map_unreadable
     FRAME_END
     ret
 
@@ -1766,8 +1850,10 @@ span_reuse_run:
     mov     ARG4, 1
     mov     ARG3, rax
     mov     ARG2, [rbp - 16]
-    mov     ARG1, [r10 + DB_BASE]
+    mov     ARG1, r10
     call    map_locate
+    test    rax, rax
+    jz      .unreadable
     mov     r10, rax
     mov     r8, rdx
     call    map_get
@@ -1777,8 +1863,10 @@ span_reuse_run:
     mov     ARG4, 1
     mov     ARG3, [rbp - 24]
     mov     ARG2, [rbp - 56]
-    mov     ARG1, [r10 + DB_BASE]
+    mov     ARG1, r10
     call    map_locate
+    test    rax, rax
+    jz      .unreadable
     mov     r10, rax
     mov     r8, rdx
     call    map_get
@@ -1811,6 +1899,12 @@ span_reuse_run:
     xor     eax, eax
     FRAME_END
     ret
+.unreadable:
+    mov     r10, [rbp - 8]
+    call    map_unreadable
+    xor     eax, eax
+    FRAME_END
+    ret
 
 span_reuse:
     FRAME_BEGIN 32, 0
@@ -1831,8 +1925,10 @@ span_reuse:
     mov     ARG4, 1
     mov     ARG3, rax
     mov     ARG2, [rbp - 16]
-    mov     ARG1, [r10 + DB_BASE]
+    mov     ARG1, r10
     call    map_locate
+    test    rax, rax
+    jz      .unreadable
     mov     r10, rax
     mov     r8, rdx
     call    map_get
@@ -1845,8 +1941,10 @@ span_reuse:
     mov     ARG4, 1
     mov     ARG3, [rbp - 24]
     mov     ARG2, [r10 + DB_BITMAP]
-    mov     ARG1, [r10 + DB_BASE]
+    mov     ARG1, r10
     call    map_locate
+    test    rax, rax
+    jz      .unreadable
     mov     r10, rax
     mov     r8, rdx
     call    map_get
@@ -1868,6 +1966,12 @@ span_reuse:
     mov     rax, [r10 + DB_ALLOC]
     mov     [r10 + DB_REUSE_NEXT], rax
     mov     qword [r10 + DB_REUSABLE], 0
+    xor     eax, eax
+    FRAME_END
+    ret
+.unreadable:
+    mov     r10, [rbp - 8]
+    call    map_unreadable
     xor     eax, eax
     FRAME_END
     ret
@@ -1916,10 +2020,12 @@ db_bitmap_recount:
     mov     rdx, CybouDB_MAP_LEAF_PAGES
 .entries_known:
     mov     [rbp - 48], rdx
-    mov     ARG1, [r10 + DB_BASE]
+    mov     ARG1, r10
     mov     ARG2, [r10 + DB_BITMAP]
     mov     ARG3, [rbp - 24]
     call    leaf_addr
+    test    rax, rax
+    jz      .unreadable
     mov     [rbp - 32], rax
     lea     r11, [rax + MAP_DATA]       ; the entries themselves
     xor     r9d, r9d                    ; retired pages in this leaf
@@ -1979,6 +2085,11 @@ db_bitmap_recount:
     mov     rax, [rbp - 16]
     mov     [r10 + DB_REUSABLE], rax
 .done:
+    FRAME_END
+    ret
+.unreadable:
+    mov     r10, [rbp - 8]
+    call    map_unreadable
     FRAME_END
     ret
 
@@ -2044,8 +2155,10 @@ db_bitmap_is_fresh:
     mov     ARG4, 1
     mov     ARG3, rax
     mov     ARG2, [r11 + SB_BITMAP_ROOT]
-    mov     ARG1, [r10 + DB_BASE]
+    mov     ARG1, r10
     call    map_locate
+    test    rax, rax
+    jz      .no                         ; unreadable is never "known fresh"
     mov     r10, rax
     mov     r8, rdx
     call    map_get

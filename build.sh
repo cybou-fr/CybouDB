@@ -235,7 +235,7 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         echo "Build OK -> build/kdf_test"
         nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/crypto/crypto_root.asm \
             -o build/crypto_root.o
-        nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/core/checksum.asm src/core/page_resolve.asm src/core/page_cache.asm src/crypto/page_seal.asm src/crypto/seal_dir.asm src/crypto/aead.asm src/crypto/chacha20.asm src/crypto/poly1305.asm src/crypto/kmac.asm src/crypto/keccak.asm \
+        nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/core/checksum.asm \
             -o build/checksum_crypto.o
         "$CC" -O2 -no-pie -Wall -Wextra tests/crypto_root_test.c \
             build/crypto_root.o build/checksum_crypto.o build/crypto_status.o -o build/crypto_root_test
@@ -332,6 +332,12 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
             build/encrypted_create.o build/bitmap_leaf.o build/encrypted_commit.o build/encrypted_open.o build/page_resolve.o build/page_cache.o build/key_slots.o build/crypto_root.o build/kdf.o build/kmac.o build/seal_dir.o build/page_seal.o build/aead.o build/chacha20.o build/poly1305.o build/keccak.o build/mlkem.o build/mlkem_poly.o build/mlkem_encode.o build/mlkem_sample.o build/checksum_crypto.o build/os_efile.o \
             -o build/encrypted_create_test
         echo "Build OK -> build/encrypted_create_test"
+        nasm -f elf64 $INC -DCybouDB_LIBRARY=1 src/core/bitmap.asm \
+            -o build/bitmap_enc.o
+        "$CC" -O2 -no-pie -Wall -Wextra tests/encrypted_map_test.c \
+            build/bitmap_enc.o build/bitmap_leaf.o build/encrypted_create.o build/encrypted_open.o build/page_resolve.o build/page_cache.o build/key_slots.o build/crypto_root.o build/kdf.o build/kmac.o build/seal_dir.o build/page_seal.o build/aead.o build/chacha20.o build/poly1305.o build/keccak.o build/mlkem.o build/mlkem_poly.o build/mlkem_encode.o build/mlkem_sample.o build/checksum_crypto.o build/os_efile.o \
+            -o build/encrypted_map_test
+        echo "Build OK -> build/encrypted_map_test"
     fi
     if [ "${1:-}" = "--crypto-probe" ]; then
         CC=gcc

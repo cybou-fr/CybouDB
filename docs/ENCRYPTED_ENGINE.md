@@ -19,14 +19,31 @@ under the same seal tree as everything else.
 AEAD modules it needs are linked into the engine rather than only into the
 crypto harnesses.
 
-Two boundaries remain, and they are both integration rather than cryptography.
-The first is the ordinary `db_open` and public C API path: they still have no
-credential-bearing entry point and therefore return `CybouDB_E_NEEDS_KEY` for
-an encrypted header, so nothing reaches those 81 branches with `DB_CACHE` set.
-The second follows from it: those sites do not yet read the null the resolver
-returns for a page that did not verify. Writing that before an encrypted
-database can be driven through them would be writing code no test executes,
-so it waits for the first boundary.
+The allocator is the first module ported all the way through. Every page
+address in `core/bitmap.asm` now goes through `DB_PAGE_HERE`, every site reads
+a null as a refusal, and `tests/encrypted_map_test.c` drives
+`db_bitmap_validate` over a real sealed database: the whole map validates
+through the seal tree, a leaf with one byte changed does not, and the other
+copy being damaged does not stop this one.
+
+What a null means depends on which side of the map it happens on. On the
+reading side it is simply "no": `span_valid` rejects the candidate,
+`db_bitmap_is_payload` says no, `db_bitmap_is_fresh` says not-fresh. On the
+writing side there is no honest answer at all - the allocator's next word
+would be a guess about which pages are free, and a guess that says "free"
+hands out a page that is not - so `map_unreadable` poisons the handle exactly
+the way an uncertain durability barrier poisons it. `db_commit`,
+`db_alloc_page` and `db_rollback` already refuse a poisoned handle, so the
+refusal does not depend on anyone reading `DB_MODE` promptly.
+
+The boundary that remains is the ordinary `db_open` and the public C API:
+they still have no credential-bearing entry point and therefore return
+`CybouDB_E_NEEDS_KEY` for an encrypted header. Until one exists, only a test
+can assemble the context an encrypted database needs - the map test does it in
+a dozen lines, and those lines are the specification of what that open will
+have to do. The other modules (catalog, PAX, index, the SQL cursors) are
+ported the same way the allocator was, and in the same order: the open first,
+so that a suite exercises each null rather than a reviewer imagining it.
 
 ### The layout an encrypted database has
 

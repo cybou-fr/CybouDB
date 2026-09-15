@@ -434,7 +434,7 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     echo Build OK -^> build\kdf_test.exe
     "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\crypto\crypto_root.asm -o build\crypto_root.obj
     if errorlevel 1 goto :fail
-    "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\core\checksum.asm src\core\page_resolve.asm src\core\page_cache.asm src\crypto\page_seal.asm src\crypto\seal_dir.asm src\crypto\aead.asm src\crypto\chacha20.asm src\crypto\poly1305.asm src\crypto\kmac.asm src\crypto\keccak.asm -o build\checksum_crypto.obj
+    "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\core\checksum.asm -o build\checksum_crypto.obj
     if errorlevel 1 goto :fail
     cl.exe /O2 /W3 /nologo tests\crypto_root_test.c build\crypto_root.obj build\checksum_crypto.obj build\crypto_status.obj /Febuild\crypto_root_test.exe /Fobuild\crypto_root_test.obj
     if errorlevel 1 goto :fail
@@ -506,6 +506,11 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     cl.exe /O2 /W3 /nologo tests\encrypted_create_test.c build\encrypted_create.obj build\bitmap_leaf.obj build\encrypted_commit.obj build\encrypted_open.obj build\page_resolve.obj build\page_cache.obj build\key_slots.obj build\crypto_root.obj build\kdf.obj build\kmac.obj build\seal_dir.obj build\page_seal.obj build\aead.obj build\chacha20.obj build\poly1305.obj build\keccak.obj build\mlkem.obj build\mlkem_poly.obj build\mlkem_encode.obj build\mlkem_sample.obj build\checksum_crypto.obj build\os_efile.obj /Febuild\encrypted_create_test.exe /Fobuild\encrypted_create_test.obj /link kernel32.lib
     if errorlevel 1 goto :fail
     echo Build OK -^> build\encrypted_create_test.exe
+    "!NASM!" -f win64 !INC! -DCybouDB_LIBRARY=1 src\core\bitmap.asm -o build\bitmap_enc.obj
+    if errorlevel 1 goto :fail
+    cl.exe /O2 /W3 /nologo tests\encrypted_map_test.c build\bitmap_enc.obj build\bitmap_leaf.obj build\encrypted_create.obj build\encrypted_open.obj build\page_resolve.obj build\page_cache.obj build\key_slots.obj build\crypto_root.obj build\kdf.obj build\kmac.obj build\seal_dir.obj build\page_seal.obj build\aead.obj build\chacha20.obj build\poly1305.obj build\keccak.obj build\mlkem.obj build\mlkem_poly.obj build\mlkem_encode.obj build\mlkem_sample.obj build\checksum_crypto.obj build\os_efile.obj /Febuild\encrypted_map_test.exe /Fobuild\encrypted_map_test.obj /link kernel32.lib
+    if errorlevel 1 goto :fail
+    echo Build OK -^> build\encrypted_map_test.exe
     goto :eof
 )
 echo error: the crypto tests need NASM and the MSVC C compiler.

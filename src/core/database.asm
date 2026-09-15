@@ -268,7 +268,11 @@ create_common:
     test    rax, rax
     jz      .map_ready
     mov     qword [r10 + DB_BITMAP], CybouDB_MIN_PAGES
-    mov     ARG1, [rbp - 40]
+    ; The map is laid out through the same page addressing everything else
+    ; uses, so the temporary descriptor has to know where the file is mapped.
+    mov     rax, [rbp - 40]
+    mov     [r10 + DB_BASE], rax
+    lea     ARG1, [rbp + CREATE_CTX]
     mov     ARG2, [rbp - 16]
     mov     ARG3, [rbp - 64]
     call    db_bitmap_init

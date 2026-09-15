@@ -631,13 +631,19 @@ the release, not after it.
                                      place, both copies sealed under the seal
                                      tree. What remains is the allocator and
                                      catalog reaching it. DB_PAGE_HERE's
-                                     encrypted branch is now compiled in and
-                                     the resolver is linked into the engine,
-                                     with no measurable cost to the plain path.
-                                     What remains is a key-bearing db_open, and
-                                     then the 81 branch sites learning to read
-                                     a null as a refusal - in that order, so
-                                     that a test exercises them
+                                     encrypted branch is compiled in, the
+                                     resolver is linked into the engine with no
+                                     measurable cost to the plain path, and the
+                                     allocator is ported: every page address in
+                                     core/bitmap.asm goes through the resolver,
+                                     every site reads a null as a refusal, and
+                                     db_bitmap_validate is tested against a
+                                     real sealed database. What remains is a
+                                     key-bearing db_open, and then the catalog,
+                                     PAX, index and SQL cursors ported the same
+                                     way - open first, so that a suite
+                                     exercises each null rather than a reviewer
+                                     imagining it
  8. Crash-safe encrypted transactions publication is implemented at every
                                      depth: paired seal-tree copies, two
                                      barriers, inactive-superblock update, and
