@@ -555,8 +555,7 @@ flat_valid:
     jb      .bad
     cmp     rax, [rbp - 24]
     jae     .bad
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov     [rbp - 32], rax
     mov     r10, rax
     cmp     dword [r10 + MAP_MAGIC], CybouDB_MAP_MAGIC
@@ -1175,8 +1174,7 @@ cs_retires_are_unreachable:
     cmp     rax, [r10 + DB_PAGES]
     jae     .next
     mov     rdx, rax                    ; the page id, to check it owns itself
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     ; Only a page carrying the shared header can say who owns it. Every page
     ; shape in the format opens with a magic whose low three bytes are 'ASQ' -
     ; ASQP, ASQD, ASQC, ASQV, ASQI, ASQZ, ASQQ - and writes its own id at
@@ -1496,8 +1494,7 @@ db_bitmap_alloc_run:
     call    mark_dirty
     mov     r10, [rbp - 8]
     mov     rax, [rbp - 48]
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov     ARG1, rax
     call    zero_page
     inc     qword [rbp - 32]
@@ -1540,12 +1537,10 @@ db_bitmap_alloc:
     mov     [rbp - 32], rax          ; payload page id
     cmp     r11, [r10 + DB_COW_FLOOR]
     jae     .map_ready
-    shl     r11, CybouDB_PAGE_SHIFT
-    add     r11, [r10 + DB_BASE]     ; old map
+    DB_PAGE_HERE r11, r10               ; old map
     mov     rax, [rbp - 24]
     mov     [r10 + DB_BITMAP], rax
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [r10 + DB_BASE]     ; new map
+    DB_PAGE_HERE rax, r10               ; new map
     mov     ecx, CybouDB_PAGE_SIZE / 8
 .copy:
     mov     rdx, [r11]
@@ -1556,8 +1551,7 @@ db_bitmap_alloc:
     jnz     .copy
     mov     r8, [r10 + DB_ALLOC]
     mov     rax, [r10 + DB_BITMAP]
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov     r10, rax
     mov     r9d, MAP_METADATA
 .reserve:
@@ -1569,8 +1563,7 @@ db_bitmap_alloc:
 .map_ready:
     mov     r10, [rbp - 8]
     mov     rax, [r10 + DB_BITMAP]
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov     [rbp - 40], rax
     mov     r10, rax
     mov     r8, [rbp - 32]
@@ -1669,8 +1662,7 @@ db_bitmap_alloc:
     call    mark_dirty
     mov     r11, [rbp - 8]
     mov     rax, [rbp - 32]
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [r11 + DB_BASE]
+    DB_PAGE_HERE rax, r11
     mov     ARG1, rax
     call    zero_page
     mov     r11, [rbp - 16]
@@ -1702,8 +1694,7 @@ db_bitmap_seal:
     mov     rax, [r10 + DB_BITMAP]
     cmp     rax, [r10 + DB_COW_FLOOR]
     jb      .done
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov     ARG1, rax
     call    seal_leaf
     jmp     .done

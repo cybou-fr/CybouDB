@@ -988,12 +988,10 @@ index_insert_common:
     lea r11, [rbp - 80]
     mov r11, [r11 + II_CTX]
     mov rax, [rbp - 160 + IO_NODE]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r11 + DB_BASE]
+    DB_PAGE_HERE rax, r11
     mov rcx, [rax + IDX_SUBTREE]
     mov rax, [rbp - 160 + IO_SIB]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r11 + DB_BASE]
+    DB_PAGE_HERE rax, r11
     add rcx, [rax + IDX_SUBTREE]
     mov [r10 + IDX_SUBTREE], rcx
     mov ARG1, r10
@@ -1475,8 +1473,7 @@ db_index_of_table:
     mov rax, [r10 + DB_ROOT]
     test rax, rax
     jz .none
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov r8, rax                     ; the directory
     mov ecx, [r8 + CAT_COUNT]
     test ecx, ecx
@@ -1491,8 +1488,7 @@ db_index_of_table:
     cmp r9, [rbp - 24]
     jbe .next
     mov r11, [r8 + CAT_DATA + rax + 8]
-    shl r11, CybouDB_PAGE_SHIFT
-    add r11, [r10 + DB_BASE]
+    DB_PAGE_HERE r11, r10
     cmp dword [r11 + CAT_TYPE], CAT_INDEX
     jne .next
     mov rax, [rbp - 16]
@@ -1597,8 +1593,7 @@ index_page_valid:
     test rax, rax
     jz .bad                         ; an index with no catalog to belong to
     mov r10, ARG1
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov r8, rax
     mov ecx, [r8 + CAT_COUNT]
     mov r9, [r11 + IDX_TABLE]
@@ -1623,8 +1618,7 @@ index_page_valid:
     jz .bad
     mov r10, [rbp - 8]
     mov rax, [rbp - 32]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     cmp dword [rax + CAT_TYPE], CAT_SCHEMA
     jne .bad                        ; and what it names has to be a table
     mov r11, [rbp - 24]

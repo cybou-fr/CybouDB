@@ -52,4 +52,39 @@
     add     %1, %2
 %endmacro
 
+; -----------------------------------------------------------------------------
+;  DB_PAGE <destination>, <context>, <page number>
+;
+;  The address of a page, given the database context. Every page access in the
+;  engine computes this, 128 of them, and all of them the same way - which is
+;  what makes an encrypted mode possible at all: docs/ENCRYPTED_ENGINE.md.
+;
+;  Today this macro is exactly the instructions those sites already contain: a
+;  shift and an add, no register clobbered and no call. Converting a site to it
+;  changes no machine code, and that is checked by assembling the file before
+;  and after and comparing the object.
+;
+;  When encrypted mode arrives, the branch goes in here and every converted
+;  site inherits it at once, instead of 128 edits made on a later afternoon.
+;
+;  The page number may be a register or a memory operand; the destination must
+;  not be the context register.
+; -----------------------------------------------------------------------------
+%macro DB_PAGE 3
+    mov     %1, %3
+    shl     %1, CybouDB_PAGE_SHIFT
+    add     %1, [%2 + DB_BASE]
+%endmacro
+
+; -----------------------------------------------------------------------------
+;  DB_PAGE_HERE <register>, <context>
+;
+;  The same thing for the shape that is already holding the page number in the
+;  register it wants the address in - which is most of them.
+; -----------------------------------------------------------------------------
+%macro DB_PAGE_HERE 2
+    shl     %1, CybouDB_PAGE_SHIFT
+    add     %1, [%2 + DB_BASE]
+%endmacro
+
 %endif ; CybouDB_PAGE_INC

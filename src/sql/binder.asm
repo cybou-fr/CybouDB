@@ -137,8 +137,7 @@ catalog_find_common:
     jz      .not_found
 
     ; Mapped pointer to catalog directory
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov     [rbp - 48], rax             ; dir_ptr
 
     mov     ecx, [rax + CAT_COUNT]
@@ -1347,8 +1346,7 @@ sql_bind:
     mov     rax, [r10 + DB_ROOT]
     test    rax, rax
     jz      .first_table_id
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [r10 + DB_BASE]        ; dir_ptr
+    DB_PAGE_HERE rax, r10               ; dir_ptr
     mov     ecx, [rax + CAT_COUNT]
     test    ecx, ecx
     jz      .first_table_id
@@ -2040,8 +2038,7 @@ sql_bind:
     mov     rax, [r10 + DB_ROOT]
     test    rax, rax
     jz      .first_index_id
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov     ecx, [rax + CAT_COUNT]
     test    ecx, ecx
     jz      .first_index_id
@@ -2147,8 +2144,7 @@ sql_bind:
     mov     rax, [r10 + DB_ROOT]
     test    rax, rax
     jz      .first_queue_id
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov     ecx, [rax + CAT_COUNT]
     test    ecx, ecx
     jz      .first_queue_id

@@ -864,8 +864,7 @@ sql_execute_batch:
     jnz     .storage_done
     mov     r10, [rbp - 8]
     mov     rax, [rbp - 1736]
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov     [rbp - 1744], rax
     mov     rcx, [rax + CAT_TABLE_ROWS]
     mov     [rbp - 1752], rcx
@@ -1306,8 +1305,7 @@ sql_execute_batch:
     jnz     .storage_done
     mov     r10, [rbp - 8]
     mov     rax, [rbp - 64]
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov     ARG3, rax
     mov     ARG1, r10
     mov     r11, [rbp - 16]
@@ -1342,8 +1340,7 @@ sql_execute_batch:
     jnz     .storage_done
     mov     r10, [rbp - 8]
     mov     rax, [rbp - 64]
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov     ARG3, rax
     mov     ARG1, r10
     mov     r11, [rbp - 16]
@@ -1364,8 +1361,7 @@ sql_execute_batch:
     jnz     .storage_done
     mov     r10, [rbp - 8]
     mov     rax, [rbp - 64]
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov     ARG1, r10
     mov     ARG2, [rax + IDX_ROOT]
     call    db_index_retire_tree
@@ -2009,8 +2005,7 @@ sql_execute_batch:
     mov r10, [rbp - 8]
     mov [rbp - IXP_DESC_OFF + IXP_CTX], r10
     mov rax, [rbp - IXP_PAGE_OFF]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - IXP_DESC_OFF + IXP_SCHEMA], rax
     mov r11, [rbp - 16]
     mov rax, [r11 + PLAN_TABLE_ID]
@@ -2101,8 +2096,7 @@ sql_execute_batch:
     jnz .storage_done
     mov r10, [rbp - 8]
     mov rax, [rbp - IXP_PAGE_OFF]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - IXP_DESC_OFF + IXP_SCHEMA], rax
     mov qword [rbp - IXP_DESC_OFF + IXP_MODE], IXP_MODE_INSERT
     lea ARG1, [rbp - IXP_DESC_OFF]

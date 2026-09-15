@@ -221,8 +221,7 @@ page_valid:
     mov r10, [rbp - 8]
     mov r11, [rbp - 16]
     mov r8, [rbp - 24]
-    shl r8, CybouDB_PAGE_SHIFT
-    add r8, [r10 + DB_BASE]
+    DB_PAGE_HERE r8, r10
     mov [rbp - 32], r8
     cmp dword [r8 + CAT_MAGIC], CAT_MAGIC_VALUE
     jne .bad
@@ -582,8 +581,7 @@ catalog_entry_in:
     jae .none                           ; past the end of the file
     cmp qword [r10 + DB_BASE], 0
     je .none
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     cmp dword [rax + CAT_TYPE], CAT_DIRECTORY
     jne .none
     mov ecx, [rax + CAT_COUNT]
@@ -610,8 +608,7 @@ catalog_entry_in:
     jb .none
     cmp rax, [r10 + DB_PAGES]
     jae .none
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     ; It has to be the object that was asked about, of the type that was
     ; asked about, or the answer is not usable.
     mov ecx, [rbp - 24]
@@ -647,8 +644,7 @@ db_catalog_get:
     mov rax, [r10 + DB_ROOT]
     test rax, rax
     jz .missing
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov ecx, [rax + CAT_COUNT]
     lea r10, [rax + CAT_DATA]
     mov r11, [rbp - 16]
@@ -797,8 +793,7 @@ catalog_put_common:
     mov rax, [r10 + DB_ROOT]
     test rax, rax
     jz .capacity
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 32], rax
     mov eax, [rax + CAT_COUNT]
     mov [rbp - 40], rax
@@ -864,8 +859,7 @@ catalog_put_common:
     jnz .done
     mov r10, [rbp - 8]
     mov rax, [rbp - 72]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 88], rax
     mov r11, [rbp - 24]
     mov ecx, CybouDB_PAGE_SIZE / 8
@@ -912,8 +906,7 @@ catalog_put_common:
     jnz .done
     mov r10, [rbp - 8]
     mov rax, [rbp - 80]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 88], rax
     mov ARG1, rax
     mov ARG2, r10
@@ -1005,8 +998,7 @@ db_catalog_drop:
     mov rax, [r10 + DB_ROOT]
     test rax, rax
     jz .notfound
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 24], rax
     mov eax, [rax + CAT_COUNT]
     test eax, eax
@@ -1051,8 +1043,7 @@ db_catalog_drop:
 
     mov r10, [rbp - 8]
     mov rax, [rbp - 48]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 56], rax
 
     mov ARG1, rax
@@ -1245,8 +1236,7 @@ catalog_publish_data:
     jnz .done
     mov r10, [rbp - 8]
     mov rax, [rbp - 32]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 72], rax
     cmp qword [rbp - 88], 2
     je .truncate_rows
@@ -1287,8 +1277,7 @@ catalog_publish_data:
     jnz .done
     mov r10, [rbp - 8]
     mov rax, [rbp - 56]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 72], rax
     mov ARG1, rax
     mov ARG2, r10
@@ -1313,8 +1302,7 @@ catalog_publish_data:
     jnz .done
     mov r10, [rbp - 8]
     mov rax, [rbp - 64]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 72], rax
     mov ARG1, rax
     mov ARG2, r10
@@ -1435,8 +1423,7 @@ db_catalog_edit:
     jnz .e_done
     mov r10, [rbp - 8]
     mov rax, [rbp - 48]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 64], rax
     mov ARG1, rax
     mov ARG2, r10
@@ -1450,8 +1437,7 @@ db_catalog_edit:
     jnz .e_done
     mov r10, [rbp - 8]
     mov rax, [rbp - 56]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 72], rax
     mov ARG1, rax
     mov ARG2, r10
@@ -1559,8 +1545,7 @@ db_catalog_set_index_root:
     jnz .done
     mov r10, [rbp - 8]
     mov rax, [rbp - 56]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 72], rax
     mov ARG1, rax
     mov ARG2, r10
@@ -1585,8 +1570,7 @@ db_catalog_set_index_root:
     jnz .done
     mov r10, [rbp - 8]
     mov rax, [rbp - 64]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 72], rax
     mov ARG1, rax
     mov ARG2, r10
@@ -1646,8 +1630,7 @@ db_catalog_page:
     mov rax, [r10 + DB_ROOT]
     test rax, rax
     jz .none
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov ecx, [rax + CAT_COUNT]
     test ecx, ecx
     jz .none
@@ -1667,8 +1650,7 @@ db_catalog_page:
     ret
 .found:
     mov rax, [r8 + 8]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     ret
 
 %ifdef CybouDB_LINUX

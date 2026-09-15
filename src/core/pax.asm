@@ -54,8 +54,7 @@ db_pax_dead_total:
     mov rcx, [r11 + CAT_DATA_ROOT]
     test rcx, rcx
     jz .done
-    shl rcx, CybouDB_PAGE_SHIFT
-    add rcx, [r10 + DB_BASE]
+    DB_PAGE_HERE rcx, r10
     test qword [r10 + DB_FEATURES], CybouDB_FEATURE_PAX_MULTI
     jz .single
     cmp dword [rcx + PAX_DIR_LEVEL], PAX_DIR_ROOT
@@ -77,8 +76,7 @@ db_pax_dead_total:
     jae .done
     shl rax, 4
     mov r8, [rcx + PAX_DIRECTORY + rax]
-    shl r8, CybouDB_PAGE_SHIFT
-    add r8, [r10 + DB_BASE]
+    DB_PAGE_HERE r8, r10
     mov [rbp - 32], rcx             ; the loop below reuses rcx and r10
     call pax_dead_flat
     add [rbp - 16], rax
@@ -105,8 +103,7 @@ pax_dead_flat:
     mov r11, r9
     shl r11, 4
     mov r11, [r8 + PAX_DIRECTORY + r11]
-    shl r11, CybouDB_PAGE_SHIFT
-    add r11, [r10 + DB_BASE]
+    DB_PAGE_HERE r11, r10
     mov edx, [r11 + PAX_DEAD]
     add rax, rdx
     inc r9
@@ -344,8 +341,7 @@ dir_header_valid:
     mov r10, [rbp - 8]
     mov r11, [rbp - 16]
     mov r8, [rbp - 32]
-    shl r8, CybouDB_PAGE_SHIFT
-    add r8, [r10 + DB_BASE]
+    DB_PAGE_HERE r8, r10
     mov [rbp - 40], r8
     cmp dword [r8], PAX_DIR_MAGIC
     jne .bad
@@ -851,8 +847,7 @@ pax_tree_insert:
     je .old_known
     mov r10, [rbp - 8]
     mov rax, [rbp - 88]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 216], rax
     mov eax, [rax + PAX_DIR_LEVEL]
     mov [rbp - 224], rax
@@ -877,8 +872,7 @@ pax_tree_insert:
     jnz .done
     mov r10, [rbp - 8]
     mov rax, [rbp - 72]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 80], rax
     mov dword [rax], PAX_DIR_MAGIC
     mov dword [rax + 4], 1
@@ -971,8 +965,7 @@ pax_tree_insert:
     jnz .done
     mov r10, [rbp - 8]
     mov rax, [rbp - 200]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 208], rax
     mov dword [rax], PAX_DIR_MAGIC
     mov dword [rax + 4], 1
@@ -1246,8 +1239,7 @@ pax_multi_insert:
     jnz .done
     mov r10, [rbp - 8]
     mov rax, [rbp - 72]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 80], rax
     mov dword [rax], PAX_DIR_MAGIC
     mov dword [rax + 4], 1
@@ -1740,8 +1732,7 @@ page_valid:
     mov r10, [rbp - 8]
     mov r11, [rbp - 16]
     mov r8, [rbp - 32]
-    shl r8, CybouDB_PAGE_SHIFT
-    add r8, [r10 + DB_BASE]
+    DB_PAGE_HERE r8, r10
     mov [rbp - 40], r8
     cmp dword [r8], PAX_MAGIC_VALUE
     jne .bad
@@ -2305,8 +2296,7 @@ db_pax_check_new:
     jb .shallow_bad
     cmp rax, [r10 + DB_ALLOC]
     jae .shallow_bad
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov r11d, [rax]
     cmp r11d, PAX_MAGIC_VALUE
     je .shallow_header
@@ -2372,8 +2362,7 @@ db_pax_insert:
     jnz .done
     mov r10, [rbp - 8]
     mov rax, [rbp - 32]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 40], rax
     mov rcx, [rax + CAT_TABLE_ROWS]
     mov [rbp - 56], rcx
@@ -2594,8 +2583,7 @@ pax_append_page:
     jnz .done
     mov r10, [rbp - 8]
     mov rax, [rbp - 88]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 96], rax
     cmp qword [rbp - 56], 0
     jne .initialized
@@ -2774,8 +2762,7 @@ db_pax_update_one:
     jnz .upd_done
     mov r10, [rbp - 8]
     mov rax, [rbp - 56]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 64], rax             ; current schema
     mov ecx, [rax + CAT_COUNT]
     cmp [rbp - 24], rcx
@@ -2891,8 +2878,7 @@ db_pax_update_one:
     jz .upd_rows
     mov [rbp - 72], rax             ; old data root
     mov r11, [rbp - 8]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r11 + DB_BASE]
+    DB_PAGE_HERE rax, r11
     mov [rbp - 80], rax             ; old root address
     mov qword [rbp - 88], 0         ; old directory id (zero = direct leaf)
     cmp dword [rax], PAX_DIR_MAGIC
@@ -2921,8 +2907,7 @@ db_pax_update_one:
     jz .upd_rows
     mov [rbp - 264], rax            ; old child dir id
     mov r11, [rbp - 8]              ; ctx
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r11 + DB_BASE]
+    DB_PAGE_HERE rax, r11
     mov [rbp - 288], rax            ; old child dir addr
     cmp dword [rax], PAX_DIR_MAGIC
     jne .upd_rows
@@ -3016,8 +3001,7 @@ db_pax_update_one:
     jnz .upd_done
     mov r10, [rbp - 8]
     mov rax, [rbp - 120]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 128], rax            ; writable leaf copy
     mov ARG1, rax
     mov ARG2, [rbp - 64]
@@ -3228,8 +3212,7 @@ db_pax_update_one:
     jnz .upd_done
     mov r10, [rbp - 8]
     mov rax, [rbp - 160]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 168], rax
     mov rdx, [rbp - 160]
     mov [rax + PAX_PAGE_ID], rdx
@@ -3259,8 +3242,7 @@ db_pax_update_one:
     jnz .upd_done
     mov r10, [rbp - 8]
     mov rax, [rbp - 160]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 168], rax            ; new child dir addr
     mov rdx, [rbp - 160]
     mov [rax + PAX_PAGE_ID], rdx
@@ -3286,8 +3268,7 @@ db_pax_update_one:
     jnz .upd_done
     mov r10, [rbp - 8]
     mov rax, [rbp - 304]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov [rbp - 312], rax            ; new root addr
     mov rdx, [rbp - 304]
     mov [rax + PAX_PAGE_ID], rdx
@@ -3349,14 +3330,12 @@ db_pax_read:
     jnz .done
     mov r10, [rbp - 8]
     mov rax, [rbp - 32]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov rcx, [rbp - 16]
     cmp rcx, [rax + CAT_TABLE_ROWS]
     jae .rows
     mov rax, [rax + CAT_DATA_ROOT]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     test qword [r10 + DB_FEATURES], CybouDB_FEATURE_PAX_MULTI
     jz .leaf_ready
     mov r11, rax
@@ -3374,15 +3353,13 @@ db_pax_read:
     mov rcx, rdx
     shl rax, 4
     mov rax, [r11 + PAX_DIRECTORY + rax]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov r11, rax
     mov rax, rcx
 .leaf_slot:
     shl rax, 4
     mov rax, [r11 + PAX_DIRECTORY + rax]
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
 .leaf_ready:
     mov [rbp - 40], rax
     mov r10, [rbp - 24]
@@ -3554,8 +3531,7 @@ db_pax_scan_open_bound:
     mov     rax, [r11 + CAT_DATA_ROOT]
     test    rax, rax
     jz      .bound_root_ready
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
 .bound_root_ready:
     mov     [r8 + SCAN_ROOT], rax
     xor     eax, eax
@@ -3596,8 +3572,7 @@ db_pax_scan_open:
     jnz     .done
     mov     r10, [rbp - 8]
     mov     rax, [rbp - 24]
-    shl     rax, CybouDB_PAGE_SHIFT
-    add     rax, [r10 + DB_BASE]
+    DB_PAGE_HERE rax, r10
     mov     ARG2, rax                   ; schema_ptr
     mov     ARG1, r10                   ; ctx
     mov     ARG3, [rbp - 16]            ; cursor
@@ -3690,13 +3665,11 @@ db_pax_scan_next:
     mov rcx, rdx
     shl rax, 4
     mov r8, [r8 + PAX_DIRECTORY + rax]
-    shl r8, CybouDB_PAGE_SHIFT
-    add r8, [r11 + DB_BASE]
+    DB_PAGE_HERE r8, r11
 .leaf_slot:
     shl rcx, 4
     mov r8, [r8 + PAX_DIRECTORY + rcx]
-    shl r8, CybouDB_PAGE_SHIFT
-    add r8, [r11 + DB_BASE]
+    DB_PAGE_HERE r8, r11
 .leaf_known:
     mov [r10 + SCAN_LEAF], r8
     mov rcx, [rbp - 48]
@@ -3928,13 +3901,11 @@ pax_scan_batch_body:
     mov rcx, rdx
     shl rax, 4
     mov r8, [r8 + PAX_DIRECTORY + rax]
-    shl r8, CybouDB_PAGE_SHIFT
-    add r8, [r11 + DB_BASE]
+    DB_PAGE_HERE r8, r11
 .leaf_slot:
     shl rcx, 4
     mov r8, [r8 + PAX_DIRECTORY + rcx]
-    shl r8, CybouDB_PAGE_SHIFT
-    add r8, [r11 + DB_BASE]
+    DB_PAGE_HERE r8, r11
 
 .leaf_known:
     mov [r10 + SCAN_LEAF], r8

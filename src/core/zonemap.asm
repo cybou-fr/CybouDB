@@ -458,8 +458,7 @@ db_zone_check_leaf:
     mov r10, ARG1
     mov r11, ARG2
     mov r8, [r11 + CAT_DATA_ROOT]
-    shl r8, CybouDB_PAGE_SHIFT
-    add r8, [r10 + DB_BASE]
+    DB_PAGE_HERE r8, r10
     test qword [r10 + DB_FEATURES], CybouDB_FEATURE_PAX_MULTI
     jz .leaf
     mov rcx, [rbp - 24]
@@ -472,13 +471,11 @@ db_zone_check_leaf:
     mov rcx, rdx
     shl rax, 4
     mov r8, [r8 + PAX_DIRECTORY + rax]
-    shl r8, CybouDB_PAGE_SHIFT
-    add r8, [r10 + DB_BASE]
+    DB_PAGE_HERE r8, r10
 .slot:
     shl rcx, 4
     mov r8, [r8 + PAX_DIRECTORY + rcx]
-    shl r8, CybouDB_PAGE_SHIFT
-    add r8, [r10 + DB_BASE]
+    DB_PAGE_HERE r8, r10
 .leaf:
     mov [rbp - 40], r8
     mov eax, [r8 + PAX_ROWS]
@@ -751,8 +748,7 @@ db_zone_reserve:
 ; -----------------------------------------------------------------------------
 zone_page_addr:
     mov rax, ARG2
-    shl rax, CybouDB_PAGE_SHIFT
-    add rax, [ARG1 + DB_BASE]
+    DB_PAGE_HERE rax, ARG1
     ret
 
 ; -----------------------------------------------------------------------------
