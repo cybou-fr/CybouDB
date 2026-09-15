@@ -5,9 +5,10 @@ Step 2 of the `0.7` work. The threat model
 be; this says **what the file looks like**, and it is where the roadmap's first
 real question gets answered: format v1 with new bits, or format v2.
 
-Nothing here is implemented. Where a decision belongs to a later step — which
-AEAD, which KEM, what the manifest contains — this document states the
-*requirement* the choice has to satisfy and stops.
+The core format through encrypted create, private-key attach, authenticated
+page I/O and multi-level commit is implemented. Public creation/open and the
+later manifest and scoped-key work remain gated; where a decision belongs to
+one of those steps this document states the requirement and stops.
 
 ---
 
@@ -113,13 +114,17 @@ recoverable, and the seals have precisely the same requirement.
 
 Before changing the inactive copy, the engine brings it forward from the
 active one. The depth-one implementation compares the child MACs in the two
-authenticated nodes and copies only leaves that differ. Publication never
-changes the copy named by the live superblock.
+authenticated nodes and copies only leaves that differ. The current deeper
+tree baseline copies the complete active metadata tree, then replaces MACs
+only along physically changed branches; it deliberately preserves the old
+authenticated MAC for an equally damaged active/inactive child rather than
+blessing that damage. Publication never changes the copy named by the live
+superblock.
 
-The transaction records a bitmap of leaves represented by its dirty cache
-frames before flush invalidates those frames. The new root node inherits the
-active node and recomputes only those child MACs, so pages in one leaf cost one
-leaf read no matter how many of them changed.
+For a depth-one tree, the transaction records a bitmap of leaves represented
+by its dirty cache frames before flush invalidates those frames. The new root
+node inherits the active node and recomputes only those child MACs, so pages in
+one leaf cost one leaf read no matter how many of them changed.
 
 **One entry per page: 24-byte nonce, 16-byte tag, and the 8-byte generation
 under which the page was sealed: 48 bytes.** With a 64-byte page header and
@@ -200,9 +205,12 @@ disagree with the superblock.
 **The geometry, with the arithmetic rather than an adjective.** A node page
 holds `(4092 - 64) / 16 = 251` child MACs, so one node covers
 `251 x 83 = 20,833` pages - which means **depth 1 for any file up to about
-81 MiB and depth 2 for anything up to about 20 GiB**. A commit that rewrites *k* pages
-updates at most *k* leaves, at most *k* nodes, one root and the superblock:
-bounded, and independent of how large the database is.
+81 MiB and depth 2 for anything up to about 20 GiB**. A commit that rewrites
+*k* pages needs to update at most *k* leaves, at most *k* nodes per level, one
+root and the superblock. The depth-one writer already does that incrementally.
+The multi-level writer currently uses a whole-tree catch-up/rebuild baseline,
+so the format permits the bound but the engine does not yet achieve it at
+every depth.
 
 Levels are stored consecutively inside each copy: all leaves at level zero,
 then their parents, through the single root as the copy's final page.

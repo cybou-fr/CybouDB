@@ -1,13 +1,14 @@
 # Porting the engine to encrypted pages
 
-*What step 7 costs inside the engine, measured before any of it is edited.*
+*The encrypted page path, its completed pieces, and the remaining engine port.*
 
-Everything so far has been built beside the engine: primitives with their own
-suites, and two integration harnesses that write a real encrypted file and
-crash a commit at every point. None of it has touched `db_open` or a page
-access. This document is about the part that does, and it exists because that
-part is the largest single edit in `0.7` and the one most likely to be made
-badly if it is started before it is understood.
+The internal engine path now creates an encrypted file, attaches with an
+ML-KEM private key, resolves and writes encrypted pages through a private
+cache, commits with two durability barriers, and reopens the published
+generation. Seal trees of more than one internal level are created, traversed
+and committed as well. The remaining boundary is the ordinary `db_open` and
+public C API path: they still have no credential-bearing entry point and
+therefore return `CybouDB_E_NEEDS_KEY` for an encrypted header.
 
 ---
 
@@ -93,18 +94,21 @@ Each step leaves the tree green and the plain path unchanged, and each is
 verifiable on its own:
 
 ```text
-1.  DB_PAGE exists, plain path only, no call. Convert one module.
+1.  DB_PAGE exists, plain path only, no call. Convert one module. *(done)*
     Verified by: every existing suite, plus a benchmark showing the plain
-    path did not get slower.                                     <- this step
+    path did not get slower.
 
-2.  Convert the rest, module by module, still plain-only.
+2.  Convert the rest, module by module, still plain-only. *(done)*
     Verified by: the same suites after each module.
 
-3.  DB_CACHE, and the encrypted branch, for reads.
-    Verified by: an encrypted file the engine opens read-only.
+3.  DB_CACHE, and the encrypted branch, for reads. *(internal path done)*
+    Verified by: root-to-leaf MAC traversal, AEAD open, repaired-CRC attacks,
+    and depth-two close/reopen tests.
 
-4.  Writes, dirty pages and the commit order of Decision 6b.
-    Verified by: the fault matrix, moved from the harness into the engine.
+4.  Writes, dirty pages and the commit order of Decision 6b. *(done)*
+    Verified by: production-path first- and second-barrier failures, poisoned
+    handles after uncertain durability, paired-tree fallback, and multi-level
+    commit/reopen.
 
 5.  cyboudb check over an encrypted graph.
 
@@ -117,6 +121,15 @@ verifiable on its own:
 that exists must already be a file every later build can open. Until then the
 only encrypted files are the ones the two harnesses write into `build/`, which
 no CLI can produce and no test leaves behind.
+
+The internal implementation currently has two commit cost profiles. A
+depth-one tree records dirty leaves before flush and updates only their MACs;
+its inactive copy catches up only divergent leaves. A deeper tree uses the
+safe baseline: copy the active metadata tree, flush changed leaves, and rebuild
+only child MACs whose physical child changed, level by level. That baseline
+does not bless pre-existing damage in an untouched branch, but it still reads
+the whole tree. A transaction-sized dirty-leaf journal is therefore required
+before the `cost proportional to changed graph` claim applies to every depth.
 
 ## What "did not get slower" means here
 
