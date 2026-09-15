@@ -272,8 +272,23 @@ db_encrypted_attach:
     test    eax, eax
     jnz     .crypto_root_bad
 
-    ; the metadata key, for the superblock's tag - it lives only in this frame
-    lea     ARG1, [rbp - EA_METAKEY]
+    ; the seal tree key, which every commit needs to re-MAC the directory
+    lea     ARG1, [rbx + DB_TREE_KEY]
+    mov     ARG2, 32
+    mov     ARG3, KDF_SEAL_TREE
+    lea     ARG4, [rbp - EA_ROOTKEY]
+    lea     rax, [rbx + DB_SEAL_EPOCH]
+    PASS_ARG5 rax
+    mov     rax, 8
+    PASS_ARG6 rax
+    call    cyboudb_kdf
+    test    eax, eax
+    jnz     .crypto_root_bad
+    mov     rbx, [rbp - 48]
+
+    ; the metadata key goes into the context: every commit needs it, and the
+    ; root key it comes from is about to be wiped
+    lea     ARG1, [rbx + DB_META_KEY]
     mov     ARG2, 32
     mov     ARG3, KDF_METADATA_KEK
     lea     ARG4, [rbp - EA_ROOTKEY]
@@ -286,8 +301,9 @@ db_encrypted_attach:
     jnz     .crypto_root_bad
 
     ; --- 6. and now the superblock is checked --------------------------------
+    mov     rbx, [rbp - 48]
     lea     ARG1, [rbp - EA_KMAC]
-    lea     ARG2, [rbp - EA_METAKEY]
+    lea     ARG2, [rbx + DB_META_KEY]
     mov     ARG3, 32
     lea     ARG4, [sb_label]
     mov     rax, SB_LABEL_LEN
@@ -328,21 +344,39 @@ db_encrypted_attach:
     xor     eax, eax
     jmp     .done
 
+.clear_and_fail:
+    ; A context that failed to attach must not keep a key. Anything that
+    ; derived one before the refusal leaves it here otherwise, and a caller
+    ; retrying with a different key would be running with half of the last
+    ; attempt still in place.
+    mov     rbx, [rbp - 48]
+    xor     rcx, rcx
+    xor     r11, r11
+.clear_meta:
+    mov     [rbx + DB_META_KEY + rcx], r11
+    mov     [rbx + DB_TREE_KEY + rcx], r11
+    mov     [rbx + DB_SEAL_KEY + rcx], r11
+    add     rcx, 8
+    cmp     rcx, 32
+    jb      .clear_meta
+    mov     eax, r10d
+    jmp     .done
+
 .not_encrypted:
     mov     eax, CybouDB_E_STATE
     jmp     .done
 .no_crypto_root:
 .no_key_slots:
 .crypto_root_bad:
-    mov     eax, CybouDB_E_CRYPTO_ROOT
-    jmp     .done
+    mov     r10d, CybouDB_E_CRYPTO_ROOT
+    jmp     .clear_and_fail
 .no_slot:
 .wrong_key:
-    mov     eax, CybouDB_E_KEY
-    jmp     .done
+    mov     r10d, CybouDB_E_KEY
+    jmp     .clear_and_fail
 .superblock_forged:
-    mov     eax, CybouDB_E_SEAL
-    jmp     .done
+    mov     r10d, CybouDB_E_SEAL
+    jmp     .clear_and_fail
 .damaged:
     mov     eax, CybouDB_E_CRYPTO_CRC
     jmp     .done

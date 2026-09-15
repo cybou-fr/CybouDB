@@ -105,7 +105,7 @@ cyboudb_seal_geometry:
     mov     rbx, ARG1                   ; out
     mov     r10, ARG2                   ; total_pages
 
-    ; leaves = ceil(total_pages / 100)
+    ; leaves = ceil(total_pages / entries per leaf)
     mov     rax, r10
     add     rax, CybouDB_SEAL_ENTRIES_PER_LEAF - 1
     xor     rdx, rdx

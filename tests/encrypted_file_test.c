@@ -73,7 +73,7 @@
 #define EK_BYTES 1184
 #define DK_BYTES 2400
 #define KSLOT_SIZE 1176
-#define SENTRY_SIZE 40
+#define SENTRY_SIZE 48
 #define MAC_SIZE 16
 #define KPAGE_SLOTS 64
 #define SLEAF_ENTRIES 64

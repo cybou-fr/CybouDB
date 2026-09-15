@@ -58,7 +58,7 @@
 #define DB_SEAL_DIR     (DB_SEAL_EPOCH + 8)
 #define DB_SEAL_LEAVES  (DB_SEAL_DIR + 8)
 #define DB_ENC_ERROR    (DB_SEAL_LEAVES + 8)
-#define CTX_BYTES       (DB_ENC_ERROR + 8)
+#define CTX_BYTES       1024
 
 #define P_HEADER  0
 #define P_SB      1
@@ -130,6 +130,7 @@ void cyboudb_kmac256_update(uint8_t *ctx, const uint8_t *in, uint64_t len);
 void cyboudb_kmac256_final(uint8_t *ctx, uint8_t *out, uint64_t out_len);
 
 uint64_t cyboudb_pcache_bytes(uint64_t frames);
+uint64_t db_context_bytes(void);
 uint8_t *db_page_resolve(uint8_t *ctx, uint64_t page);
 int db_encrypted_attach(uint8_t *ctx, const uint8_t *dk, uint8_t *cache_mem,
                         uint64_t cache_bytes, uint64_t frames);
@@ -236,6 +237,11 @@ static void fresh_context(int64_t h) {
 }
 
 int main(void) {
+    if (db_context_bytes() > CTX_BYTES) {
+        printf("FAIL the context outgrew what this test allocates\n");
+        return 1;
+    }
+
     vfs_path path = VFS_PATH("build/encrypted_open_test.cdb");
     uint8_t *cache_mem, *cache_raw;
     uint64_t cache_bytes;

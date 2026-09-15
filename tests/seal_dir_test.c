@@ -42,9 +42,9 @@
 
 #define SENTRY_NONCE 0
 #define SENTRY_TAG   24
-#define SENTRY_SIZE  40
+#define SENTRY_SIZE  48
 
-#define ENTRIES_PER_LEAF  100
+#define ENTRIES_PER_LEAF  83
 #define CHILDREN_PER_NODE 251
 #define MAC_SIZE          16
 
@@ -143,10 +143,10 @@ int main(void) {
        the document ever disagree this is where it shows. */
     {
         struct { uint64_t pages, leaves, nodes, depth, both; } row[] = {
-            {      1000,     10,   1, 1,     22 },
-            {     60000,    600,   4, 2,   1208 },
-            {   1048576,  10486,  43, 2,  21058 },
-            {   6300000,  63000, 252, 2, 126504 },
+            {      1000,     13,   1, 1,     28 },
+            {     60000,    723,   4, 2,   1454 },
+            {   1048576,  12634,  52, 2,  25372 },
+            {   6300000,  75904, 306, 3, 152420 },
         };
         unsigned r, ok = 1;
         for (r = 0; r < 4; r++) {
@@ -162,11 +162,11 @@ int main(void) {
         check("one page still needs a leaf and a root",
               geo[SGEO_LEAVES] == 1 && geo[SGEO_NODES] == 1 &&
               geo[SGEO_DEPTH] == 1 && geo[SGEO_PAGES] == 4);
-        cyboudb_seal_geometry(geo, 100);
-        check("and exactly a hundred pages need exactly one leaf",
+        cyboudb_seal_geometry(geo, ENTRIES_PER_LEAF);
+        check("and exactly one leaf's worth of pages need one leaf",
               geo[SGEO_LEAVES] == 1);
-        cyboudb_seal_geometry(geo, 101);
-        check("while a hundred and one need two", geo[SGEO_LEAVES] == 2);
+        cyboudb_seal_geometry(geo, ENTRIES_PER_LEAF + 1);
+        check("while one more page needs two", geo[SGEO_LEAVES] == 2);
     }
 
     /* --- a leaf, and which pages it speaks for ------------------------------ */
@@ -174,21 +174,24 @@ int main(void) {
     check("a freshly written leaf validates",
           cyboudb_seal_leaf_validate(leaf) == SEAL_OK);
     check("and says which pages it covers",
-          rd64(leaf, SLEAF_INDEX) == 8 && rd64(leaf, SLEAF_FIRST_PAGE) == 800 &&
+          rd64(leaf, SLEAF_INDEX) == 8 &&
+          rd64(leaf, SLEAF_FIRST_PAGE) == 8 * ENTRIES_PER_LEAF &&
           rd64(leaf, SLEAF_GENERATION) == 7 &&
           rd64(leaf, SLEAF_SEAL_EPOCH) == 3);
     check("the first and last page of its range have entries",
-          cyboudb_seal_entry(leaf, 800) == leaf + SLEAF_ENTRIES &&
-          cyboudb_seal_entry(leaf, 899) ==
-              leaf + SLEAF_ENTRIES + 99 * SENTRY_SIZE);
+          cyboudb_seal_entry(leaf, 8 * ENTRIES_PER_LEAF) ==
+              leaf + SLEAF_ENTRIES &&
+          cyboudb_seal_entry(leaf, 9 * ENTRIES_PER_LEAF - 1) ==
+              leaf + SLEAF_ENTRIES + (ENTRIES_PER_LEAF - 1) * SENTRY_SIZE);
     check("and a page on either side has none - the caller reached for the "
           "wrong leaf",
-          cyboudb_seal_entry(leaf, 799) == NULL &&
-          cyboudb_seal_entry(leaf, 900) == NULL);
+          cyboudb_seal_entry(leaf, 8 * ENTRIES_PER_LEAF - 1) == NULL &&
+          cyboudb_seal_entry(leaf, 9 * ENTRIES_PER_LEAF) == NULL);
 
     /* --- what the MAC covers ------------------------------------------------ */
     {
-        uint8_t *entry = cyboudb_seal_entry(leaf, 817);
+        uint8_t *entry = cyboudb_seal_entry(leaf,
+                                            8 * ENTRIES_PER_LEAF + 17);
         for (i = 0; i < SENTRY_SIZE; i++) entry[i] = (uint8_t)(i + 1);
         repair_crc(leaf);
         cyboudb_seal_leaf_mac(mac, key, leaf);
@@ -211,12 +214,12 @@ int main(void) {
         /* The identity fields are inside the MAC, which is what stops a leaf
            from being presented as a different leaf, generation or epoch. */
         wr64(leaf, SLEAF_INDEX, 9);
-        wr64(leaf, SLEAF_FIRST_PAGE, 900);
+        wr64(leaf, SLEAF_FIRST_PAGE, 9 * ENTRIES_PER_LEAF);
         repair_crc(leaf);
         cyboudb_seal_leaf_mac(mac2, key, leaf);
         check("and so does the leaf's own index", memcmp(mac, mac2, MAC_SIZE) != 0);
         wr64(leaf, SLEAF_INDEX, 8);
-        wr64(leaf, SLEAF_FIRST_PAGE, 800);
+        wr64(leaf, SLEAF_FIRST_PAGE, 8 * ENTRIES_PER_LEAF);
 
         wr64(leaf, SLEAF_GENERATION, 8);
         repair_crc(leaf);
@@ -268,7 +271,7 @@ int main(void) {
     }
 
     /* --- THE SCENARIO: an old page and its old entry, both genuine ----------
-       Generation 7 published entry[817]. Generation 8 rewrote page 817 and
+       Generation 7 published one entry. Generation 8 rewrote that page and
        with it the entry. An adversary restores the old page - which the AEAD
        will accept, since it was validly sealed - and the old entry with it, so
        the nonce and tag match the ciphertext perfectly. Nothing about the pair
@@ -279,12 +282,12 @@ int main(void) {
         uint8_t *entry;
 
         cyboudb_seal_leaf_init(leaf, 8, 7, 3);
-        entry = cyboudb_seal_entry(leaf, 817);
+        entry = cyboudb_seal_entry(leaf, 8 * ENTRIES_PER_LEAF + 17);
         for (i = 0; i < SENTRY_SIZE; i++) entry[i] = (uint8_t)(0xA0 + i);
         memcpy(old_entry, entry, SENTRY_SIZE);
         repair_crc(leaf);
 
-        /* generation 8 rewrites page 817, and the node publishes the leaf */
+        /* generation 8 rewrites the page, and the node publishes the leaf */
         wr64(leaf, SLEAF_GENERATION, 8);
         for (i = 0; i < SENTRY_SIZE; i++) entry[i] = (uint8_t)(0x50 + i);
         repair_crc(leaf);
@@ -375,7 +378,7 @@ int main(void) {
           cyboudb_seal_leaf_validate(leaf) == SEAL_E_CRC);
 
     memcpy(leaf, scratch, PAGE_SIZE);
-    wr64(leaf, SLEAF_FIRST_PAGE, 801);
+    wr64(leaf, SLEAF_FIRST_PAGE, 8 * ENTRIES_PER_LEAF + 1);
     repair_crc(leaf);
     check("a leaf whose first page does not follow from its index is refused",
           cyboudb_seal_leaf_validate(leaf) == SEAL_E_FIELDS);

@@ -111,24 +111,24 @@ span map already works. That is deliberate reuse rather than a new idea: the
 map's two-copy discipline is the thing that makes a half-written commit
 recoverable, and the seals have precisely the same requirement.
 
-**One entry per page: 24-byte nonce, 16-byte tag, 40 bytes.** With a 64-byte
-page header and the CRC in its usual place, an entry page covers
-`(4092 - 64) / 40 = 100` pages. So `S = ceil(total_pages / 100)`, in two
+**One entry per page: 24-byte nonce, 16-byte tag, and the 8-byte generation
+under which the page was sealed: 48 bytes.** With a 64-byte page header and
+the CRC in its usual place, an entry page covers
+`floor((4092 - 64) / 48) = 83` pages. So `S = ceil(total_pages / 83)`, in two
 copies:
 
 Counting the nodes of Decision 3b as well, and stating the overhead against
-the *finished* file rather than against the pages it protects - for every 100
-protected pages the file carries about 2 seal pages, so the share is 2/102 and
-not 2/100:
+the *finished* file rather than against the pages it protects - for every 83
+protected pages the file carries about 2 seal pages:
 
 | File | Pages | Seal leaves | Nodes | Depth | Both copies | Overhead |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 4 MiB | 1,000 | 10 | 1 | 1 | 22 pages | 2.15% |
-| 240 MiB | 60,000 | 600 | 4 | 2 | 1,208 pages | 1.97% |
-| 4 GiB | 1,048,576 | 10,486 | 43 | 2 | 21,058 pages | 1.97% |
-| 24 GiB | 6,300,000 | 63,000 | 252 | 2 | 126,504 pages | 1.97% |
+| 4 MiB | 1,000 | 13 | 1 | 1 | 28 pages | 2.72% |
+| 240 MiB | 60,000 | 723 | 4 | 2 | 1,454 pages | 2.37% |
+| 4 GiB | 1,048,576 | 12,634 | 52 | 2 | 25,372 pages | 2.36% |
+| 24 GiB | 6,300,000 | 75,904 | 306 | 3 | 152,420 pages | 2.36% |
 
-Just under two per cent, flat, and known before a line is written. That number
+About 2.4 per cent, flat, and known before a line is written. That number
 is the price of not touching a single existing page layout.
 
 **Seal pages have no seal entries of their own.** A seal leaf is authenticated
@@ -173,7 +173,7 @@ authenticated superblock                     (the trust anchor)
         ▼
    seal node            MAC over its children's MACs, its own node id,
         │               the generation and the seal epoch
-        ├── seal leaf   MAC over its 100 entries, its leaf index,
+        ├── seal leaf   MAC over its 83 entries, its leaf index,
         │               the generation and the seal epoch
         │        └── nonce + tag for page N
         │                    └── sealed page N
@@ -189,8 +189,8 @@ disagree with the superblock.
 
 **The geometry, with the arithmetic rather than an adjective.** A node page
 holds `(4092 - 64) / 16 = 251` child MACs, so one node covers
-`251 x 100 = 25,100` pages - which means **depth 1 for any file up to 98 MiB
-and depth 2 for anything up to 24 GiB**. A commit that rewrites *k* pages
+`251 x 83 = 20,833` pages - which means **depth 1 for any file up to about
+81 MiB and depth 2 for anything up to about 20 GiB**. A commit that rewrites *k* pages
 updates at most *k* leaves, at most *k* nodes, one root and the superblock:
 bounded, and independent of how large the database is.
 
@@ -242,7 +242,7 @@ check that anyone who writes the page recomputes.
 the root's is in the superblock. That is the structure rather than a saving: a
 page carrying the MAC of itself would be attesting to its own honesty, which is
 exactly what Decision 3b says an external tag cannot do. It is also what makes
-the arithmetic above come out - 100 entries and 251 children are what fits once
+the arithmetic above come out - 83 entries and 251 children are what fits once
 nothing is reserved for a self-MAC.
 
 This is also why `generation` alone was never going to be the anti-replay
@@ -471,10 +471,11 @@ The engine computes a page address in 128 places
 ([ENCRYPTED_ENGINE.md](ENCRYPTED_ENGINE.md)), and in encrypted mode each of
 those has to become a read, a decrypt and a tag check. The tag covers the
 associated data, so the associated data has to be built **before** the page can
-be verified - and four of its five fields are available at that moment: the
-file's uuid, the page number being asked for, the generation the superblock
-publishes, and the seal epoch the crypto root records. The fifth is not. The
-page's type is known to the module that asked for the page and not to the
+be verified - and three of its five fields are available at that moment: the
+file's uuid, the page number being asked for, and the seal epoch the crypto
+root records. The page's generation is stored in its seal entry, because a
+commit may advance the database without rewriting that page. The fifth field,
+the page's type, is known to the module that asked for the page and not to the
 resolver that fetches it, and threading it through 128 call sites means 128
 sites each carrying a fact about pages they only borrow.
 
@@ -496,6 +497,11 @@ nonce = 184 bits of randomness | one byte of page type
 
 The reader takes the type out of the nonce it already has to read, builds the
 associated data with it, and verifies. Nothing else changes.
+
+The reader likewise takes the generation out of the seal entry. Binding every
+page to the database's current generation would make every untouched page
+unreadable after a commit; binding it to the stored generation keeps copy-on-
+write pages readable while the leaf MAC prevents that field being rewritten.
 
 **Why this is not a weakening.** The nonce is an input to the AEAD, so a byte
 changed there changes the keystream and fails the tag - the type is

@@ -49,7 +49,9 @@
 #define DB_SEAL_DIR     (DB_SEAL_EPOCH + 8)
 #define DB_SEAL_LEAVES  (DB_SEAL_DIR + 8)
 #define DB_ENC_ERROR    (DB_SEAL_LEAVES + 8)
-#define CTX_BYTES       (DB_ENC_ERROR + 8)
+#define DB_META_KEY     (DB_ENC_ERROR + 8)
+#define DB_TREE_KEY     (DB_META_KEY + 32)
+#define CTX_BYTES       1024
 
 #define EK_BYTES 1184
 #define DK_BYTES 2400
@@ -81,6 +83,8 @@ uint8_t *db_page_resolve(uint8_t *ctx, uint64_t page);
 uint8_t *db_page_for_write(uint8_t *ctx, uint64_t page, uint64_t page_type);
 uint8_t *db_page_new(uint8_t *ctx, uint64_t page, uint64_t page_type);
 int db_pages_flush(uint8_t *ctx);
+uint64_t db_context_bytes(void);
+int db_encrypted_commit(uint8_t *ctx);
 int db_encrypted_attach(uint8_t *ctx, const uint8_t *dk, uint8_t *cache_mem,
                         uint64_t cache_bytes, uint64_t frames);
 
@@ -112,6 +116,11 @@ static uint8_t ctx[CTX_BYTES], page[PAGE];
 static uint8_t uuid[16];
 
 int main(void) {
+    if (db_context_bytes() > CTX_BYTES) {
+        printf("FAIL the context outgrew what this test allocates\n");
+        return 1;
+    }
+
     vfs_path path = VFS_PATH("build/encrypted_create_test.cdb");
     struct ecreate_args args;
     uint8_t *cache_mem, *cache_raw;
@@ -223,7 +232,22 @@ int main(void) {
             memset(frame, 0, PAGE);
             strcpy((char *)frame, "written into a database the engine made");
         }
-        check("and flushes", db_pages_flush(ctx) == 0);
+        /* And the generation is published: the leaves the flush wrote are
+           covered by a node, the node reaches the disk before anything claims
+           it exists, and only then does a superblock name it. */
+        check("and the generation is committed",
+              db_encrypted_commit(ctx) == 0);
+        check("which published into the copy that was not live and moved on",
+              rd64(ctx, DB_GENERATION) == 2 && rd64(ctx, DB_SB_PAGE) == 2);
+        vfs_close(h);
+
+        /* The superblock the commit wrote, read as a stranger would: a real
+           generation in a real copy, not an in-memory claim. */
+        h = vfs_open_rw(path, 0);
+        vfs_read_at(h, page, PAGE, 2 * PAGE);
+        check("the second superblock carries the new generation",
+              rd64(page, SB_GENERATION) == 2 &&
+              rd32(page, SB_CRC) == crc32c(page, SB_CRC));
         vfs_close(h);
 
         /* Reopen from nothing: a new handle, a new context, the same key. */
@@ -231,7 +255,7 @@ int main(void) {
         memset(ctx, 0, sizeof ctx);
         memcpy(ctx + DB_HANDLE, &h, 8);
         {
-            uint64_t sb = 1;
+            uint64_t sb = 2;              /* the copy the commit published into */
             memcpy(ctx + DB_SB_PAGE, &sb, 8);
         }
         check("the file opens again with the key",

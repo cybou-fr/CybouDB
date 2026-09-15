@@ -124,7 +124,8 @@ cyboudb_page_aad:
     sub     ARG1, PS_AAD
     mov     ARG2, [rbx + PSEAL_UUID]
     mov     ARG3, [rbx + PSEAL_PAGE_NO]
-    mov     ARG4, [rbx + PSEAL_GENERATION]
+    mov     rax, [rbx + PSEAL_ENTRY]
+    mov     ARG4, [rax + SENTRY_GENERATION]
     mov     rax, [rbp - 40]
     PASS_ARG5 rax
     mov     rax, [rbx + PSEAL_EPOCH]
@@ -186,6 +187,15 @@ cyboudb_page_seal:
     ; r10 now carries the type into the associated data as well, so the byte
     ; in the nonce and the byte in the AAD are one value and not two.
 
+    ; The generation goes into the entry before the associated data is built,
+    ; and the associated data then reads it back out - so what is bound into
+    ; the tag is by construction what is stored, and a reader that opens the
+    ; page does not have to be told which generation to ask for. Without this
+    ; the page would be sealed under the generation of the commit and asked
+    ; for under every generation after it.
+    mov     rax, [rbx + PSEAL_GENERATION]
+    mov     [r11 + SENTRY_GENERATION], rax
+
     BUILD_PAGE_AAD
 
     mov     rbx, [rbp - 32]
@@ -219,6 +229,8 @@ cyboudb_page_open:
     ; that needs to open a page is exactly the one that does not know what kind
     ; of page it is - and a caller that does know gains nothing by saying so,
     ; because the tag is what decides either way. Decision 5b.
+    ; The generation comes out of the entry for the same reason as the type:
+    ; the entry is covered by the leaf's MAC, so neither is the caller's word.
     mov     r11, [rbx + PSEAL_ENTRY]
     movzx   r10d, byte [r11 + SENTRY_NONCE + CybouDB_XAEAD_NONCE_SIZE - 1]
 

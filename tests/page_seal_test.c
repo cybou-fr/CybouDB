@@ -50,7 +50,8 @@ int os_random(void *buffer, uint64_t length);
 #define PAGE_SIZE 4096
 #define SENTRY_NONCE 0
 #define SENTRY_TAG   24
-#define SENTRY_SIZE  40
+#define SENTRY_GENERATION 40
+#define SENTRY_SIZE  48
 #define E_SEAL 42
 
 struct pseal_args {
@@ -323,10 +324,21 @@ int main(void) {
             check("the page presented at another page number does not open",
                   cyboudb_page_open(&b) == E_SEAL);
 
-            memcpy(page, copy, PAGE_SIZE);
-            b = a; b.generation = 41;
-            check("nor replayed into an earlier generation",
-                  cyboudb_page_open(&b) == E_SEAL);
+            /* The generation is not an argument to open any more - it is
+               read out of the entry, the way the type is read out of the
+               nonce. So this moves the page back a generation the only way
+               anything can now: by editing what the entry says. The leaf's
+               MAC covers that field, so an attacker has to break the tree
+               before the tag ever gets the chance to notice. */
+            {
+                uint8_t back[SENTRY_SIZE];
+                memcpy(page, copy, PAGE_SIZE);
+                memcpy(back, entry, SENTRY_SIZE);
+                back[SENTRY_GENERATION] = 41;
+                b = a; b.entry = back;
+                check("nor replayed into an earlier generation",
+                      cyboudb_page_open(&b) == E_SEAL);
+            }
 
             /* The page type no longer travels in the arguments on the way
                back in: Decision 5b puts it in the last byte of the nonce,

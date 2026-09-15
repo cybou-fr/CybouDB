@@ -365,9 +365,25 @@
 
 %define SENTRY_NONCE   0                ; 24
 %define SENTRY_TAG     24               ; 16
-%define SENTRY_SIZE    40
+%define SENTRY_GENERATION 40            ; the generation that sealed this page
+%define SENTRY_SIZE    48
 
-%define CybouDB_SEAL_ENTRIES_PER_LEAF  100   ; (4064 - 64) / 40
+;  (4064 - 64) / 48. It was 100 entries of 40 bytes, until the generation had
+;  to be stored: the generation is part of a page's associated data, and a
+;  commit that does not rewrite a page still moves the database's generation
+;  on. With nothing recording which generation sealed which page, every page a
+;  commit left alone became unreadable the moment the commit succeeded - the
+;  engine sealed at generation N and every later reader asked for N+1.
+;
+;  Storing it per entry rather than per leaf is not an accident either: a leaf
+;  covers a fixed range of page numbers, and copy on write leaves most of that
+;  range untouched, so one leaf routinely spans several generations.
+;
+;  The cost is seventeen entries a leaf and a slightly larger directory. What
+;  it buys is the replay property the format claims: a page cannot be moved
+;  back into an earlier generation, because the generation it was sealed under
+;  is bound into the tag and covered by the leaf's MAC.
+%define CybouDB_SEAL_ENTRIES_PER_LEAF  83
 %define CybouDB_SEAL_CHILDREN_PER_NODE 251   ; (4080 - 64) / 16
 %define CybouDB_SEAL_MAC_SIZE          16
 

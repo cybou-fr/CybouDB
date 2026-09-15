@@ -17,8 +17,8 @@
 ;      page 5+S            the seal tree node above them
 ;      pages 5+S+1 ..      everything a database actually holds
 ;
-;  **One node, so one level.** A node covers 251 leaves and a leaf covers 100
-;  pages, so this writes files up to 25,100 pages - about 98 MiB - and refuses
+;  **One node, so one level.** A node covers 251 leaves and a leaf covers 83
+;  pages, so this writes files up to 20,833 pages - about 81 MiB - and refuses
 ;  anything larger rather than writing a tree it cannot walk. Depth two is
 ;  arithmetic this file does not have yet, and a create path that silently
 ;  produced a file its own reader could not open would be worse than a refusal.

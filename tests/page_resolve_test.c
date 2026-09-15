@@ -38,10 +38,11 @@
 #define DB_SEAL_DIR     (DB_SEAL_EPOCH + 8)
 #define DB_SEAL_LEAVES  (DB_SEAL_DIR + 8)
 #define DB_ENC_ERROR    (DB_SEAL_LEAVES + 8)
-#define DB_SIZE_BYTES   (DB_ENC_ERROR + 8)
+#define DB_SIZE_BYTES       1024
 
-#define SENTRY_SIZE 40
-#define ENTRIES_PER_LEAF 100
+#define SENTRY_SIZE 48
+#define SENTRY_GENERATION 40
+#define ENTRIES_PER_LEAF 83
 
 #define P_LEAF     1
 #define P_FIRST    100        /* the first page the leaf covers is 100 */
@@ -89,6 +90,7 @@ int cyboudb_page_seal(const struct pseal_args *args);
 uint8_t *db_page_resolve(uint8_t *ctx, uint64_t page);
 uint8_t *db_page_for_write(uint8_t *ctx, uint64_t page, uint64_t page_type);
 int db_pages_flush(uint8_t *ctx);
+uint64_t db_context_bytes(void);
 uint64_t cyboudb_pcache_dirty_at(const uint8_t *cache, uint64_t slot);
 uint64_t cyboudb_pcache_type_at(const uint8_t *cache, uint64_t slot);
 uint64_t cyboudb_pcache_frames(const uint8_t *cache);
@@ -123,6 +125,11 @@ static void page_content(uint8_t *out, uint64_t page) {
 }
 
 int main(void) {
+    if (db_context_bytes() > DB_SIZE_BYTES) {
+        printf("FAIL the context outgrew what this test allocates\n");
+        return 1;
+    }
+
     vfs_path path = VFS_PATH("build/page_resolve_test.cdb");
     uint8_t *cache_mem, *cache_raw;
     uint64_t cache_bytes;
@@ -259,14 +266,34 @@ int main(void) {
         check("and resolves again once the page is what it was", frame != NULL);
     }
 
-    /* --- a generation the pages were not sealed under -------------------------- */
+    /* --- a generation the page was not sealed under ---------------------------- */
+    /*  Moving the database on does not hide a page any more: the generation a
+        page was sealed under is stored in its entry, which is the whole reason
+        a commit that leaves a page alone leaves it readable. What must still
+        fail is an entry claiming a generation the tag was not built over. */
     {
         uint8_t *frame;
+        uint8_t *e;
+
         wr64(ctx, DB_GENERATION, GENERATION + 1);
         cyboudb_pcache_init(cache_mem, cache_bytes, 16);   /* a cold cache */
         frame = db_page_resolve(ctx, P_FIRST + 1);
-        check("a page from another generation does not resolve", frame == NULL);
+        check("a later generation still reads a page it did not rewrite",
+              frame != NULL);
         wr64(ctx, DB_GENERATION, GENERATION);
+
+        e = cyboudb_seal_entry(leaf, P_FIRST + 1);
+        e[SENTRY_GENERATION] ^= 0x01;
+        vfs_write_at(h, leaf, PAGE, (uint64_t)P_LEAF * PAGE);
+        cyboudb_pcache_init(cache_mem, cache_bytes, 16);
+        check("an entry moved to another generation does not resolve",
+              db_page_resolve(ctx, P_FIRST + 1) == NULL);
+
+        e[SENTRY_GENERATION] ^= 0x01;
+        vfs_write_at(h, leaf, PAGE, (uint64_t)P_LEAF * PAGE);
+        cyboudb_pcache_init(cache_mem, cache_bytes, 16);
+        check("and resolves again once the entry is what it was",
+              db_page_resolve(ctx, P_FIRST + 1) != NULL);
     }
 
     /* --- and one sealed under another epoch's key ------------------------------ */

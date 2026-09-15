@@ -32,6 +32,7 @@ default rel
 global db_page_resolve
 global db_page_for_write
 global db_page_new
+global db_context_bytes
 global db_pages_flush
 
 extern cyboudb_pcache_lookup
@@ -182,9 +183,12 @@ db_page_resolve:
     mov     [r10 + PSEAL_UUID], rax
     mov     rax, [rbp - 48]
     mov     [r10 + PSEAL_PAGE_NO], rax
-    mov     rax, [rbx + DB_GENERATION]
-    mov     [r10 + PSEAL_GENERATION], rax
-    mov     qword [r10 + PSEAL_PAGE_TYPE], 0    ; open reads it from the nonce
+    ; Neither of these is passed on the way in: open takes the generation out
+    ; of the entry and the type out of the nonce, both of which the leaf's MAC
+    ; covers. Passing the database's current generation here is what made a
+    ; page unreadable after the first commit that did not rewrite it.
+    mov     qword [r10 + PSEAL_GENERATION], 0
+    mov     qword [r10 + PSEAL_PAGE_TYPE], 0
     mov     rax, [rbx + DB_SEAL_EPOCH]
     mov     [r10 + PSEAL_EPOCH], rax
 
@@ -299,6 +303,18 @@ db_page_for_write:
     mov     rbx, [rbp - 8]
     mov     r12, [rbp - 16]
     FRAME_END
+    ret
+
+; =============================================================================
+;  db_context_bytes() -> how large a database context is
+;
+;  Tests allocate one and index into it by hand, and the offsets they use are
+;  spelled twice - once here and once in C. Growing the context has already
+;  silently overrun a buffer once in this project (the sponge), so the size
+;  is answered by the assembly that defines it rather than guessed.
+; =============================================================================
+db_context_bytes:
+    mov     eax, CybouDB_DB_SIZE
     ret
 
 ; =============================================================================

@@ -143,8 +143,26 @@
 %define DB_SEAL_DIR       (DB_SEAL_EPOCH + 8) ; first leaf page
 %define DB_SEAL_LEAVES    (DB_SEAL_DIR + 8)
 %define DB_ENC_ERROR      (DB_SEAL_LEAVES + 8); the last seal failure, or zero
+; The metadata key, 32 bytes, held for as long as the database is open.
+;
+;  It is here rather than derived when needed because every commit tags a
+;  superblock with it and the root key it comes from is wiped at the end of the
+;  open - deliberately, so that the value everything else derives from exists
+;  for the shortest time this design allows. That leaves two keys resident: the
+;  page seal key, which every miss needs, and this one. Both are epoch keys,
+;  both die with the handle, and neither is the root.
+%define DB_META_KEY       (DB_ENC_ERROR + 8)
+%define DB_TREE_KEY       (DB_META_KEY + 32)   ; 32 bytes: the seal tree's key
 
-%define CybouDB_DB_SIZE      (DB_ENC_ERROR + 8)
+;  Three keys stay resident while a database is open, and it is worth being
+;  able to name all three rather than discovering a fourth later: the page seal
+;  key, which every cache miss needs; the seal tree key, which every commit
+;  needs to re-MAC the directory; and the metadata key, which tags the
+;  superblock. All three belong to one seal epoch and all three die with the
+;  handle. The root key is not among them - it is wiped at the end of the open,
+;  which is the whole reason these are derived rather than kept.
+
+%define CybouDB_DB_SIZE      (DB_TREE_KEY + 32)
 
 ; Entries in the log: page id, then the two states packed into one qword so an
 ; entry is 16 bytes and the whole thing is a flat array with no allocator.
