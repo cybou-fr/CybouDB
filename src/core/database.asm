@@ -590,7 +590,22 @@ db_open:
     ; below, so refuse rather than guess.
     mov     rax, [r10 + HDR_FLAGS_INCOMPAT]
     test    rax, ~(CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_COMPRESSION | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR | CybouDB_FEATURE_TOMBSTONES | CybouDB_FEATURE_INDEX | CybouDB_FEATURE_QUEUE | CybouDB_FEATURE_STREAM | CybouDB_FEATURE_LEASES_KNOWN)
-    jne     .e_features
+    jne     .e_unknown_feature
+
+    ; Encryption is orthogonal to every layout below: it changes what a page's
+    ; bytes are, not which pages exist or how they address each other. So it
+    ; comes out of the flags before the combinations are compared - the same
+    ; treatment leaf runs get, and for the same reason. Without this the
+    ; combination check refuses an encrypted database as an unrecognised
+    ; layout, which is a true sentence about the wrong thing.
+    ;
+    ; And for now it is also a refusal, because no open path in this build can
+    ; accept a key yet. When one can, this becomes "and no key was offered".
+    test    rax, CybouDB_FEATURE_ENCRYPTION
+    jz      .not_encrypted
+    mov     eax, CybouDB_E_NEEDS_KEY
+    jmp     .unmap_and_fail
+.not_encrypted:
 
     ; Leaf runs are a choice about the multi-page PAX layout, so the bit means
     ; nothing without the directory that addresses those leaves. With it the
@@ -908,6 +923,18 @@ db_open:
 .e_hdr_crc:
     mov     eax, CybouDB_E_HDR_CRC
     jmp     .unmap_and_fail
+.e_unknown_feature:
+    ; An encrypted database is a file this build knows how to read and was not
+    ; given the key for. Saying "incompatible features" to someone holding the
+    ; key would be true and useless; saying it about a bit this build really
+    ; does not know is the right answer and is what the fall-through does.
+    mov     rax, [r10 + HDR_FLAGS_INCOMPAT]
+    and     rax, ~(CybouDB_FEATURE_COW | CybouDB_FEATURE_CATALOG | CybouDB_FEATURE_PAX | CybouDB_FEATURE_PAX_MULTI | CybouDB_FEATURE_MAP_SPAN | CybouDB_FEATURE_PAX_RUNS | CybouDB_FEATURE_PAX_TREE | CybouDB_FEATURE_ZONE_MAPS | CybouDB_FEATURE_COMPRESSION | CybouDB_FEATURE_VARLEN | CybouDB_FEATURE_VECTOR | CybouDB_FEATURE_TOMBSTONES | CybouDB_FEATURE_INDEX | CybouDB_FEATURE_QUEUE | CybouDB_FEATURE_STREAM | CybouDB_FEATURE_LEASES_KNOWN)
+    cmp     rax, CybouDB_FEATURE_ENCRYPTION
+    jne     .e_features
+    mov     eax, CybouDB_E_NEEDS_KEY
+    jmp     .unmap_and_fail
+
 .e_features:
     mov     eax, CybouDB_E_FEATURES
     jmp     .unmap_and_fail

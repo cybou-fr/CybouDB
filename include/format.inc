@@ -325,6 +325,19 @@
 ;
 ;  Zero in a database that is not encrypted, like the rest of the reserved
 ;  tail, so nothing about this changes what an existing file looks like.
+; --- the encryption bit, named but not offered --------------------------------
+;  docs/ENCRYPTED_ENGINE.md keeps this out of every CybouDB_FEATURES_* profile
+;  until the whole chain works through the engine, and nothing in this build
+;  sets it: no create path, no CLI, no API. It is defined here for one reason -
+;  so that a database carrying it can be refused by name rather than as "some
+;  feature this build does not implement", which is true and useless to the
+;  person holding the key.
+;
+;  Naming a bit is not supporting it. The day this appears in a profile is the
+;  day a file in the world can carry it, and that day has requirements listed
+;  in ENCRYPTED_ENGINE.md that are not met yet.
+%define CybouDB_FEATURE_ENCRYPTION 131072
+
 %define SB_SEAL_TAG         64
 %define SB_SEAL_TAG_SIZE    16
 %define SB_SEAL_TAG_COVERS  SB_SEAL_TAG

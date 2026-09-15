@@ -205,6 +205,8 @@ e_phrase:  db "error: that is not a recovery phrase this build wrote - check "
            db "the words rather than the database", 10, 0
 e_seal:    db "error: a page is not the one that was written - the file has "
            db "been altered, or damaged in a way a checksum cannot see", 10, 0
+e_needs_key: db "error: this database is encrypted - open it with the key it "
+           db "was sealed to", 10, 0
 
     align 8
 err_table:
@@ -216,7 +218,7 @@ err_table:
     dq e_catalog, e_schema, e_notfound, e_catalog_full
     dq e_rows, e_pax, e_value, e_busy, e_cursor, e_retained
     dq e_damaged, e_lease
-    dq e_key, e_crypto_root, e_crypto_crc, e_phrase, e_seal
+    dq e_key, e_crypto_root, e_crypto_crc, e_phrase, e_seal, e_needs_key
 
 ; A code without a sentence prints whatever follows the table, so the table's
 ; length is checked here rather than discovered by a user.

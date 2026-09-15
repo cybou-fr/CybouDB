@@ -93,7 +93,13 @@
 ; whether there is an adversary.
 %define CybouDB_E_SEAL        42            ; a page is not the one that was written
 
-%define CybouDB_E_COUNT      43            ; size of the message table
+; A database that is encrypted and was opened without a key. Not E_FEATURES -
+; this build implements the feature - and not E_KEY, which means a key was
+; offered and did not fit. The difference matters to the person reading it:
+; one says "upgrade", another says "wrong key", this one says "bring a key".
+%define CybouDB_E_NEEDS_KEY   43            ; encrypted, and no key was offered
+
+%define CybouDB_E_COUNT      44            ; size of the message table
 
 ; --- Why an operating system call failed -------------------------------------
 ;  The platform layer translates its native error - errno on Linux, the Win32

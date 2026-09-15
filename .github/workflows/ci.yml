@@ -173,6 +173,7 @@ jobs:
           sh build.sh --no-leases
           python3 tests/lease_format_tests.py ./cyboudb ./build/cyboudb_nolease
           python3 tests/lease_sql_tests.py ./cyboudb
+          python3 tests/encrypted_refusal_tests.py ./cyboudb
 
       - name: The assembly cipher and MAC, against RFC 8439 and against C
         run: |
@@ -454,6 +455,7 @@ jobs:
         run: |
           python tests/lease_format_tests.py ./cyboudb.exe ./build/cyboudb_nolease.exe
           python tests/lease_sql_tests.py ./cyboudb.exe
+          python tests/encrypted_refusal_tests.py ./cyboudb.exe
 
       - name: Interactive REPL and pipe tests
         shell: bash
