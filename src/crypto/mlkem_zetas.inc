@@ -12,6 +12,12 @@
 %define MLKEM_QINV  62209          ; q^-1 mod 2^16
 %define MLKEM_MONT  2285           ; 2^16 mod q
 
+; Verified exhaustively by this generator: n / q equals
+; (n * 2580335) >> 33 for every n up to 3412225, which is the largest
+; value ten-bit compression can form.
+%define MLKEM_DIV_M 2580335
+%define MLKEM_DIV_S 33
+
 align 32
 mlkem_zetas:
     dw  -1044,   -758,   -359,  -1517,   1493,   1422,    287,    202

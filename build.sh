@@ -228,8 +228,10 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
         echo "Build OK -> build/seal_dir_test"
         nasm -f elf64 $INC -Isrc/crypto/ -DCybouDB_LIBRARY=1 src/crypto/mlkem_poly.asm \
             -o build/mlkem_poly.o
+        nasm -f elf64 $INC -Isrc/crypto/ -DCybouDB_LIBRARY=1 src/crypto/mlkem_encode.asm \
+            -o build/mlkem_encode.o
         "$CC" -O2 -no-pie -Wall -Wextra tests/mlkem_poly_test.c \
-            build/mlkem_poly.o -o build/mlkem_poly_test
+            build/mlkem_poly.o build/mlkem_encode.o -o build/mlkem_poly_test
         echo "Build OK -> build/mlkem_poly_test"
     fi
     if [ "${1:-}" = "--crypto-probe" ]; then

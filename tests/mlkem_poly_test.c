@@ -34,6 +34,15 @@ void cyboudb_mlkem_poly_tomont(int16_t *r);
 int cyboudb_mlkem_montgomery_reduce(int32_t a);
 int cyboudb_mlkem_barrett_reduce(int32_t a);
 
+void cyboudb_mlkem_poly_tobytes(uint8_t *out, const int16_t *poly);
+void cyboudb_mlkem_poly_frombytes(int16_t *poly, const uint8_t *in);
+void cyboudb_mlkem_poly_compress10(uint8_t *out, const int16_t *poly);
+void cyboudb_mlkem_poly_decompress10(int16_t *poly, const uint8_t *in);
+void cyboudb_mlkem_poly_compress4(uint8_t *out, const int16_t *poly);
+void cyboudb_mlkem_poly_decompress4(int16_t *poly, const uint8_t *in);
+void cyboudb_mlkem_poly_frommsg(int16_t *poly, const uint8_t *msg);
+void cyboudb_mlkem_poly_tomsg(uint8_t *msg, const int16_t *poly);
+
 static int checks, failures;
 
 static void check(const char *what, int ok) {
@@ -221,6 +230,130 @@ int main(void) {
             if (centred(c[i]) != centred(d[i]) || c[i] > Q / 2 || c[i] <= -Q)
                 ok = 0;
         check("reduction changes representatives and not residues", ok);
+    }
+
+/* --- the encodings ------------------------------------------------------
+       Compression is defined in FIPS 203 as round(2^d * x / q) mod 2^d, and
+       the assembly computes it with a multiply and a shift because a real
+       division is not constant time. So the test does the real division, in
+       C, for every one of the 3329 possible coefficients - not a sample of
+       them - and compares. A multiply-and-shift that is off by one anywhere
+       in the range would be found here rather than by two implementations
+       disagreeing about a ciphertext in a year. */
+    {
+        int ok10 = 1, ok4 = 1, x;
+        static int16_t p[N], back[N];
+        static uint8_t packed[320];
+
+        for (x = 0; x < Q; x++) {
+            int d;
+            for (d = 0; d < N; d++) p[d] = (int16_t)x;
+            cyboudb_mlkem_poly_compress10(packed, p);
+            /* the first coefficient is enough: they are all the same value */
+            if ((packed[0] | ((packed[1] & 0x03) << 8)) !=
+                ((((uint32_t)x << 10) + Q / 2) / Q & 0x3FF)) ok10 = 0;
+            cyboudb_mlkem_poly_compress4(packed, p);
+            if ((packed[0] & 0x0F) != ((((uint32_t)x << 4) + Q / 2) / Q & 0x0F))
+                ok4 = 0;
+        }
+        check("ten-bit compression matches the definition, for every "
+              "coefficient in the field", ok10);
+        check("and four-bit compression likewise", ok4);
+
+        /* Negative representatives must compress as their positive twins: the
+           engine hands out centred coefficients, and a compression that took
+           the sign literally would encode half the field as zero. */
+        {
+            int ok = 1;
+            for (x = 1; x <= Q / 2; x++) {
+                uint8_t a_packed[320], b_packed[320];
+                int d;
+                for (d = 0; d < N; d++) p[d] = (int16_t)(-x);
+                cyboudb_mlkem_poly_compress10(a_packed, p);
+                for (d = 0; d < N; d++) p[d] = (int16_t)(Q - x);
+                cyboudb_mlkem_poly_compress10(b_packed, p);
+                if (memcmp(a_packed, b_packed, 320) != 0) ok = 0;
+            }
+            check("a negative coefficient compresses as its positive twin", ok);
+        }
+
+        /* Decompression is not an inverse - that is the point of it - but the
+           error it introduces is bounded, and the bound is what decapsulation
+           depends on. */
+        {
+            int worst10 = 0, worst4 = 0, i2;
+            random_poly(p);
+            for (i2 = 0; i2 < N; i2++)
+                p[i2] = (int16_t)(((uint32_t)next_random()) % Q);
+            cyboudb_mlkem_poly_compress10(packed, p);
+            cyboudb_mlkem_poly_decompress10(back, packed);
+            for (i2 = 0; i2 < N; i2++) {
+                int e = centred(back[i2] - p[i2]);
+                if (e < 0) e = -e;
+                if (e > worst10) worst10 = e;
+            }
+            check("ten-bit round trip stays within q/2^11 + 1", worst10 <= 2);
+
+            cyboudb_mlkem_poly_compress4(packed, p);
+            cyboudb_mlkem_poly_decompress4(back, packed);
+            for (i2 = 0; i2 < N; i2++) {
+                int e = centred(back[i2] - p[i2]);
+                if (e < 0) e = -e;
+                if (e > worst4) worst4 = e;
+            }
+            check("and four-bit within q/2^5 + 1", worst4 <= 105);
+        }
+
+        /* Twelve-bit encoding is lossless, and that is checkable exactly. */
+        {
+            static uint8_t bytes[384];
+            int ok = 1, i2;
+            for (i2 = 0; i2 < N; i2++)
+                p[i2] = (int16_t)(next_random() % Q);
+            cyboudb_mlkem_poly_tobytes(bytes, p);
+            cyboudb_mlkem_poly_frombytes(back, bytes);
+            for (i2 = 0; i2 < N; i2++)
+                if (centred(back[i2]) != centred(p[i2])) ok = 0;
+            check("twelve-bit encoding loses nothing", ok);
+
+            for (i2 = 0; i2 < N; i2++) p[i2] = (int16_t)(-(i2 % (Q / 2)));
+            cyboudb_mlkem_poly_tobytes(bytes, p);
+            cyboudb_mlkem_poly_frombytes(back, bytes);
+            ok = 1;
+            for (i2 = 0; i2 < N; i2++)
+                if (centred(back[i2]) != centred(p[i2])) ok = 0;
+            check("including for negative representatives", ok);
+        }
+
+        /* The message path, which the FO transform's security runs through. */
+        {
+            static uint8_t msg[32], out[32];
+            int ok = 1, trial;
+            for (trial = 0; trial < 16; trial++) {
+                int i2;
+                for (i2 = 0; i2 < 32; i2++) msg[i2] = (uint8_t)next_random();
+                cyboudb_mlkem_poly_frommsg(p, msg);
+                cyboudb_mlkem_poly_tomsg(out, p);
+                if (memcmp(msg, out, 32) != 0) ok = 0;
+            }
+            check("a message survives the trip through a polynomial", ok);
+
+            /* And survives noise: every coefficient nudged by less than q/4
+               must still decode to the same bit, which is the margin
+               decapsulation lives on. */
+            memset(msg, 0xA5, 32);
+            cyboudb_mlkem_poly_frommsg(p, msg);
+            {
+                int i2;
+                for (i2 = 0; i2 < N; i2++)
+                    p[i2] = (int16_t)centred(p[i2] +
+                                             (int16_t)(next_random() % (Q / 4))
+                                             * ((i2 & 1) ? 1 : -1));
+            }
+            cyboudb_mlkem_poly_tomsg(out, p);
+            check("and survives noise of up to a quarter of q",
+                  memcmp(msg, out, 32) == 0);
+        }
     }
 
     printf("\nML-KEM arithmetic suite: %d checks, %d failed\n",

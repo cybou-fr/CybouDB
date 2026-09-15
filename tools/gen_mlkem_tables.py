@@ -25,6 +25,22 @@ MONT = pow(2, 16, Q)            # 2^16 mod q
 QINV = pow(Q, -1, 1 << 16)      # q^-1 mod 2^16, what Montgomery reduction needs
 
 
+# Compression divides by q on data that is secret, so the assembly does it as
+# a multiply and a shift. These are the constants - and the check below is
+# what makes them a fact rather than a hope: the identity is verified against
+# the real division for every value compression can present, not for a sample
+# of them.
+DIV_SHIFT = 33
+DIV_MAGIC = ((1 << DIV_SHIFT) + Q - 1) // Q
+DIV_LIMIT = (Q << 10) + Q       # the largest n that ten-bit compression forms
+
+
+def check_division_constant():
+    for n in range(DIV_LIMIT):
+        if (n * DIV_MAGIC >> DIV_SHIFT) != n // Q:
+            raise SystemExit('division constant wrong at n = %d' % n)
+
+
 def brv7(i):
     """Bit-reversal of a 7-bit index, which is the order the NTT visits."""
     return int(format(i, '07b')[::-1], 2)
@@ -41,6 +57,7 @@ def rows(values, per_row=8):
 
 
 def main():
+    check_division_constant()
     assert pow(ROOT, 128, Q) == Q - 1, 'not a primitive 256th root'
     assert pow(ROOT, N, Q) == 1
     assert (Q * QINV) % (1 << 16) == 1
@@ -60,6 +77,12 @@ def main():
     out.write('%%define MLKEM_Q     %d\n' % Q)
     out.write('%%define MLKEM_QINV  %d          ; q^-1 mod 2^16\n' % QINV)
     out.write('%%define MLKEM_MONT  %d           ; 2^16 mod q\n\n' % MONT)
+    out.write('; Verified exhaustively by this generator: n / q equals\n'
+              '; (n * %d) >> %d for every n up to %d, which is the largest\n'
+              '; value ten-bit compression can form.\n'
+              % (DIV_MAGIC, DIV_SHIFT, DIV_LIMIT))
+    out.write('%%define MLKEM_DIV_M %d\n' % DIV_MAGIC)
+    out.write('%%define MLKEM_DIV_S %d\n\n' % DIV_SHIFT)
     out.write('align 32\nmlkem_zetas:\n')
     for row in rows(zetas):
         out.write(row + '\n')

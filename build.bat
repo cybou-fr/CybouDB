@@ -435,8 +435,10 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     if errorlevel 1 goto :fail
     echo Build OK -^> build\seal_dir_test.exe
     "!NASM!" -f win64 !INC! -Isrc\crypto\ -DCybouDB_LIBRARY=1 src\crypto\mlkem_poly.asm -o build\mlkem_poly.obj
+    "!NASM!" -f win64 !INC! -Isrc\crypto\ -DCybouDB_LIBRARY=1 src\crypto\mlkem_encode.asm -o build\mlkem_encode.obj
     if errorlevel 1 goto :fail
-    cl.exe /O2 /W3 /nologo tests\mlkem_poly_test.c build\mlkem_poly.obj /Febuild\mlkem_poly_test.exe /Fobuild\mlkem_poly_test.obj
+    if errorlevel 1 goto :fail
+    cl.exe /O2 /W3 /nologo tests\mlkem_poly_test.c build\mlkem_poly.obj build\mlkem_encode.obj /Febuild\mlkem_poly_test.exe /Fobuild\mlkem_poly_test.obj
     if errorlevel 1 goto :fail
     echo Build OK -^> build\mlkem_poly_test.exe
     goto :eof
