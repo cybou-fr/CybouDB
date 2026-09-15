@@ -451,6 +451,11 @@ if defined VSPATH if exist "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" (
     cl.exe /O2 /W3 /nologo /Itests tests\mlkem_test.c build\mlkem.obj build\mlkem_poly.obj build\mlkem_encode.obj build\mlkem_sample.obj build\keccak.obj /Febuild\mlkem_test.exe /Fobuild\mlkem_test.obj
     if errorlevel 1 goto :fail
     echo Build OK -^> build\mlkem_test.exe
+    "!NASM!" -f win64 !INC! -Isrc\crypto\ -DCybouDB_LIBRARY=1 src\crypto\key_slots.asm -o build\key_slots.obj
+    if errorlevel 1 goto :fail
+    cl.exe /O2 /W3 /nologo tests\key_slots_test.c build\key_slots.obj build\mlkem.obj build\mlkem_poly.obj build\mlkem_encode.obj build\mlkem_sample.obj build\kdf.obj build\aead.obj build\chacha20.obj build\poly1305.obj build\keccak.obj build\os_rand.obj build\checksum_crypto.obj /Febuild\key_slots_test.exe /Fobuild\key_slots_test.obj /link kernel32.lib
+    if errorlevel 1 goto :fail
+    echo Build OK -^> build\key_slots_test.exe
     goto :eof
 )
 echo error: the crypto tests need NASM and the MSVC C compiler.

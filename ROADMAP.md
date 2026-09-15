@@ -603,14 +603,18 @@ the release, not after it.
                                      XChaCha20-Poly1305, implemented here,
                                      dispatched but not chosen by the machine.
                                      Owes a vectorised ChaCha20, measured
-3.5 Key-hierarchy primitives         ML-KEM, ML-DSA, KDF - a different budget,
-                                     since they run at open and not per page
+3.5 Key-hierarchy primitives         ML-KEM-768 done, against OpenSSL 3.5's
+                                     own seed. ML-DSA waits for step 10,
+                                     which is the first step that signs
  4. Root key hierarchy               done - docs/KEY_HIERARCHY.md.
                                      SHAKE256, the closed-label KDF, wrap and
                                      unwrap, the crypto root page and its
                                      key-free validator, and three error codes
                                      so a wrong key is never called damage
- 5. Opening with a PQ private key
+ 5. Opening with a PQ private key     done - ML-KEM-768 in assembly,
+                                     interoperating with OpenSSL 3.5 both
+                                     ways; key slot pages, and a root key
+                                     sealed to a public key
  6. Independent 24-word recovery
  7. Authenticated page encryption     the seal directory and its keyed
                                      tree are built and tested ahead of this

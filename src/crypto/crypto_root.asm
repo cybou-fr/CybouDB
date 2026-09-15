@@ -259,7 +259,7 @@ cyboudb_crypto_root_validate:
     cmp     dword [rbx + CROOT_RESERVED], 0
     jne     .e_reserved
     mov     rax, [rbx + CROOT_RESERVED_TAIL]
-    or      rax, [rbx + CROOT_RESERVED_TAIL + 8]
+    test    rax, rax
     jnz     .e_reserved
     mov     rax, [rbx + CROOT_RESERVED_PAD]
     or      rax, [rbx + CROOT_RESERVED_PAD + 8]
@@ -299,7 +299,18 @@ cyboudb_crypto_root_validate:
     ; file once it does.
     mov     rax, [rbx + CROOT_MANIFEST_ROOT]
     test    rax, rax
+    jz      .kem_root
+    cmp     rax, r12
+    jae     .e_geometry
+
+.kem_root:
+    ; Zero when the database is sealed to no public key at all, which is a
+    ; legal file and not an unfinished one.
+    mov     rax, [rbx + CROOT_KEM_ROOT]
+    test    rax, rax
     jz      .slots
+    cmp     rax, CybouDB_MIN_PAGES
+    jb      .e_geometry
     cmp     rax, r12
     jae     .e_geometry
 

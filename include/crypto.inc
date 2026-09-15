@@ -144,7 +144,9 @@
 ;  +168      4   slot_count         wrapped scoped DEKs that follow
 ;  +172      4   reserved           zero
 ;  +176    3840  slots              40 x CRYPTO_SLOT_SIZE
-; +4016     16   reserved_tail      zero
+; +4016      8   kem_root           first key slot page, 0 when the file is
+;                                      not sealed to any public key
+; +4024      8   reserved_tail      zero
 ; +4032     16   mac                over [0, 4032)
 ; +4048     44   reserved_pad       zero
 ; +4092      4   crc32c             over [0, 4092)
@@ -180,7 +182,9 @@
 %define CROOT_SLOT_COUNT     168
 %define CROOT_RESERVED       172
 %define CROOT_SLOTS          176
-%define CROOT_RESERVED_TAIL  4016
+%define CROOT_KEM_ROOT       4016
+%define CROOT_RESERVED_TAIL  4024      ; eight bytes, not sixteen, since 4016
+                                       ; was spent on the key slot pointer
 %define CROOT_MAC            4032
 %define CROOT_MAC_LEN        CROOT_MAC     ; the tag covers everything before it
 %define CROOT_RESERVED_PAD   4048
@@ -323,5 +327,93 @@
 %define SEAL_E_RESERVED  4
 %define SEAL_E_FIELDS    5              ; a count or a level that cannot be
 %define SEAL_E_MAC       6              ; the parent does not vouch for this page
+
+; =============================================================================
+;  KEY SLOT PAGES - the public keys a database is sealed to
+; =============================================================================
+;  docs/PQ_KEM.md, Decision 4. An ML-KEM-768 ciphertext is 1088 bytes, so a
+;  slot does not fit in the crypto root beside everything else and the slots
+;  live in pages of their own, chained from CROOT_KEM_ROOT. Three to a page,
+;  which is a number nobody chose: 4092 - 64 header bytes leaves room for
+;  three 1176-byte slots and not four.
+;
+;  What a slot holds, and just as importantly what it does not:
+;
+;    the key id        a hash of the encapsulation key, truncated. Enough to
+;                      say "this slot is probably yours" and not an authority
+;                      on it - the answer to which key opens this file is
+;                      "try yours".
+;    the ciphertext    public by construction. An altered one produces a
+;                      shared secret that does not unwrap the root, which is
+;                      CybouDB_E_KEY and not damage.
+;    the wrapped root  the database root key under a KEK derived from the
+;                      shared secret.
+;
+;  Not the public key, and not the private key in any form. The second is the
+;  claim the whole design exists to make, and it is falsifiable: no routine in
+;  the write path takes a decapsulation key as an argument.
+;
+;  Offset  Size  Field          Description
+;  ------  ----  -------------  ------------------------------------------
+;    +0      4   magic          'ASQM'
+;    +4      4   version        1
+;    +8      8   page_index     which page of the chain this is
+;   +16      8   next           the next key slot page, 0 at the end
+;   +24      8   generation
+;   +32      8   slot_count     how many of the three are in use
+;   +40     24   reserved       zero
+;   +64   3528   slots          3 x 1176
+; +3592    500   reserved_tail  zero
+; +4092      4   crc32c
+;
+;  One slot:
+;
+;    +0      8   key_id
+;    +8      4   flags          zero today
+;   +12      4   reserved       zero
+;   +16   1088   kem_ct         the ML-KEM ciphertext
+; +1104     72   wrapped        the root key, sealed under the derived KEK
+;   total 1176
+; =============================================================================
+
+%define CybouDB_KEYPAGE_MAGIC   0x4D515341    ; 'A','S','Q','M'
+%define CybouDB_KEYPAGE_VERSION 1
+
+%define KPAGE_MAGIC          0
+%define KPAGE_VERSION        4
+%define KPAGE_INDEX          8
+%define KPAGE_NEXT           16
+%define KPAGE_GENERATION     24
+%define KPAGE_SLOT_COUNT     32
+%define KPAGE_RESERVED       40
+%define KPAGE_SLOTS          64
+%define KPAGE_RESERVED_TAIL  3592
+%define KPAGE_CRC            4092
+
+%define KSLOT_KEY_ID     0
+%define KSLOT_FLAGS      8
+%define KSLOT_RESERVED   12
+%define KSLOT_KEM_CT     16
+%define KSLOT_WRAPPED    1104
+%define KSLOT_SIZE       1176
+
+%define CybouDB_KEYPAGE_SLOTS   3
+%define CybouDB_MLKEM_EK_BYTES  1184
+%define CybouDB_MLKEM_DK_BYTES  2400
+%define CybouDB_MLKEM_CT_BYTES  1088
+%define CybouDB_MLKEM_SS_BYTES  32
+
+; The KDF context that turns a shared secret into a key-encryption key. Eight
+; bytes of label and eight of key id: two slots of the same file derive
+; different KEKs even when a key is sealed twice.
+%define KEM_CONTEXT_LABEL_LEN  8
+%define KEM_CONTEXT_LEN        16
+
+%define KEYPAGE_OK        0
+%define KEYPAGE_E_MAGIC   1
+%define KEYPAGE_E_VERSION 2
+%define KEYPAGE_E_CRC     3
+%define KEYPAGE_E_RESERVED 4
+%define KEYPAGE_E_SLOTS   5
 
 %endif ; CybouDB_CRYPTO_INC

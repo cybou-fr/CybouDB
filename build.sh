@@ -248,6 +248,15 @@ if [ "${1:-}" = "--lib" ] || [ "${1:-}" = "--c-tests" ] || [ "${1:-}" = "--c-api
             build/mlkem.o build/mlkem_poly.o build/mlkem_encode.o \
             build/mlkem_sample.o build/keccak.o -o build/mlkem_interop
         echo "Build OK -> build/mlkem_interop"
+        nasm -f elf64 $INC -Isrc/crypto/ -DCybouDB_LIBRARY=1 src/crypto/key_slots.asm \
+            -o build/key_slots.o
+        "$CC" -O2 -no-pie -Wall -Wextra tests/key_slots_test.c \
+            build/key_slots.o build/mlkem.o build/mlkem_poly.o \
+            build/mlkem_encode.o build/mlkem_sample.o build/kdf.o \
+            build/aead.o build/chacha20.o build/poly1305.o \
+            build/keccak.o build/os_rand.o build/checksum_crypto.o \
+            -o build/key_slots_test
+        echo "Build OK -> build/key_slots_test"
     fi
     if [ "${1:-}" = "--crypto-probe" ]; then
         CC=gcc

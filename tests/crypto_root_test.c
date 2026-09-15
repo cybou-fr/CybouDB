@@ -34,7 +34,8 @@
 #define CROOT_SLOT_COUNT     168
 #define CROOT_RESERVED       172
 #define CROOT_SLOTS          176
-#define CROOT_RESERVED_TAIL  4016
+#define CROOT_KEM_ROOT       4016
+#define CROOT_RESERVED_TAIL  4024
 #define CROOT_MAC            4032
 #define CROOT_RESERVED_PAD   4048
 #define CROOT_CRC            4092
@@ -188,10 +189,35 @@ int main(void) {
           cyboudb_crypto_root_validate(page) == CROOT_E_RESERVED);
 
     good(page);
-    page[CROOT_RESERVED_TAIL + 9] = 0x01;
+    page[CROOT_RESERVED_TAIL + 3] = 0x01;
     repair_crc(page);
     check("and so is a reserved tail byte",
           cyboudb_crypto_root_validate(page) == CROOT_E_RESERVED);
+
+    /* The first eight bytes of what used to be the reserved tail are now the
+       key slot pointer, and they are geometry rather than reserved. */
+    good(page);
+    wr64(page, CROOT_KEM_ROOT, TOTAL_PAGES);
+    repair_crc(page);
+    check("a key slot page outside the file is refused",
+          cyboudb_crypto_root_validate(page) == CROOT_E_GEOMETRY);
+
+    good(page);
+    wr64(page, CROOT_KEM_ROOT, 1);
+    repair_crc(page);
+    check("and one that would sit on a superblock",
+          cyboudb_crypto_root_validate(page) == CROOT_E_GEOMETRY);
+
+    good(page);
+    wr64(page, CROOT_KEM_ROOT, 4000);
+    repair_crc(page);
+    check("while a real page is accepted",
+          cyboudb_crypto_root_validate(page) == CROOT_OK);
+
+    good(page);
+    check("and zero means the file is sealed to no public key, which is legal",
+          rd64(page, CROOT_KEM_ROOT) == 0 &&
+          cyboudb_crypto_root_validate(page) == CROOT_OK);
 
     good(page);
     page[CROOT_RESERVED_PAD + 43] = 0x80;
