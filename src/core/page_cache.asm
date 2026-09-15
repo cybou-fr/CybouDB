@@ -43,6 +43,11 @@ global cyboudb_pcache_mark_dirty
 global cyboudb_pcache_frame
 global cyboudb_pcache_invalidate
 global cyboudb_pcache_stats
+global cyboudb_pcache_frames
+global cyboudb_pcache_dirty_at
+global cyboudb_pcache_clean_at
+global cyboudb_pcache_set_type
+global cyboudb_pcache_type_at
 
 ; --- the control block -------------------------------------------------------
 %define PC_MAGIC        0
@@ -65,6 +70,12 @@ global cyboudb_pcache_stats
 %define SLOT_VALID      1
 %define SLOT_DIRTY      2
 %define SLOT_RESIDENT   4               ; asked for twice, so not probationary
+; Bits 8 to 15 hold the page's type. It lives here because the only code that
+; knows a page's type is the code that wrote it, and the only code that needs
+; it at seal time is the commit, which runs much later and sees nothing but a
+; frame. Somewhere had to remember, and the slot already exists.
+%define SLOT_TYPE_SHIFT 8
+%define SLOT_TYPE_MASK  0xFF00
 
 %define PCACHE_WAYS     8
 %define PCACHE_MAGIC    0x43505351      ; 'QSPC'
@@ -498,6 +509,114 @@ cyboudb_pcache_stats:
     mov     [r11 + 8], rax
     mov     rax, [r10 + PC_EVICTIONS]
     mov     [r11 + 16], rax
+    ret
+
+
+
+; =============================================================================
+;  cyboudb_pcache_frames(cache) -> how many frames it holds
+;  cyboudb_pcache_dirty_at(cache, slot) -> the page in that slot if it is
+;                                          dirty, or all ones
+;  cyboudb_pcache_clean_at(cache, slot) -> marks that slot clean
+;
+;  A commit has to find every page it has changed, and a cache that cannot be
+;  walked would mean keeping a second list of the same thing somewhere else -
+;  two structures that must agree, which is the shape most lost-write bugs
+;  have. Walking slots is not elegant and it is exact.
+;
+;  All ones for "not a dirty page" for the same reason the eviction report uses
+;  it: page zero is a real page.
+; =============================================================================
+cyboudb_pcache_frames:
+    mov     r10, ARG1
+    mov     rax, [r10 + PC_FRAMES]
+    ret
+
+cyboudb_pcache_dirty_at:
+    mov     r10, ARG1
+    mov     r11, ARG2
+    cmp     r11, [r10 + PC_FRAMES]
+    jae     .none
+    mov     rax, r11
+    imul    rax, rax, SLOT_SIZE
+    add     rax, [r10 + PC_SLOTS]
+    add     rax, r10
+    mov     ecx, [rax + SLOT_FLAGS]
+    and     ecx, SLOT_VALID | SLOT_DIRTY
+    cmp     ecx, SLOT_VALID | SLOT_DIRTY
+    jne     .none
+    mov     rax, [rax + SLOT_PAGE]
+    ret
+.none:
+    mov     rax, -1
+    ret
+
+cyboudb_pcache_clean_at:
+    mov     r10, ARG1
+    mov     r11, ARG2
+    cmp     r11, [r10 + PC_FRAMES]
+    jae     .done
+    mov     rax, r11
+    imul    rax, rax, SLOT_SIZE
+    add     rax, [r10 + PC_SLOTS]
+    add     rax, r10
+    and     dword [rax + SLOT_FLAGS], ~SLOT_DIRTY
+.done:
+    xor     eax, eax
+    ret
+
+
+; =============================================================================
+;  cyboudb_pcache_set_type(cache, page, type) -> int
+;  cyboudb_pcache_type_at(cache, slot) -> the type, or all ones
+; =============================================================================
+cyboudb_pcache_set_type:
+    mov     r10, ARG1
+    mov     r11, ARG2
+    mov     rdx, ARG3
+    SET_BASE r10, r10, r11
+    xor     r8, r8
+.scan:
+    mov     rax, r8
+    imul    rax, rax, SLOT_SIZE
+    lea     r9, [r10 + rax]
+    test    dword [r9 + SLOT_FLAGS], SLOT_VALID
+    jz      .next
+    cmp     [r9 + SLOT_PAGE], r11
+    jne     .next
+    mov     eax, [r9 + SLOT_FLAGS]
+    and     eax, ~SLOT_TYPE_MASK
+    mov     ecx, edx
+    shl     ecx, SLOT_TYPE_SHIFT
+    and     ecx, SLOT_TYPE_MASK
+    or      eax, ecx
+    mov     [r9 + SLOT_FLAGS], eax
+    xor     eax, eax
+    ret
+.next:
+    inc     r8
+    cmp     r8, PCACHE_WAYS
+    jb      .scan
+    mov     eax, CybouDB_E_STATE
+    ret
+
+cyboudb_pcache_type_at:
+    mov     r10, ARG1
+    mov     r11, ARG2
+    cmp     r11, [r10 + PC_FRAMES]
+    jae     .none
+    mov     rax, r11
+    imul    rax, rax, SLOT_SIZE
+    add     rax, [r10 + PC_SLOTS]
+    add     rax, r10
+    test    dword [rax + SLOT_FLAGS], SLOT_VALID
+    jz      .none
+    mov     eax, [rax + SLOT_FLAGS]
+    and     eax, SLOT_TYPE_MASK
+    shr     eax, SLOT_TYPE_SHIFT
+    ret
+.none:
+    mov     rax, -1
     ret
 
 %ifdef CybouDB_LINUX

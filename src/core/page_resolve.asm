@@ -30,12 +30,24 @@ BITS 64
 default rel
 
 global db_page_resolve
+global db_page_for_write
+global db_pages_flush
 
 extern cyboudb_pcache_lookup
 extern cyboudb_pcache_admit
 extern cyboudb_pcache_invalidate
 extern cyboudb_page_open
 extern vfs_read_at
+extern vfs_write_at
+extern cyboudb_pcache_mark_dirty
+extern cyboudb_pcache_frames
+extern cyboudb_pcache_dirty_at
+extern cyboudb_pcache_clean_at
+extern cyboudb_page_seal
+extern cyboudb_pcache_frame
+extern cyboudb_pcache_type_at
+extern cyboudb_pcache_set_type
+extern crc32c
 
 ; Frame:
 ;   [rbp - 8..32]  saved rbx, r12, r13
@@ -43,9 +55,13 @@ extern vfs_read_at
 ;   [rbp - 64] the evicted page the cache reported
 ;   [rbp - 128] the page seal arguments, CybouDB_PSEAL_ARGS_SIZE
 ;   [rbp - 4224] the seal directory leaf, read on every miss
-%define PR_ARGS   128
-%define PR_LEAF   4224
-%define PR_FRAME  4288
+; The arguments start at 192 and not at 128 because the flush below needs
+; nine slots above them and the first draft had it needing ten - an array that
+; ends where the slots begin is correct right until someone adds a slot, which
+; is the same lesson the ML-KEM frames and the KMAC block taught.
+%define PR_ARGS   192                  ; [rbp-192, rbp-128)
+%define PR_LEAF   4288                 ; [rbp-4288, rbp-192)
+%define PR_FRAME  4352
 
 section .text
 
@@ -207,6 +223,262 @@ db_page_resolve:
     mov     r12, [rbp - 16]
     mov     r13, [rbp - 24]
     FRAME_END
+    ret
+
+
+
+; =============================================================================
+;  db_page_for_write(ctx, page, page_type) -> uint8_t *plaintext, or 0
+;
+;  A page the caller is about to change. It resolves exactly as a read does and
+;  then marks the frame dirty, so the commit can find it again.
+;
+;  **The page must be one this generation allocated.** Copy-on-write is what
+;  makes that true, and it is what makes writing a dirty frame back in place
+;  safe: a page an older generation still references is never dirtied, so
+;  nothing a crash could fall back to is ever overwritten. An engine that
+;  dirtied a live page of an older generation would destroy that generation
+;  here, silently, and no barrier ordering would save it.
+; =============================================================================
+db_page_for_write:
+    FRAME_BEGIN 64, 0
+    mov     [rbp - 8], rbx
+    mov     [rbp - 16], r12
+
+    mov     rbx, ARG1
+    mov     r12, ARG2
+    mov     [rbp - 32], ARG3            ; the page type, for the commit
+
+    mov     ARG1, rbx
+    mov     ARG2, r12
+    call    db_page_resolve
+    test    rax, rax
+    jz      .done
+    mov     [rbp - 24], rax
+
+    mov     ARG1, [rbx + DB_CACHE]
+    mov     ARG2, r12
+    call    cyboudb_pcache_mark_dirty
+    test    eax, eax
+    jnz     .lost
+
+    ; The type goes with it. Only the caller knows what kind of page this is,
+    ; and the commit that seals it will be running long after the caller has
+    ; gone.
+    mov     ARG1, [rbx + DB_CACHE]
+    mov     ARG2, r12
+    mov     ARG3, [rbp - 32]
+    call    cyboudb_pcache_set_type
+    test    eax, eax
+    jnz     .lost
+
+    mov     rax, [rbp - 24]
+    jmp     .done
+
+.lost:
+    ; The frame resolved and then could not be marked. That cannot happen
+    ; unless the cache and this code disagree about what is in it, and a write
+    ; the commit will not find is a lost write, so it is a refusal.
+    mov     qword [rbx + DB_ENC_ERROR], CybouDB_E_STATE
+    xor     eax, eax
+.done:
+    mov     rbx, [rbp - 8]
+    mov     r12, [rbp - 16]
+    FRAME_END
+    ret
+
+; =============================================================================
+;  db_pages_flush(ctx) -> int
+;
+;  Steps 1 and 2 of Decision 6b: seal every dirty page under the current
+;  generation, write it, and put its nonce and tag into the seal directory leaf
+;  that covers it. Leaves are written after the pages they describe.
+;
+;  What this does NOT do, and the caller must: the seal tree nodes above those
+;  leaves, the barrier, the superblock, and the second barrier. They are left
+;  out because the tree's shape and the superblock's layout belong to the
+;  engine's own metadata, which this half of the port has not reached yet - and
+;  leaving them out loudly is better than doing half of them quietly.
+;
+;  Frame:
+;    [rbp - 8..32]  saved rbx, r12, r13, r14
+;    [rbp - 40] ctx    [rbp - 48] slot    [rbp - 56] frames
+;    [rbp - 64] the leaf currently held   [rbp - 72] its page number
+;    [rbp - 128] the page seal arguments
+;    [rbp - 4224] the leaf itself
+; =============================================================================
+db_pages_flush:
+    FRAME_BEGIN PR_FRAME, 0
+    mov     [rbp - 8], rbx
+    mov     [rbp - 16], r12
+    mov     [rbp - 24], r13
+    mov     [rbp - 32], r14
+
+    mov     rbx, ARG1
+    mov     [rbp - 40], rbx
+    mov     qword [rbp - 72], -1        ; no leaf held yet
+
+    mov     ARG1, [rbx + DB_CACHE]
+    call    cyboudb_pcache_frames
+    mov     [rbp - 56], rax
+
+    xor     r12, r12                    ; the slot being looked at
+.slot:
+    cmp     r12, [rbp - 56]
+    jae     .flush_leaf
+
+    mov     rbx, [rbp - 40]
+    mov     ARG1, [rbx + DB_CACHE]
+    mov     ARG2, r12
+    call    cyboudb_pcache_dirty_at
+    cmp     rax, -1
+    je      .next_slot
+    mov     r13, rax                    ; the page in that slot
+
+    mov     ARG1, [rbx + DB_CACHE]
+    mov     ARG2, r12
+    call    cyboudb_pcache_type_at
+    mov     [rbp - 88], rax             ; what kind of page it is
+
+    ; which leaf covers it
+    mov     rax, r13
+    xor     rdx, rdx
+    mov     rcx, CybouDB_SEAL_ENTRIES_PER_LEAF
+    div     rcx
+    mov     r14, rdx                    ; the entry index
+    add     rax, [rbx + DB_SEAL_DIR]    ; the leaf's page number
+
+    ; a different leaf than the one in hand? write the one in hand first
+    cmp     rax, [rbp - 72]
+    je      .leaf_ready
+    mov     [rbp - 64], rax
+    call    flush_held_leaf
+    mov     rbx, [rbp - 40]
+    mov     rax, [rbp - 64]
+    mov     [rbp - 72], rax
+
+    mov     ARG1, [rbx + DB_HANDLE]
+    lea     ARG2, [rbp - PR_LEAF]
+    mov     ARG3, CybouDB_PAGE_SIZE
+    mov     rax, [rbp - 72]
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     ARG4, rax
+    call    vfs_read_at
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .failed
+
+.leaf_ready:
+    ; seal the page into that leaf's entry, in the frame it already occupies
+    mov     rbx, [rbp - 40]
+    mov     ARG1, [rbx + DB_CACHE]
+    mov     ARG2, r13
+    call    cyboudb_pcache_frame
+    test    rax, rax
+    jz      .failed
+    mov     [rbp - 80], rax             ; the plaintext frame
+
+    lea     r10, [rbp - PR_ARGS]
+    lea     rax, [rbx + DB_SEAL_KEY]
+    mov     [r10 + PSEAL_KEY], rax
+    mov     rax, [rbp - 80]
+    mov     [r10 + PSEAL_PAGE], rax
+    mov     rax, r14
+    imul    rax, rax, SENTRY_SIZE
+    lea     rcx, [rbp - PR_LEAF]
+    add     rax, rcx
+    add     rax, SLEAF_ENTRIES
+    mov     [r10 + PSEAL_ENTRY], rax
+    lea     rax, [rbx + DB_UUID]
+    mov     [r10 + PSEAL_UUID], rax
+    mov     [r10 + PSEAL_PAGE_NO], r13
+    mov     rax, [rbx + DB_GENERATION]
+    mov     [r10 + PSEAL_GENERATION], rax
+    mov     rax, [rbp - 88]             ; the type the writer recorded
+    mov     [r10 + PSEAL_PAGE_TYPE], rax
+    mov     rax, [rbx + DB_SEAL_EPOCH]
+    mov     [r10 + PSEAL_EPOCH], rax
+
+    lea     ARG1, [rbp - PR_ARGS]
+    call    cyboudb_page_seal
+    test    eax, eax
+    jnz     .failed
+
+    ; the ciphertext is in the frame now; write it where it belongs
+    mov     rbx, [rbp - 40]
+    mov     ARG1, [rbx + DB_HANDLE]
+    mov     ARG2, [rbp - 80]
+    mov     ARG3, CybouDB_PAGE_SIZE
+    mov     rax, r13
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     ARG4, rax
+    call    vfs_write_at
+    cmp     rax, CybouDB_PAGE_SIZE
+    jne     .failed
+
+    ; The frame now holds ciphertext, not the page. It must not be handed to a
+    ; reader as though it were plaintext, so it leaves the cache: a commit
+    ; costs the pages it wrote out of the cache, which is a price worth paying
+    ; over handing out bytes that are no longer what they claim.
+    mov     ARG1, [rbx + DB_CACHE]
+    mov     ARG2, r13
+    call    cyboudb_pcache_invalidate
+
+.next_slot:
+    inc     r12
+    jmp     .slot
+
+.flush_leaf:
+    call    flush_held_leaf
+    xor     eax, eax
+    jmp     .out
+
+.failed:
+    mov     rbx, [rbp - 40]
+    mov     qword [rbx + DB_ENC_ERROR], CybouDB_E_SEAL
+    mov     eax, CybouDB_E_SEAL
+.out:
+    mov     rbx, [rbp - 8]
+    mov     r12, [rbp - 16]
+    mov     r13, [rbp - 24]
+    mov     r14, [rbp - 32]
+    FRAME_END
+    ret
+
+; -----------------------------------------------------------------------------
+;  flush_held_leaf - write the leaf in [rbp - PR_LEAF] to the page number in
+;  [rbp - 72], if there is one. Uses the caller's frame on purpose: it is part
+;  of db_pages_flush and exists only so the "write the previous leaf" step is
+;  not written twice.
+; -----------------------------------------------------------------------------
+flush_held_leaf:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 32 + SHADOW_SPACE
+    mov     r10, [rbp]                  ; the caller's rbp
+    cmp     qword [r10 - 72], -1
+    je      .nothing
+
+    ; The leaf changed, so its CRC is no longer its CRC. A leaf written with a
+    ; stale checksum reads as damage on the next open - the seal tree would
+    ; have caught it, but as a torn page rather than as the mistake it is.
+    push    r10
+    lea     ARG1, [r10 - PR_LEAF]
+    mov     ARG2, SLEAF_CRC
+    CALL_ABI crc32c
+    pop     r10
+    mov     [r10 - PR_LEAF + SLEAF_CRC], eax
+
+    mov     rax, [r10 - 40]             ; ctx
+    mov     ARG1, [rax + DB_HANDLE]
+    lea     ARG2, [r10 - PR_LEAF]
+    mov     ARG3, CybouDB_PAGE_SIZE
+    mov     rax, [r10 - 72]
+    shl     rax, CybouDB_PAGE_SHIFT
+    mov     ARG4, rax
+    call    vfs_write_at
+.nothing:
+    mov     rsp, rbp
+    pop     rbp
     ret
 
 %ifdef CybouDB_LINUX

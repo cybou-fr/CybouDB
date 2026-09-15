@@ -87,6 +87,11 @@ struct pseal_args {
 int cyboudb_page_seal(const struct pseal_args *args);
 
 uint8_t *db_page_resolve(uint8_t *ctx, uint64_t page);
+uint8_t *db_page_for_write(uint8_t *ctx, uint64_t page, uint64_t page_type);
+int db_pages_flush(uint8_t *ctx);
+uint64_t cyboudb_pcache_dirty_at(const uint8_t *cache, uint64_t slot);
+uint64_t cyboudb_pcache_type_at(const uint8_t *cache, uint64_t slot);
+uint64_t cyboudb_pcache_frames(const uint8_t *cache);
 
 static int checks, failures;
 
@@ -276,6 +281,98 @@ int main(void) {
         check("while the right key still resolves it",
               db_page_resolve(ctx, P_FIRST + 1) != NULL);
     }
+
+    /* --- writing, and the first two steps of a commit -----------------------
+       db_page_for_write hands back the same frame a read would and marks it,
+       db_pages_flush seals every marked frame under the current generation,
+       writes it, and puts its nonce and tag into the leaf that covers it.
+
+       A page may only be dirtied if this generation allocated it - copy on
+       write is what makes that true, and it is what makes writing a frame
+       back in place safe. Here that is respected by writing to pages 105 to
+       107 as though they were freshly allocated for generation 13. */
+    {
+        uint8_t *frame;
+        int ok = 1;
+
+        cyboudb_pcache_init(cache_mem, cache_bytes, 16);
+        wr64(ctx, DB_GENERATION, GENERATION);
+
+        frame = db_page_for_write(ctx, P_FIRST + 5, 2);
+        check("a page opens for writing", frame != NULL);
+        if (frame) strcpy((char *)frame, "rewritten by the engine");
+
+        {
+            uint64_t slot, dirty = 0, typed = 0;
+            for (slot = 0; slot < cyboudb_pcache_frames(cache_mem); slot++) {
+                if (cyboudb_pcache_dirty_at(cache_mem, slot) != UINT64_MAX) {
+                    dirty++;
+                    if (cyboudb_pcache_type_at(cache_mem, slot) == 2) typed++;
+                }
+            }
+            check("and the cache knows exactly one frame is dirty", dirty == 1);
+            check("and remembers what kind of page it is", typed == 1);
+        }
+
+        check("the flush seals and writes it", db_pages_flush(ctx) == 0);
+
+        {
+            uint64_t slot, dirty = 0;
+            for (slot = 0; slot < cyboudb_pcache_frames(cache_mem); slot++)
+                if (cyboudb_pcache_dirty_at(cache_mem, slot) != UINT64_MAX)
+                    dirty++;
+            check("and nothing is left dirty behind it", dirty == 0);
+        }
+
+        /* The page on disk is now the new one, sealed. A cold read has to get
+           it back - which is the whole round trip: plaintext into a frame,
+           sealed out to the file, and read back as plaintext again. */
+        cyboudb_pcache_init(cache_mem, cache_bytes, 16);
+        frame = db_page_resolve(ctx, P_FIRST + 5);
+        check("and a cold read brings back what was written",
+              frame != NULL &&
+              strcmp((char *)frame, "rewritten by the engine") == 0);
+
+        /* Its neighbours are untouched, which is what says the leaf's other
+           entries survived the read-modify-write. */
+        for (i = 0; i < 10; i++) {
+            char want[64];
+            if (i == 5 || i == 7) continue;
+            snprintf(want, sizeof want, "this is page %d", P_FIRST + i);
+            frame = db_page_resolve(ctx, P_FIRST + i);
+            if (!frame || strcmp((char *)frame, want) != 0) ok = 0;
+        }
+        check("while every other page in that leaf still opens", ok);
+    }
+
+    /* --- several pages, and the leaf written once --------------------------- */
+    {
+        uint8_t *frame;
+        int ok = 1;
+        cyboudb_pcache_init(cache_mem, cache_bytes, 16);
+
+        for (i = 0; i < 4; i++) {
+            char line[64];
+            frame = db_page_for_write(ctx, P_FIRST + i, (uint64_t)(i + 1));
+            if (!frame) { ok = 0; continue; }
+            snprintf(line, sizeof line, "page %d, second generation", P_FIRST + i);
+            memset(frame, 0, PAGE);
+            strcpy((char *)frame, line);
+        }
+        check("four pages open for writing", ok);
+        check("and flush together", db_pages_flush(ctx) == 0);
+
+        cyboudb_pcache_init(cache_mem, cache_bytes, 16);
+        ok = 1;
+        for (i = 0; i < 4; i++) {
+            char want[64];
+            snprintf(want, sizeof want, "page %d, second generation", P_FIRST + i);
+            frame = db_page_resolve(ctx, P_FIRST + i);
+            if (!frame || strcmp((char *)frame, want) != 0) ok = 0;
+        }
+        check("and all four come back", ok);
+    }
+
 
     vfs_close(h);
     free(cache_raw);
